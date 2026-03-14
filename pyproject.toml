@@ -1,0 +1,44 @@
+[project]
+name = "ops-brain"
+version = "0.1.0"
+description = "企业运营AI智能诊断系统"
+requires-python = ">=3.10"
+
+dependencies = [
+    "langgraph>=0.3",
+    "langchain-core>=0.3",
+    "langchain-openai>=0.3",
+    "mcp>=1.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "websockets>=14.0",
+    "httpx>=0.28",
+    "psycopg[binary]>=3.2",
+    "redis>=5.0",
+    "langgraph-checkpoint-postgres>=2.0",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.0",
+    "apscheduler>=3.10",
+    "cryptography>=44.0",
+    "aiomysql>=0.2",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.9",
+]
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src", "src.*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120

@@ -1,0 +1,95 @@
+services:
+  ops-brain-api:
+    build: .
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
+      - REDIS_URL=redis://redis:6379/0
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=qwen-max
+      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
+    depends_on:
+      - postgres
+      - redis
+
+  mcp-metrics:
+    build: .
+    command: python -m src.mcp_servers.metrics_server
+    ports:
+      - "8100:8100"
+    environment:
+      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
+      - REDIS_URL=redis://redis:6379/0
+      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
+
+  mcp-crm:
+    build: .
+    command: python -m src.mcp_servers.crm_server
+    ports:
+      - "8101:8101"
+    environment:
+      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
+      - REDIS_URL=redis://redis:6379/0
+      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
+
+  mcp-benchmark:
+    build: .
+    command: python -m src.mcp_servers.benchmark_server
+    ports:
+      - "8102:8102"
+    environment:
+      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
+      - REDIS_URL=redis://redis:6379/1
+      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
+
+  mcp-task:
+    build: .
+    command: python -m src.mcp_servers.task_server
+    ports:
+      - "8103:8103"
+    environment:
+      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
+      - REDIS_URL=redis://redis:6379/0
+      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
+
+  mcp-notify:
+    build: .
+    command: python -m src.mcp_servers.notify_server
+    ports:
+      - "8104:8104"
+    environment:
+      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
+      - REDIS_URL=redis://redis:6379/0
+      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
+
+  wlwq-enterprise:
+    build: .
+    command: uvicorn src.wlwq.app:app --host 0.0.0.0 --port 8200
+    ports:
+      - "8200:8200"
+    environment:
+      - WLWQ_MYSQL_HOST=${WLWQ_MYSQL_HOST:-192.168.1.249}
+      - WLWQ_MYSQL_PORT=${WLWQ_MYSQL_PORT:-3306}
+      - WLWQ_MYSQL_USER=${WLWQ_MYSQL_USER:-wlwq}
+      - WLWQ_MYSQL_PASSWORD=${WLWQ_MYSQL_PASSWORD:-Mysql@db$123!}
+      - WLWQ_MYSQL_DATABASE=${WLWQ_MYSQL_DATABASE:-wlwq-enterprise-service}
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ops_brain
+      POSTGRES_PASSWORD: password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:

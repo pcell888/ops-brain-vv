@@ -1,0 +1,163 @@
+"""Pydantic data models for API request/response and internal data transfer."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+# ── API Request / Response ──────────────────────────────────────
+
+class DiagnosisRequest(BaseModel):
+    tenant_id: str
+    store_id: str
+    trigger_type: Literal["manual", "scheduled"] = "manual"
+    triggered_by: str | None = None
+    selected_dimensions: list[str] | None = Field(
+        default=None,
+        description="参与诊断的维度列表，如 ['crm','marketing']；为空则全量",
+    )
+    selected_indicators: list[str] | None = Field(
+        default=None,
+        description="参与诊断的指标代码列表，如 ['lead_conversion_rate']；为空则按维度全量",
+    )
+
+
+class DiagnosisStartResponse(BaseModel):
+    thread_id: str
+    ws_url: str
+
+
+class AdoptPlansRequest(BaseModel):
+    plan_ids: list[str]
+
+
+# ── Indicator Models ────────────────────────────────────────────
+
+class IndicatorValue(BaseModel):
+    value: float
+    unit: str = "%"
+    direction: Literal["higher_is_better", "lower_is_better"] = "higher_is_better"
+    raw_data: dict = Field(default_factory=dict)
+
+
+class DimensionIndicators(BaseModel):
+    tenant_id: str
+    dimension: str
+    period: str
+    indicators: dict[str, IndicatorValue]
+
+
+# ── Benchmark Models ────────────────────────────────────────────
+
+class BenchmarkValue(BaseModel):
+    avg_value: float
+    median_value: float
+    excellent_value: float  # P90
+
+
+# ── Anomaly & Diagnosis ────────────────────────────────────────
+
+class Anomaly(BaseModel):
+    indicator_code: str
+    indicator_name: str
+    dimension: str
+    current_value: float
+    benchmark_avg: float
+    benchmark_excellent: float
+    deviation_pct: float
+    severity: Literal["high", "medium", "low"]
+    description: str
+
+
+class RootCause(BaseModel):
+    anomaly_indicator: str
+    cause: str
+    evidence: str
+    confidence: float = Field(ge=0, le=1)
+
+
+class DimensionScore(BaseModel):
+    score: float
+    weight: float
+
+
+class DiagnosisReport(BaseModel):
+    tenant_id: str
+    store_id: str
+    generated_at: datetime
+    health_score: float
+    dimension_scores: dict[str, DimensionScore]
+    anomalies: list[Anomaly]
+    root_causes: list[RootCause]
+    summary: str
+
+
+# ── Solution Plan Models ────────────────────────────────────────
+
+class AutoAction(BaseModel):
+    type: str
+    config: dict
+
+
+class SolutionPlan(BaseModel):
+    plan_id: str
+    plan_name: str
+    description: str
+    target_indicators: list[str]
+    expected_improvement: dict[str, float]
+    expected_roi: float = 0
+    difficulty_score: float = Field(ge=1, le=10, default=5)
+    urgency_score: float = Field(ge=1, le=10, default=5)
+    priority_score: float = 0
+    priority_level: Literal["high", "medium", "low"] = "medium"
+    steps: list[dict] = Field(default_factory=list)
+    auto_actions: list[AutoAction] = Field(default_factory=list)
+
+
+# ── Execution Task Models ───────────────────────────────────────
+
+class ExecTask(BaseModel):
+    task_id: str = ""
+    task_name: str
+    description: str
+    assignee_user_id: int | None = None
+    assignee_dept_id: int | None = None
+    deadline: str | None = None
+    priority: Literal["high", "medium", "low"] = "medium"
+    related_resources: list[str] = Field(default_factory=list)
+    status: str = "pending"
+
+
+# ── Tracking & Review ──────────────────────────────────────────
+
+class IndicatorChange(BaseModel):
+    indicator_code: str
+    before_value: float
+    after_value: float
+    change_pct: float
+    improved: bool
+
+
+class ReviewReport(BaseModel):
+    overall_achievement_rate: float
+    improved_indicator_count: int
+    total_tracked_indicators: int
+    indicator_changes: list[IndicatorChange]
+    summary: str
+    lessons_learned: list[str] = Field(default_factory=list)
+
+
+# ── WebSocket Messages ─────────────────────────────────────────
+
+class WSProgressMessage(BaseModel):
+    type: str
+    node: str | None = None
+    message: str | None = None
+    timestamp: str | None = None
+    health_score: float | None = None
+    anomaly_count: int | None = None
+    dimension_scores: dict | None = None
+    plans: list | None = None
