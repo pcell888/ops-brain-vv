@@ -23,11 +23,10 @@ async def statistics(
     try:
         async with get_cursor() as cur:
             await cur.execute(
-                "SELECT COUNT(*) AS total FROM client_record WHERE 1=1 "
-                + (" AND store_id=%s" if storeId else "")
-                + (" AND created_at>=%s" if startDate else "")
-                + (" AND created_at<=%s" if endDate else ""),
-                tuple(x for x in [storeId, startDate, endDate] if x is not None),
+                "SELECT COUNT(*) AS total FROM client_record WHERE del_status=0 "
+                + (" AND create_time>=%s" if startDate else "")
+                + (" AND create_time<=%s" if endDate else ""),
+                tuple(x for x in [startDate, endDate] if x is not None),
             )
             row = await cur.fetchone()
             total = (row or {}).get("total", 0)
@@ -64,7 +63,7 @@ async def get_record(client_record_id: str):
     """单条客户记录。"""
     try:
         async with get_cursor() as cur:
-            await cur.execute("SELECT * FROM client_record WHERE id=%s", (client_record_id,))
+            await cur.execute("SELECT * FROM client_record WHERE client_record_id=%s", (client_record_id,))
             row = await cur.fetchone()
     except Exception:
         row = None

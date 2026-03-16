@@ -22,15 +22,100 @@ INDICATOR_META: dict[str, dict] = {
     "service_completion_rate": {"name": "服务订单完成率", "dimension": "efficiency", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "未完成服务订单列表"},
     "avg_shipping_hours": {"name": "平均发货时效", "dimension": "efficiency", "direction": "lower_is_better", "unit": "小时", "drillable": True, "drill_desc": "发货时效明细"},
     "task_on_time_rate": {"name": "任务按时完成率", "dimension": "efficiency", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "逾期任务列表"},
+    # 库存维度
+    "stock_turnover_days": {"name": "库存周转天数", "dimension": "inventory", "direction": "lower_is_better", "unit": "天", "drillable": True, "drill_desc": "周转慢的商品列表"},
+    "stockout_rate": {"name": "缺货率", "dimension": "inventory", "direction": "lower_is_better", "unit": "%", "drillable": True, "drill_desc": "缺货商品列表"},
+    "overstock_rate": {"name": "积压率", "dimension": "inventory", "direction": "lower_is_better", "unit": "%", "drillable": True, "drill_desc": "积压商品列表"},
 }
 
-ALL_DIMENSIONS = ["crm", "marketing", "retention", "efficiency"]
+# 各指标钻取 items 中单条记录的约定字段（企业 API 返回 list/items 时应尽量符合）
+DRILL_ITEM_FIELDS: dict[str, list[str]] = {
+    # CRM — 客户记录列表
+    "lead_conversion_rate": ["client_record_id", "client_name", "contact_person", "contact_number", "create_time"],
+    "repurchase_rate": ["client_record_id", "client_name", "contact_number", "create_time"],
+    "churn_rate": ["client_record_id", "client_name", "contact_number", "create_time"],
+    # CRM — 跟进/审批明细
+    "response_time_avg": ["examine_initiate_id", "content", "create_time", "finish_time", "user_name"],
+    "follow_up_count": ["examine_initiate_id", "content", "create_time", "user_name"],
+    "task_on_time_rate": ["examine_initiate_id", "content", "create_time", "finish_time", "user_name"],
+    # 营销
+    "coupon_redemption_rate": ["account_coupon_id", "coupon_name", "phone", "use_status", "start_time", "end_time", "create_time"],
+    "browse_to_order_rate": ["account_id", "browse_time", "order_count", "first_order_time"],
+    "order_conversion_rate": ["account_id", "order_sn", "pay_time", "pay_price", "order_status"],
+    "customer_acquisition_cost": ["id", "activity_name", "start_time", "end_time", "spend", "cost_per_acquisition"],
+    # 留存
+    "refund_rate": ["store_refund_order_id", "store_order_id", "order_sn", "refund_price", "refund_cause", "refund_apply_time", "refund_success_time"],
+    "positive_review_rate": ["store_order_evaluate_id", "store_order_id", "star", "level", "content", "create_time"],
+    "avg_customer_lifetime_value": ["account_id", "order_count", "total_amount", "last_order_time"],
+    # 效率
+    "service_completion_rate": ["service_order_id", "order_sn", "order_status", "create_time", "finish_time"],
+    "avg_shipping_hours": ["store_order_id", "order_sn", "pay_time", "delivery_time", "shipping_hours"],
+    # 库存
+    "stock_turnover_days": ["goods_id", "goods_name", "stock_num", "turnover_days", "last_sale_time"],
+    "stockout_rate": ["goods_id", "goods_name", "stock_num", "stockout_days"],
+    "overstock_rate": ["goods_id", "goods_name", "stock_num", "overstock_days", "last_sale_time"],
+}
+
+# 钻取字段 key -> 中文标签，供前端表头/展示用
+DRILL_FIELD_LABELS: dict[str, str] = {
+    "client_record_id": "客户ID",
+    "client_name": "客户名称",
+    "contact_person": "联系人",
+    "contact_number": "联系电话",
+    "create_time": "创建时间",
+    "examine_initiate_id": "审批/跟进ID",
+    "content": "内容",
+    "finish_time": "完成时间",
+    "user_name": "发起人",
+    "account_coupon_id": "用户优惠券ID",
+    "coupon_name": "优惠券名称",
+    "phone": "手机号",
+    "use_status": "使用状态",
+    "start_time": "开始时间",
+    "end_time": "结束时间",
+    "account_id": "用户ID",
+    "browse_time": "浏览时间",
+    "order_count": "订单数",
+    "first_order_time": "首单时间",
+    "order_sn": "订单号",
+    "pay_time": "支付时间",
+    "pay_price": "实付金额",
+    "order_status": "订单状态",
+    "id": "活动ID",
+    "activity_name": "活动名称",
+    "spend": "投入金额",
+    "cost_per_acquisition": "单客成本",
+    "store_refund_order_id": "退款单ID",
+    "store_order_id": "订单ID",
+    "refund_price": "退款金额",
+    "refund_cause": "退款原因",
+    "refund_apply_time": "申请退款时间",
+    "refund_success_time": "退款成功时间",
+    "store_order_evaluate_id": "评价ID",
+    "star": "星级",
+    "level": "评价等级",
+    "total_amount": "累计金额",
+    "last_order_time": "最近订单时间",
+    "service_order_id": "服务订单ID",
+    "delivery_time": "发货时间",
+    "shipping_hours": "发货时效(小时)",
+    "goods_id": "商品ID",
+    "goods_name": "商品名称",
+    "stock_num": "库存数量",
+    "turnover_days": "周转天数",
+    "last_sale_time": "最近销售时间",
+    "stockout_days": "缺货天数",
+    "overstock_days": "积压天数",
+}
+
+ALL_DIMENSIONS = ["crm", "marketing", "retention", "efficiency", "inventory"]
 
 DEFAULT_DIMENSION_WEIGHTS: dict[str, float] = {
-    "crm": 0.25,
-    "marketing": 0.30,
+    "crm": 0.20,
+    "marketing": 0.25,
     "retention": 0.25,
-    "efficiency": 0.20,
+    "efficiency": 0.15,
+    "inventory": 0.15,
 }
 
 ANOMALY_THRESHOLD_PCT = 15.0  # 偏离行业均值超过此百分比视为异常
@@ -97,15 +182,17 @@ def calculate_dimension_score(
     benchmarks: dict,
     dimension: str,
     active_indicators: set[str] | None = None,
-) -> tuple[float, list[dict]]:
+) -> tuple[float, list[dict], list[dict]]:
     """
-    计算单个维度的健康度得分(0-100)并识别异常指标。
+    计算单个维度的健康度得分(0-100)、识别异常指标、返回各指标得分。
 
     评分逻辑:
     - 每个指标与行业基准均值对比，计算偏差百分比
     - higher_is_better: 高于均值加分，低于均值扣分
     - lower_is_better: 低于均值加分，高于均值扣分
     - 基础分60，上限100，下限0
+
+    返回: (维度得分, 异常列表, 各指标得分列表)
     """
     raw_indicators = indicators.get("indicators", indicators)
     benchmark_data = benchmarks.get("benchmarks", benchmarks)
@@ -116,11 +203,12 @@ def calculate_dimension_score(
     }
 
     if not dim_indicators:
-        return 60.0, []
+        return 60.0, [], []
 
     total_score = 0.0
     count = 0
     anomalies: list[dict] = []
+    indicator_scores: list[dict] = []
 
     for code, meta in dim_indicators.items():
         ind_data = raw_indicators.get(code)
@@ -132,6 +220,14 @@ def calculate_dimension_score(
         if bench is None:
             total_score += 60
             count += 1
+            indicator_scores.append({
+                "indicator_code": code,
+                "indicator_name": meta["name"],
+                "score": 60.0,
+                "current_value": round(current_value, 2),
+                "unit": meta["unit"],
+                "deviation_pct": None,
+            })
             continue
 
         avg_val = bench["avg_value"] if isinstance(bench, dict) else bench
@@ -140,6 +236,14 @@ def calculate_dimension_score(
         if avg_val == 0:
             total_score += 60
             count += 1
+            indicator_scores.append({
+                "indicator_code": code,
+                "indicator_name": meta["name"],
+                "score": 60.0,
+                "current_value": round(current_value, 2),
+                "unit": meta["unit"],
+                "deviation_pct": None,
+            })
             continue
 
         if meta["direction"] == "higher_is_better":
@@ -148,9 +252,18 @@ def calculate_dimension_score(
             deviation_pct = (avg_val - current_value) / avg_val * 100
 
         indicator_score = 60 + deviation_pct * 0.4
-        indicator_score = max(0, min(100, indicator_score))
+        indicator_score = max(0, min(100, round(indicator_score, 2)))
         total_score += indicator_score
         count += 1
+
+        indicator_scores.append({
+            "indicator_code": code,
+            "indicator_name": meta["name"],
+            "score": indicator_score,
+            "current_value": round(current_value, 2),
+            "unit": meta["unit"],
+            "deviation_pct": round(deviation_pct, 2),
+        })
 
         if deviation_pct < -ANOMALY_THRESHOLD_PCT:
             severity = "high" if deviation_pct < -30 else ("medium" if deviation_pct < -20 else "low")
@@ -167,7 +280,7 @@ def calculate_dimension_score(
             })
 
     final_score = total_score / count if count > 0 else 60.0
-    return round(final_score, 2), anomalies
+    return round(final_score, 2), anomalies, indicator_scores
 
 
 def extract_indicator_codes(*indicator_dicts: dict) -> list[str]:
@@ -184,24 +297,41 @@ def build_diagnosis_report(
     store_profile: dict,
     health_score: float,
     dimension_scores: dict,
+    dimension_indicator_scores: dict[str, list[dict]],
+    dimension_benchmarks: dict[str, list[dict]],
     anomalies: list[dict],
     root_causes: list[dict],
 ) -> dict:
-    """组装完整的诊断报告数据结构。"""
+    """组装完整的诊断报告数据结构。包含：综合健康度、各维度得分、各维度指标得分、各维度行业基准、异常指标（含根因分析）。"""
     from datetime import datetime
+    from copy import deepcopy
 
     severity_order = {"high": 0, "medium": 1, "low": 2}
     sorted_anomalies = sorted(anomalies, key=lambda a: severity_order.get(a.get("severity", "low"), 2))
+    root_by_indicator = {rc.get("anomaly_indicator"): rc for rc in (root_causes or []) if rc.get("anomaly_indicator")}
+    anomalies_with_root = []
+    for a in sorted_anomalies:
+        a_copy = deepcopy(a)
+        rc = root_by_indicator.get(a.get("indicator_code"))
+        if rc:
+            a_copy["root_cause"] = {
+                "cause": rc.get("cause", ""),
+                "evidence": rc.get("evidence", ""),
+                "confidence": rc.get("confidence", 0),
+            }
+        else:
+            a_copy["root_cause"] = None
+        anomalies_with_root.append(a_copy)
 
     summary_parts: list[str] = [
         f"企业「{store_profile.get('store_name', '')}」运营健康度评分为 {health_score:.1f} 分。"
     ]
-    if sorted_anomalies:
-        summary_parts.append(f"共发现 {len(sorted_anomalies)} 项异常指标，")
-        high_count = sum(1 for a in sorted_anomalies if a.get("severity") == "high")
+    if anomalies_with_root:
+        summary_parts.append(f"共发现 {len(anomalies_with_root)} 项异常指标，")
+        high_count = sum(1 for a in anomalies_with_root if a.get("severity") == "high")
         if high_count:
             summary_parts.append(f"其中 {high_count} 项为高风险。")
-        top = sorted_anomalies[0]
+        top = anomalies_with_root[0]
         summary_parts.append(f"最突出的问题是：{top['description']}。")
     else:
         summary_parts.append("各项指标表现正常，暂未发现异常。")
@@ -212,7 +342,9 @@ def build_diagnosis_report(
         "generated_at": datetime.now().isoformat(),
         "health_score": health_score,
         "dimension_scores": dimension_scores,
-        "anomalies": sorted_anomalies,
+        "dimension_indicator_scores": dimension_indicator_scores,
+        "dimension_benchmarks": dimension_benchmarks,
+        "anomalies": anomalies_with_root,
         "root_causes": root_causes,
         "summary": "".join(summary_parts),
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""wlwq 服务测试诊断 CLI — 检查 MySQL、HTTP 健康及关键 API。"""
+"""wlwq 服务测试诊断 CLI — 检查 PostgreSQL、HTTP 健康及关键 API。"""
 
 from __future__ import annotations
 
@@ -14,29 +14,23 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from src.wlwq.config import get_mysql_config
+from src.wlwq.config import get_wlwq_postgres_uri
 
 console = Console()
 
 
-async def check_mysql() -> tuple[bool, str]:
-    """检查 MySQL 连接。"""
+async def check_postgres() -> tuple[bool, str]:
+    """检查 PostgreSQL（模拟业务库）连接。"""
     try:
-        import aiomysql
+        import asyncpg
     except ImportError:
-        return False, "aiomysql 未安装"
-    cfg = get_mysql_config()
+        return False, "asyncpg 未安装"
+    uri = get_wlwq_postgres_uri()
+    dsn = uri.replace("postgresql+asyncpg://", "postgresql://", 1)
     try:
-        conn = await aiomysql.connect(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=cfg["password"],
-            db=cfg["db"],
-        )
-        await conn.ping()
-        conn.close()
-        return True, f"{cfg['user']}@{cfg['host']}:{cfg['port']}/{cfg['db']}"
+        conn = await asyncpg.connect(dsn)
+        await conn.close()
+        return True, dsn.split("@")[-1] if "@" in dsn else dsn
     except Exception as e:
         return False, str(e)
 
@@ -72,21 +66,21 @@ async def check_api(base_url: str, path: str, name: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-async def run_diagnose(base_url: str | None, mysql_only: bool) -> int:
+async def run_diagnose(base_url: str | None, postgres_only: bool) -> int:
     """执行诊断，返回退出码 0=全通过 1=有失败。"""
     base_url = base_url or "http://127.0.0.1:8200"
     failed = 0
 
-    # MySQL
-    console.print(Panel("[bold]MySQL[/bold]", style="dim"))
-    ok, msg = await check_mysql()
+    # PostgreSQL（模拟业务库）
+    console.print(Panel("[bold]PostgreSQL (wlwq)[/bold]", style="dim"))
+    ok, msg = await check_postgres()
     if ok:
         console.print(Text("OK ", style="bold green") + Text(msg, style="dim"))
     else:
         console.print(Text("FAIL ", style="bold red") + Text(msg, style="red"))
         failed += 1
 
-    if mysql_only:
+    if postgres_only:
         return 1 if failed else 0
 
     # HTTP /health
@@ -127,9 +121,9 @@ async def run_diagnose(base_url: str | None, mysql_only: bool) -> int:
 def main() -> int:
     p = argparse.ArgumentParser(description="wlwq 服务测试诊断")
     p.add_argument("--base-url", default="http://127.0.0.1:8200", help="wlwq 服务 base URL（默认 8200）")
-    p.add_argument("--mysql-only", action="store_true", help="仅检查 MySQL")
+    p.add_argument("--postgres-only", action="store_true", help="仅检查 PostgreSQL 模拟业务库")
     args = p.parse_args()
-    return asyncio.run(run_diagnose(args.base_url, args.mysql_only))
+    return asyncio.run(run_diagnose(args.base_url, args.postgres_only))
 
 
 if __name__ == "__main__":

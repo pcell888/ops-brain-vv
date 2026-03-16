@@ -11,6 +11,9 @@ from apscheduler.triggers.cron import CronTrigger
 
 from src.api.deps import get_graph_app, generate_thread_id
 from src.core.config import get_settings
+from src.scheduler.task_deadline_checker import check_task_deadlines
+from src.scheduler.effect_review_checker import check_pending_reviews
+from src.scheduler.snapshot_collector import collect_effect_snapshots
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +59,20 @@ async def run_weekly_diagnosis():
 
     for tenant in tenants:
         tenant_id = tenant["tenant_id"]
-        config = tenant.get("config", {})
-        store_ids = config.get("store_ids", [tenant_id])
+        config = tenant.get("config") or {}
+        trigger_mode = config.get("diagnosis_trigger_mode", "manual")
+        if trigger_mode not in ("auto", "both"):
+            logger.info("租户 %s 未开启自动诊断 (mode=%s)，跳过", tenant_id, trigger_mode)
+            continue
+        await _run_single_diagnosis(tenant_id, "")
+        await asyncio.sleep(1)
 
-        for store_id in store_ids:
-            await _run_single_diagnosis(tenant_id, store_id)
-            await asyncio.sleep(1)
+        stores = config.get("stores", [])
+        for store in stores:
+            sid = store.get("store_id")
+            if sid:
+                await _run_single_diagnosis(tenant_id, sid)
+                await asyncio.sleep(1)
 
     logger.info("===== 周度自动诊断完成 =====")
 
@@ -76,6 +87,27 @@ def start_scheduler():
         name="周度自动诊断",
         replace_existing=True,
     )
+    scheduler.add_job(
+        check_task_deadlines,
+        trigger=CronTrigger(hour=9, minute=0),
+        id="task_deadline_checker",
+        name="每日任务到期/超期检查",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        check_pending_reviews,
+        trigger=CronTrigger(hour=3, minute=0),
+        id="effect_review_checker",
+        name="每日效果追踪复盘检查",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        collect_effect_snapshots,
+        trigger=CronTrigger(hour=4, minute=0),
+        id="snapshot_collector",
+        name="每日效果追踪快照采集",
+        replace_existing=True,
+    )
     scheduler.start()
-    logger.info("定时任务调度器已启动 (每周一凌晨2:00执行)")
+    logger.info("定时任务调度器已启动 (周度诊断: 每周一2:00, 任务检查: 每日9:00, 复盘检查: 每日3:00, 快照采集: 每日4:00)")
     return scheduler

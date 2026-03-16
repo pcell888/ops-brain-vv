@@ -35,8 +35,10 @@ async def send_diagnosis_report_notification(
     health_score = report_summary.get("health_score", 0)
     anomaly_count = report_summary.get("anomaly_count", 0)
     top_anomaly = report_summary.get("top_anomaly", "")
+    notify_type = report_summary.get("notification_type", "ai_diagnosis_report")
 
-    title = f"AI诊断报告已生成 — 健康度 {health_score:.1f}分"
+    is_weekly = notify_type == "ai_weekly_digest"
+    title = f"{'【周度】' if is_weekly else ''}AI诊断报告已生成 — 健康度 {health_score:.1f}分"
     content = f"共发现 {anomaly_count} 项异常指标。"
     if top_anomaly:
         content += f" 最突出问题：{top_anomaly}"
@@ -46,7 +48,7 @@ async def send_diagnosis_report_notification(
             "accountId": aid,
             "title": title,
             "content": content,
-            "type": "ai_diagnosis_report",
+            "type": notify_type,
             "jumpUrl": report_summary.get("report_url", ""),
         }
         for aid in admin_account_ids
@@ -55,7 +57,7 @@ async def send_diagnosis_report_notification(
     data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
     await biz.post(tenant_id, "/message-record/create", {
         "storeId": store_id,
-        "type": "ai_diagnosis_report",
+        "type": notify_type,
         "title": title,
         "content": content,
     })
@@ -106,6 +108,7 @@ async def send_plan_adoption_request(
     tenant_id: str,
     store_id: str,
     admin_account_ids: list[str],
+    thread_id: str,
     plans_summary: list[dict],
 ) -> dict:
     """推送方案待采纳通知。"""
@@ -119,11 +122,19 @@ async def send_plan_adoption_request(
             "title": title,
             "content": content,
             "type": "ai_plan_adoption",
+            "jumpUrl": thread_id,
         }
         for aid in admin_account_ids
     ]
 
     data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
+    await biz.post(tenant_id, "/message-record/create", {
+        "storeId": store_id,
+        "type": "ai_plan_adoption",
+        "title": title,
+        "content": content,
+        "bizId": thread_id,
+    })
     return {"sent_count": len(messages), "status": "sent", **data}
 
 
@@ -132,6 +143,7 @@ async def send_review_report_notification(
     tenant_id: str,
     store_id: str,
     admin_account_ids: list[str],
+    thread_id: str,
     review_summary: dict,
 ) -> dict:
     """推送复盘报告完成通知。"""
@@ -147,12 +159,86 @@ async def send_review_report_notification(
             "title": title,
             "content": content,
             "type": "ai_review_report",
+            "jumpUrl": thread_id,
         }
         for aid in admin_account_ids
     ]
 
     data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
+    await biz.post(tenant_id, "/message-record/create", {
+        "storeId": store_id,
+        "type": "ai_review_report",
+        "title": title,
+        "content": content,
+        "bizId": thread_id,
+    })
     return {"sent_count": len(messages), "status": "sent", **data}
+
+
+@server.tool()
+async def send_task_assignment_notification(
+    tenant_id: str,
+    store_id: str,
+    tasks: list[dict],
+) -> dict:
+    """
+    批量发送任务分配通知给各任务负责人。
+    tasks 中每项需包含: task_id, task_name, assignee_user_id, assignee_account_id, deadline
+    同时写 message_record 留存。
+    """
+    messages = []
+    for t in tasks:
+        account_id = t.get("assignee_account_id") or t.get("assignee_user_id")
+        if not account_id:
+            continue
+        task_name = t.get("task_name", "")
+        deadline = t.get("deadline", "")
+        messages.append({
+            "accountId": str(account_id),
+            "title": f"新任务分配：{task_name}",
+            "content": f"您有一项新的AI诊断执行任务「{task_name}」，请在{deadline}前完成。",
+            "type": "ai_task_assignment",
+            "bizId": t.get("task_id", ""),
+        })
+
+    if not messages:
+        return {"sent_count": 0, "status": "no_assignee"}
+
+    data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
+    for m in messages:
+        await biz.post(tenant_id, "/message-record/create", {
+            "storeId": store_id,
+            "type": "ai_task_assignment",
+            "title": m["title"],
+            "content": m["content"],
+            "bizId": m["bizId"],
+        })
+
+    return {"sent_count": len(messages), "status": "sent", **data}
+
+
+@server.tool()
+async def send_customer_targeted_message(
+    tenant_id: str,
+    store_id: str,
+    target_segment: str,
+    title: str,
+    content: str,
+    message_type: str = "ai_targeted",
+) -> dict:
+    """
+    按人群定向推送消息（5.2.3 用）。
+    target_segment: churn_risk | no_repurchase_90d | coupon_expiring_soon | low_conversion
+    wlwq 需实现 POST /message-remind/targeted 或由本工具先拉取客户列表再 batch-create。
+    """
+    data = await biz.post(tenant_id, "/message-remind/targeted", {
+        "storeId": store_id,
+        "targetSegment": target_segment,
+        "title": title,
+        "content": content,
+        "type": message_type,
+    })
+    return {"sent_count": data.get("sent_count", 0), "status": "sent", **data}
 
 
 # ── stdio Transport ──────────────────────────────────────────────

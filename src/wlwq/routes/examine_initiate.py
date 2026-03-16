@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Query, Body
 
-from src.wlwq.database import get_cursor
+from src.wlwq.database import get_pool, get_cursor
 
 router = APIRouter(prefix="/examine-initiate", tags=["examine-initiate"])
 
 
 def _ok(data):
     return {"code": 0, "data": data, "msg": "success"}
+
+
+def _gen_id(prefix: str = "ei", length: int = 16) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:length]}"
 
 
 @router.get("/follow-stats")
@@ -67,17 +73,51 @@ async def turnaround_stats(
 
 @router.post("/create")
 async def create(body: dict = Body(...)):
-    """创建审批/跟进单 — MCP task 调用。"""
-    try:
-        async with get_cursor() as cur:
-            await cur.execute(
-                "INSERT INTO examine_initiate (store_id, title, content, created_at) VALUES (%s, %s, %s, NOW())",
-                (body.get("storeId"), body.get("title", ""), body.get("content", "")),
+    """
+    创建审批单并生成审批流程记录。
+    body: storeId, title, content, approverUserId, bizType(ai_diagnosis等), bizId(plan_id等)
+    """
+    store_id = body.get("storeId", "")
+    title = body.get("title", "")
+    content = body.get("content", "")
+    approver_user_id = body.get("approverUserId")
+    biz_type = body.get("bizType", "")
+    biz_id = body.get("bizId", "")
+    user_id = body.get("userId")
+
+    ei_id = _gen_id("ei")[:20]
+    examine_tag = _gen_id("tag", 8)[:20]
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO examine_initiate
+            (examine_initiate_id, store_id, title, content,
+             biz_type, biz_id, user_id, examine_status, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 1, NOW())
+            """,
+            ei_id, store_id, title, content,
+            biz_type, biz_id, user_id,
+        )
+
+        if approver_user_id:
+            flow_id = _gen_id("oef")[:20]
+            await conn.execute(
+                """
+                INSERT INTO oa_examine_flow
+                (oa_examine_flow_id, examine_initiate_id, examine_tag,
+                 user_id, examine_sequence, examine_status, created_at)
+                VALUES ($1, $2, $3, $4, 1, 2, NOW())
+                """,
+                flow_id, ei_id, examine_tag, int(approver_user_id),
             )
-            await cur.execute("SELECT LAST_INSERT_ID() AS id")
-            row = await cur.fetchone()
-            id_ = (row or {}).get("id")
-        return _ok({"id": id_})
-    except Exception:
-        return _ok({"id": "mock-1"})
+
+    return _ok({
+        "id": ei_id,
+        "examine_status": 1,
+        "approver_user_id": approver_user_id,
+        "biz_type": biz_type,
+        "biz_id": biz_id,
+    })
 

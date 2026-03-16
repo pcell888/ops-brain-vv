@@ -24,19 +24,24 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
             data = await websocket.receive_json()
 
             if data.get("action") == "adopt_plans":
-                plan_ids = data.get("plan_ids", [])
-                if plan_ids:
+                plan_ids = data.get("plan_ids", []) or []
+                try:
                     app = await get_graph_app()
                     config = {"configurable": {"thread_id": thread_id}}
                     await app.aupdate_state(config, {"adopted_plan_ids": plan_ids})
-
-                    from src.api.routes.diagnosis import _resume_after_adoption
-                    import asyncio
-                    asyncio.create_task(_resume_after_adoption(thread_id, config))
-
                     await manager.send_progress(thread_id, {
                         "type": "adoption_received",
                         "message": f"已采纳 {len(plan_ids)} 个方案，开始执行...",
+                    })
+                    if plan_ids:
+                        import asyncio
+                        from src.api.routes.solutions import _resume_after_adoption
+                        asyncio.create_task(_resume_after_adoption(thread_id, config))
+                except Exception as e:
+                    logger.exception("采纳方案失败: %s", e)
+                    await manager.send_progress(thread_id, {
+                        "type": "error",
+                        "message": f"采纳失败: {str(e)}",
                     })
 
             elif data.get("action") == "ping":

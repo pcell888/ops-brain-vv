@@ -8,7 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.wlwq.database import close_pool, get_pool
-from src.wlwq.routes import client_record, examine_initiate, message, mock_stats, sales_contract, store
+from src.wlwq.db_schema import ensure_wlwq_tables
+from src.wlwq.routes import client_record, coupon, examine_initiate, exec_task, message, mock_stats, sales_contract, store, sys
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,16 +32,20 @@ app.add_middleware(
 )
 
 app.include_router(store.router)
+app.include_router(exec_task.router)
 app.include_router(message.router)
 app.include_router(client_record.router)
 app.include_router(sales_contract.router)
 app.include_router(examine_initiate.router)
+app.include_router(coupon.router)
+app.include_router(sys.router)
 app.include_router(mock_stats.router)
 
 
 @app.on_event("startup")
 async def startup():
     await get_pool()
+    await ensure_wlwq_tables()
 
 
 @app.on_event("shutdown")

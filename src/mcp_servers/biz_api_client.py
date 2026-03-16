@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any
@@ -120,6 +121,17 @@ MOCK_DATA: dict[str, dict | list] = {
     "/service-order/completion-stats": {"totalServiceOrders": 360, "completedOrders": 306},
     "/store-order/shipping-stats": {"avgShippingHours": 14.2},
 
+    # ── Metrics: 库存维度 ──
+    "/stock/statistics": {
+        "stockoutSku": 12,
+        "overstockSku": 35,
+        "avgTurnoverDays": 28.5,
+    },
+    "/store-goods/statistics": {
+        "totalSku": 480,
+        "activeSku": 420,
+    },
+
     # ── Benchmark ──
     "/industry-trend-statistics/benchmark": {
         "benchmarks": {
@@ -138,6 +150,9 @@ MOCK_DATA: dict[str, dict | list] = {
             "service_completion_rate": {"avg_value": 80.0, "median_value": 78.0, "excellent_value": 95.0},
             "avg_shipping_hours": {"avg_value": 18.0, "median_value": 16.0, "excellent_value": 6.0},
             "task_on_time_rate": {"avg_value": 75.0, "median_value": 72.0, "excellent_value": 92.0},
+            "stock_turnover_days": {"avg_value": 30.0, "median_value": 28.0, "excellent_value": 15.0},
+            "stockout_rate": {"avg_value": 5.0, "median_value": 4.0, "excellent_value": 1.0},
+            "overstock_rate": {"avg_value": 10.0, "median_value": 8.0, "excellent_value": 3.0},
         },
     },
     "/store-class/list": [
@@ -158,8 +173,8 @@ MOCK_DATA: dict[str, dict | list] = {
 
     # ── Task ──
     "/ai-diagnosis/exec-task/batch-create": {"tasks": [], "count": 0},
-    "/examine-initiate/create": {"id": "mock-approval-001"},
     "/ai-diagnosis/exec-task/{id}/status": {},
+    "/examine-initiate/create": {"id": "mock-approval-001"},
     "/coupon/create": {"couponId": "mock-coupon-001"},
     "/coupon/distribute": {"count": 500},
     "/seckill-apply/create": {"id": "mock-seckill-001"},
@@ -168,6 +183,7 @@ MOCK_DATA: dict[str, dict | list] = {
     "/message-remind/batch-create": {},
     "/message-remind/create": {},
     "/message-record/create": {},
+    "/message-remind/targeted": {"sent_count": 0},
 }
 
 
@@ -233,16 +249,8 @@ class BizAPIClient:
 
         try:
             return await asyncio.wait_for(_do(), timeout=self._REQUEST_TIMEOUT)
-        except (asyncio.TimeoutError, Exception) as e:
-            mock = _match_mock(path)
-            if mock is not None:
-                reason = "超时" if isinstance(e, asyncio.TimeoutError) else e.__class__.__name__
-                detail = str(e).strip().split("\n")[0][:200]  # 首行、截断，便于看到如「表不存在」
-                logger.warning(
-                    "业务API不可达, 降级为模拟数据: %s %s | %s: %s",
-                    method, path, reason, detail,
-                )
-                return dict(mock) if isinstance(mock, dict) else mock
+        except (asyncio.TimeoutError, Exception):
+            # wlwq 未接通时直接抛出，不走 mock
             raise
 
     async def _request(
@@ -254,6 +262,8 @@ class BizAPIClient:
         json_data: dict | None = None,
     ) -> dict[str, Any]:
         url = path
+        if method in ("POST", "PUT") and json_data is not None:
+            logger.info("wlwq %s %s body: %s", method, path, json.dumps(json_data, ensure_ascii=False))
         try:
             resp = await client.request(method, url, params=params, json=json_data)
             resp.raise_for_status()

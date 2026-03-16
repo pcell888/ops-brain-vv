@@ -17,11 +17,11 @@ from src.agent.nodes import (
 )
 from src.core.config import get_settings
 
+_GRAPH_SETTINGS = None
+
 
 def route_after_solutions(state: DiagnosisState) -> str:
     if not state.get("anomalies"):
-        return END
-    if state.get("trigger_type") == "scheduled":
         return END
     return "wait_adoption"
 
@@ -103,9 +103,12 @@ async def compile_graph():
     await checkpointer.setup()
 
     graph = build_graph()
+    interrupts = ["wait_adoption"]
+    if settings.effect_track_delay_days > 0:
+        interrupts.append("track_effects")
     return graph.compile(
         checkpointer=checkpointer,
-        interrupt_before=["wait_adoption"],
+        interrupt_before=interrupts,
     )
 
 

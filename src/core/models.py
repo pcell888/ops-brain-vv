@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 class DiagnosisRequest(BaseModel):
     tenant_id: str
-    store_id: str
+    store_id: str = Field(default="", description="店铺ID，为空则诊断全企业")
     trigger_type: Literal["manual", "scheduled"] = "manual"
     triggered_by: str | None = None
     selected_dimensions: list[str] | None = Field(
@@ -30,8 +30,8 @@ class DiagnosisStartResponse(BaseModel):
     ws_url: str
 
 
-class AdoptPlansRequest(BaseModel):
-    plan_ids: list[str]
+class AdoptPlanRequest(BaseModel):
+    plan_id: str
 
 
 # ── Indicator Models ────────────────────────────────────────────
@@ -60,6 +60,13 @@ class BenchmarkValue(BaseModel):
 
 # ── Anomaly & Diagnosis ────────────────────────────────────────
 
+class RootCauseBrief(BaseModel):
+    """挂载在异常上的根因摘要"""
+    cause: str
+    evidence: str
+    confidence: float = Field(ge=0, le=1)
+
+
 class Anomaly(BaseModel):
     indicator_code: str
     indicator_name: str
@@ -70,6 +77,7 @@ class Anomaly(BaseModel):
     deviation_pct: float
     severity: Literal["high", "medium", "low"]
     description: str
+    root_cause: RootCauseBrief | None = None
 
 
 class RootCause(BaseModel):
@@ -84,12 +92,34 @@ class DimensionScore(BaseModel):
     weight: float
 
 
+class DimensionIndicatorScore(BaseModel):
+    """单指标得分，用于报告「各维度指标得分」"""
+    indicator_code: str
+    indicator_name: str
+    score: float
+    current_value: float
+    unit: str = "%"
+    deviation_pct: float | None = None
+
+
+class DimensionBenchmark(BaseModel):
+    """该次诊断使用的单指标行业基准"""
+    indicator_code: str
+    indicator_name: str
+    unit: str = "%"
+    avg_value: float | None = None
+    median_value: float | None = None
+    excellent_value: float | None = None
+
+
 class DiagnosisReport(BaseModel):
     tenant_id: str
     store_id: str
     generated_at: datetime
     health_score: float
     dimension_scores: dict[str, DimensionScore]
+    dimension_indicator_scores: dict[str, list[DimensionIndicatorScore]] = Field(default_factory=dict)
+    dimension_benchmarks: dict[str, list[DimensionBenchmark]] = Field(default_factory=dict)
     anomalies: list[Anomaly]
     root_causes: list[RootCause]
     summary: str

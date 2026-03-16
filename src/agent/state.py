@@ -11,8 +11,9 @@ class DiagnosisState(TypedDict):
     """诊断流程全局状态"""
 
     # ── 输入参数 ──
+    thread_id: str | None  # 由 API 注入，用于落库
     tenant_id: str
-    store_id: str
+    store_id: str  # 空字符串表示全企业诊断
     trigger_type: Literal["manual", "scheduled"]
     triggered_by: str | None
     selected_dimensions: list[str] | None
@@ -24,6 +25,7 @@ class DiagnosisState(TypedDict):
     marketing_indicators: dict | None
     retention_indicators: dict | None
     efficiency_indicators: dict | None
+    inventory_indicators: dict | None
     benchmarks: dict | None
 
     # ── 诊断阶段产出 ──

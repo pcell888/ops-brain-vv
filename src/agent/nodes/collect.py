@@ -9,12 +9,14 @@ from src.agent.state import DiagnosisState
 from src.agent.tools import mcp_call, emit_progress
 from src.core.calculator import extract_indicator_codes, resolve_active_indicators
 from src.core.config import get_settings
+from src.core.tenant_config import get_tenant_config
 
 DIMENSION_TOOL_MAP: dict[str, str] = {
     "crm": "get_crm_indicators",
     "marketing": "get_marketing_indicators",
     "retention": "get_retention_indicators",
     "efficiency": "get_efficiency_indicators",
+    "inventory": "get_inventory_indicators",
 }
 
 DIMENSION_STATE_KEY: dict[str, str] = {
@@ -22,6 +24,7 @@ DIMENSION_STATE_KEY: dict[str, str] = {
     "marketing": "marketing_indicators",
     "retention": "retention_indicators",
     "efficiency": "efficiency_indicators",
+    "inventory": "inventory_indicators",
 }
 
 
@@ -35,10 +38,13 @@ async def collect_data_node(state: DiagnosisState) -> dict:
     )
 
     settings = get_settings()
+    tenant_config = await get_tenant_config(tenant_id)
+    lookback_days = tenant_config.get("analysis_period_days") or settings.diagnosis_lookback_days
     end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=settings.diagnosis_lookback_days)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=int(lookback_days))).strftime("%Y-%m-%d")
 
-    emit_progress(state, f"开始采集企业运营数据（{len(active_dims)}个维度, {len(active_inds)}项指标）...")
+    scope_label = "全企业" if not store_id else f"店铺 {store_id}"
+    emit_progress(state, f"开始采集{scope_label}运营数据（{len(active_dims)}个维度, {len(active_inds)}项指标）...")
 
     common_args = {
         "tenant_id": tenant_id,
@@ -49,7 +55,7 @@ async def collect_data_node(state: DiagnosisState) -> dict:
 
     tasks = [mcp_call("crm-server", "get_store_profile", {"tenant_id": tenant_id, "store_id": store_id})]
     ordered_dims: list[str] = []
-    for dim in ("crm", "marketing", "retention", "efficiency"):
+    for dim in ("crm", "marketing", "retention", "efficiency", "inventory"):
         if dim in active_dims:
             tasks.append(mcp_call("metrics-server", DIMENSION_TOOL_MAP[dim], common_args))
             ordered_dims.append(dim)
@@ -75,7 +81,7 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         "store_profile": profile,
         "benchmarks": benchmarks,
     }
-    for dim in ("crm", "marketing", "retention", "efficiency"):
+    for dim in ("crm", "marketing", "retention", "efficiency", "inventory"):
         output[DIMENSION_STATE_KEY[dim]] = dim_results.get(dim)
 
     return output

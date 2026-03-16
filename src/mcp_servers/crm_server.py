@@ -20,12 +20,14 @@ biz = BizAPIClient(router)
 
 
 @server.tool()
-async def get_store_profile(tenant_id: str, store_id: str) -> dict:
+async def get_store_profile(tenant_id: str, store_id: str = "") -> dict:
     """
     获取企业/店铺画像信息。
-    返回: store_id, store_name, store_type, industry_code, industry_name,
-          province, city, county, customer_count, monthly_gmv, employee_count, created_days
+    store_id 为空时返回企业级聚合画像（全企业诊断）。
     """
+    if not store_id:
+        return await _get_tenant_profile(tenant_id)
+
     store_data = await biz.get(tenant_id, f"/store/{store_id}")
 
     class_id = store_data.get("classId")
@@ -48,6 +50,47 @@ async def get_store_profile(tenant_id: str, store_id: str) -> dict:
         "employee_count": store_data.get("employeeCount", 0),
         "created_days": store_data.get("createdDays", 0),
         "admin_account_ids": store_data.get("adminAccountIds", []),
+    }
+
+
+async def _get_tenant_profile(tenant_id: str) -> dict:
+    """从 tenant_registry.config 构建企业级画像。"""
+    from src.core.tenant_config import get_tenant_config
+    cfg = await get_tenant_config(tenant_id)
+    stores = cfg.get("stores", [])
+    store_names = [s.get("store_name", s.get("store_id", "")) for s in stores]
+
+    import psycopg
+    from src.core.config import get_settings
+    settings = get_settings()
+    async with await psycopg.AsyncConnection.connect(settings.postgres_uri) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT tenant_name, industry_code FROM tenant_registry WHERE tenant_id = %s",
+                (tenant_id,),
+            )
+            row = await cur.fetchone()
+    tenant_name = (row[0] if row else "") or ""
+    industry_code = (row[1] if row else "") or ""
+
+    return {
+        "tenant_id": tenant_id,
+        "store_id": "",
+        "store_name": f"{tenant_name}（全企业）",
+        "store_type": "enterprise",
+        "industry_code": industry_code,
+        "industry_name": "",
+        "province": "",
+        "city": "",
+        "county": "",
+        "customer_count": 0,
+        "monthly_gmv": 0,
+        "employee_count": cfg.get("team_size", 0),
+        "created_days": 0,
+        "admin_account_ids": [],
+        "scope": "enterprise",
+        "store_count": len(stores),
+        "store_names": store_names,
     }
 
 
@@ -104,20 +147,20 @@ async def get_order_analytics(
 
 @server.tool()
 async def get_dept_structure(tenant_id: str, store_id: str) -> dict:
-    """获取企业部门架构与人员信息（用于任务分配匹配）。"""
+    """获取企业部门架构与人员信息（用于任务分配匹配）。从 wlwq /sys-dept/tree、/sys-user/list 拉取。"""
     dept_tree = await biz.get(tenant_id, "/sys-dept/tree", {"storeId": store_id})
-
+    raw_list = dept_tree.get("list") or dept_tree.get("children") or []
     departments = []
-    for dept in dept_tree.get("list", dept_tree.get("children", [])):
+    for dept in raw_list:
         dept_id = dept.get("deptId", dept.get("id"))
         users_data = await biz.get(tenant_id, "/sys-user/list", {"deptId": dept_id})
+        users = users_data.get("list") or []
         departments.append({
             "dept_id": dept_id,
             "dept_name": dept.get("deptName", dept.get("name", "")),
             "parent_id": dept.get("parentId"),
-            "users": users_data.get("list", []),
+            "users": users,
         })
-
     return {"store_id": store_id, "departments": departments}
 
 

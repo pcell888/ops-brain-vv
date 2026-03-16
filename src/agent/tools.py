@@ -6,7 +6,21 @@ import asyncio
 import json
 import logging
 import sys
+from contextvars import ContextVar
+from datetime import datetime
 from typing import Any
+
+# 由 API 在流式运行前设置，用于 emit_progress 时实时推送到 WebSocket
+_progress_sender: ContextVar[tuple[str, Any] | None] = ContextVar("progress_sender", default=None)
+
+
+def set_progress_sender(thread_id: str, manager: Any) -> None:
+    """设置当前诊断任务的进度推送目标（thread_id, manager）。"""
+    _progress_sender.set((thread_id, manager))
+
+
+def clear_progress_sender() -> None:
+    _progress_sender.set(None)
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -131,12 +145,23 @@ async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) 
 
 
 def emit_progress(state: dict, message: str):
-    """向 state 中追加进度消息（会被 LangGraph add_messages reducer 合并）。"""
-    from datetime import datetime
-
+    """向 state 中追加进度消息（会被 LangGraph add_messages reducer 合并）；若已 set_progress_sender 则同时实时推送到 WS。"""
     state.setdefault("progress_messages", [])
+    ts = datetime.now().isoformat()
     state["progress_messages"].append({
         "type": "human",
         "content": message,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": ts,
     })
+    sender = _progress_sender.get()
+    if sender:
+        thread_id, manager = sender
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(manager.send_progress(thread_id, {
+                "type": "progress",
+                "message": message,
+                "timestamp": ts,
+            }))
+        except RuntimeError:
+            pass

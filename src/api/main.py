@@ -7,10 +7,17 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import diagnosis, ws
+from src.api.routes import diagnosis, solutions, sys_config, ws
 from src.agent.graph import close_checkpointer
 from src.agent.tools import close_all_sessions as close_mcp_sessions
-from src.core.db_init import ensure_tenant_registry
+from src.core.db_init import (
+    ensure_tenant_registry,
+    ensure_ai_diagnosis_report,
+    ensure_ai_push_log,
+    ensure_ai_exec_task,
+    ensure_ai_effect_tracking,
+    ensure_ai_review_report,
+)
 from src.wlwq.database import close_pool as wlwq_close_pool, get_pool as wlwq_get_pool
 from src.wlwq.routes import client_record, examine_initiate, mock_stats, sales_contract
 
@@ -34,6 +41,8 @@ app.add_middleware(
 )
 
 app.include_router(diagnosis.router)
+app.include_router(solutions.router)
+app.include_router(sys_config.router)
 app.include_router(ws.router)
 app.include_router(client_record.router)
 app.include_router(sales_contract.router)
@@ -44,6 +53,11 @@ app.include_router(mock_stats.router)
 @app.on_event("startup")
 async def startup():
     await ensure_tenant_registry()
+    await ensure_ai_diagnosis_report()
+    await ensure_ai_push_log()
+    await ensure_ai_exec_task()
+    await ensure_ai_effect_tracking()
+    await ensure_ai_review_report()
     await wlwq_get_pool()
 
 

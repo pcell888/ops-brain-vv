@@ -12,6 +12,7 @@ from mcp.server import FastMCP
 
 from src.mcp_servers.tenant_router import TenantRouter
 from src.mcp_servers.biz_api_client import BizAPIClient
+from src.core.calculator import DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +276,58 @@ async def get_efficiency_indicators(
 
 
 @server.tool()
+async def get_inventory_indicators(
+    tenant_id: str,
+    store_id: str,
+    start_date: str,
+    end_date: str,
+) -> dict:
+    """
+    采集库存维度指标。
+    返回: stock_turnover_days, stockout_rate, overstock_rate
+    """
+    params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
+
+    stock_data, goods_data = await asyncio.gather(
+        biz.get(tenant_id, "/stock/statistics", params),
+        biz.get(tenant_id, "/store-goods/statistics", params),
+    )
+
+    total_sku = goods_data.get("totalSku", 0)
+    stockout_sku = stock_data.get("stockoutSku", 0)
+    overstock_sku = stock_data.get("overstockSku", 0)
+    stockout_rate = (stockout_sku / total_sku * 100) if total_sku > 0 else 0
+    overstock_rate = (overstock_sku / total_sku * 100) if total_sku > 0 else 0
+    turnover_days = stock_data.get("avgTurnoverDays", 0)
+
+    return {
+        "tenant_id": tenant_id,
+        "dimension": "inventory",
+        "period": f"{start_date} ~ {end_date}",
+        "indicators": {
+            "stock_turnover_days": {
+                "value": round(turnover_days, 2),
+                "unit": "天",
+                "direction": "lower_is_better",
+                "raw_data": {"avg_turnover_days": turnover_days},
+            },
+            "stockout_rate": {
+                "value": round(stockout_rate, 2),
+                "unit": "%",
+                "direction": "lower_is_better",
+                "raw_data": {"stockout_sku": stockout_sku, "total_sku": total_sku},
+            },
+            "overstock_rate": {
+                "value": round(overstock_rate, 2),
+                "unit": "%",
+                "direction": "lower_is_better",
+                "raw_data": {"overstock_sku": overstock_sku, "total_sku": total_sku},
+            },
+        },
+    }
+
+
+@server.tool()
 async def drill_down_indicator(
     tenant_id: str,
     store_id: str,
@@ -316,6 +369,10 @@ async def drill_down_indicator(
         "service_completion_rate": ("/service-order/completion-stats", {"detail": "true"}),
         "avg_shipping_hours": ("/store-order/shipping-stats", {"detail": "true"}),
         "task_on_time_rate": ("/examine-initiate/turnaround-stats", {"filterType": "overdue"}),
+        # 库存
+        "stock_turnover_days": ("/stock/statistics", {"detail": "true", "filterType": "slow_turnover"}),
+        "stockout_rate": ("/stock/statistics", {"detail": "true", "filterType": "stockout"}),
+        "overstock_rate": ("/stock/statistics", {"detail": "true", "filterType": "overstock"}),
     }
 
     if indicator_code not in drill_map:
@@ -325,11 +382,19 @@ async def drill_down_indicator(
     params.update(extra_params)
 
     data = await biz.get(tenant_id, endpoint, params)
-
+    raw_items = data.get("list", data.get("items", []))
+    allowed = DRILL_ITEM_FIELDS.get(indicator_code)
+    items = (
+        [{k: v for k, v in (it if isinstance(it, dict) else {}).items() if k in allowed} for it in raw_items]
+        if allowed
+        else raw_items
+    )
+    field_labels = {k: DRILL_FIELD_LABELS.get(k, k) for k in (allowed or [])}
     return {
         "indicator_code": indicator_code,
         "total": data.get("total", 0),
-        "items": data.get("list", data.get("items", [])),
+        "items": items,
+        "field_labels": field_labels,
         "summary": data.get("summary", f"{indicator_code} 钻取数据"),
     }
 

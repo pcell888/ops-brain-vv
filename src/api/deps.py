@@ -32,6 +32,9 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# 运行中的诊断任务，用于支持取消
+running_tasks: dict[str, "asyncio.Task"] = {}  # type: ignore[name-defined]
+
 _graph_app = None
 
 

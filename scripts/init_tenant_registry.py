@@ -54,6 +54,20 @@ VALUES ('wlwq_local', 'wlwq 本地模拟', 'http://localhost:8200', 'token', 'mo
 ON CONFLICT (tenant_id) DO NOTHING;
 """
 
+SQL_AI_DIAGNOSIS_REPORT = """
+CREATE TABLE IF NOT EXISTS ai_diagnosis_report (
+    id           BIGSERIAL PRIMARY KEY,
+    thread_id    VARCHAR(128) NOT NULL UNIQUE,
+    tenant_id    VARCHAR(32)  NOT NULL,
+    store_id     VARCHAR(32)  NOT NULL,
+    trigger_type VARCHAR(32)  NOT NULL DEFAULT 'manual',
+    report       JSONB       NOT NULL,
+    created_at   TIMESTAMP   DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_ai_diagnosis_report_tenant_store ON ai_diagnosis_report (tenant_id, store_id);
+CREATE INDEX IF NOT EXISTS ix_ai_diagnosis_report_created_at ON ai_diagnosis_report (created_at DESC);
+"""
+
 
 async def main():
     from src.core.config import get_settings
@@ -64,8 +78,9 @@ async def main():
             await cur.execute(SQL_CREATE)
             await cur.execute(SQL_INSERT_PLATFORM)
             await cur.execute(SQL_INSERT_WLWQ)
+            await cur.execute(SQL_AI_DIAGNOSIS_REPORT)
         await conn.commit()
-    print("tenant_registry 已就绪（表存在，已插入 __platform__ 与 wlwq_local）")
+    print("tenant_registry、ai_diagnosis_report 已就绪")
 
 
 if __name__ == "__main__":

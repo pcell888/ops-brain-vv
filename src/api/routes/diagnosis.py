@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
 from datetime import datetime
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 
-from src.core.models import DiagnosisRequest, DiagnosisStartResponse, AdoptPlansRequest
+from src.core.models import DiagnosisRequest, DiagnosisStartResponse
 from src.core.calculator import list_available_indicators
-from src.api.deps import get_graph_app, manager, generate_thread_id
+from src.core.diagnosis_report_repo import list_reports, get_report as get_report_from_db
+from src.api.deps import get_graph_app, manager, running_tasks, generate_thread_id
+from src.agent.tools import set_progress_sender, clear_progress_sender
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/diagnosis", tags=["diagnosis"])
+
+# 仅处理图内节点事件，避免顶层 LangGraph 的 on_chain_end 重复推送整图 progress_messages
+_WORKFLOW_NODES = frozenset({
+    "collect_data", "diagnose", "generate_solutions", "wait_adoption",
+    "execute_plans", "track_effects",
+})
 
 
 @router.get("/indicators")
@@ -44,6 +51,7 @@ async def _run_diagnosis_with_stream(
     app = await get_graph_app()
     config = {"configurable": {"thread_id": thread_id}}
     initial_state = {
+        "thread_id": thread_id,
         "tenant_id": tenant_id,
         "store_id": store_id,
         "trigger_type": trigger_type,
@@ -54,12 +62,13 @@ async def _run_diagnosis_with_stream(
     }
 
     try:
+        set_progress_sender(thread_id, manager)
         async for event in app.astream_events(initial_state, config=config, version="v2"):
             kind = event["event"]
 
             if kind == "on_chain_start":
                 node_name = event.get("name", "")
-                if node_name and not node_name.startswith("__"):
+                if node_name in _WORKFLOW_NODES:
                     await manager.send_progress(thread_id, {
                         "type": "node_start",
                         "node": node_name,
@@ -70,7 +79,7 @@ async def _run_diagnosis_with_stream(
                 node_name = event.get("name", "")
                 output = event.get("data", {}).get("output", {})
 
-                if not node_name or node_name.startswith("__"):
+                if node_name not in _WORKFLOW_NODES:
                     continue
 
                 if isinstance(output, dict) and "progress_messages" in output:
@@ -102,6 +111,9 @@ async def _run_diagnosis_with_stream(
                         "plans": output["solution_plans"],
                     })
 
+    except asyncio.CancelledError:
+        logger.info("诊断流程已取消: thread=%s", thread_id)
+        return
     except Exception as e:
         logger.error("诊断流程异常: %s", e, exc_info=True)
         await manager.send_progress(thread_id, {
@@ -110,12 +122,19 @@ async def _run_diagnosis_with_stream(
             "timestamp": datetime.now().isoformat(),
         })
         return
+    finally:
+        clear_progress_sender()
 
     state = await app.aget_state(config)
-    if state.next:
+    if state.next and "wait_adoption" in state.next:
         await manager.send_progress(thread_id, {
             "type": "waiting_adoption",
             "message": "方案已生成，请选择需要采纳的方案",
+        })
+    elif state.next and "track_effects" in state.next:
+        await manager.send_progress(thread_id, {
+            "type": "completed",
+            "message": "方案执行任务已全部创建，效果追踪已调度",
         })
     else:
         await manager.send_progress(thread_id, {
@@ -124,12 +143,27 @@ async def _run_diagnosis_with_stream(
         })
 
 
+@router.get("/history")
+async def get_diagnosis_history(
+    tenant_id: str | None = Query(default=None, description="租户ID"),
+    store_id: str | None = Query(default=None, description="门店ID"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    """获取诊断历史列表（从诊断系统 PG 读取），按创建时间倒序。"""
+    items, total = await list_reports(tenant_id, store_id, page, page_size)
+    for row in items:
+        if "created_at" in row and hasattr(row["created_at"], "isoformat"):
+            row["created_at"] = row["created_at"].isoformat()
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
 @router.post("/start", response_model=DiagnosisStartResponse)
 async def start_diagnosis(request: DiagnosisRequest):
-    """启动诊断流程，返回 thread_id 和 WebSocket URL。"""
+    """启动诊断流程，返回 thread_id 和 WebSocket URL。报告完成后落库到诊断系统 PG。"""
     thread_id = generate_thread_id()
 
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_diagnosis_with_stream(
             thread_id,
             request.tenant_id,
@@ -140,6 +174,8 @@ async def start_diagnosis(request: DiagnosisRequest):
             request.selected_indicators,
         )
     )
+    running_tasks[thread_id] = task
+    task.add_done_callback(lambda _: running_tasks.pop(thread_id, None))
 
     return DiagnosisStartResponse(
         thread_id=thread_id,
@@ -147,59 +183,58 @@ async def start_diagnosis(request: DiagnosisRequest):
     )
 
 
-@router.post("/{thread_id}/adopt")
-async def adopt_plans(thread_id: str, request: AdoptPlansRequest):
-    """用户采纳方案后继续执行。"""
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
+@router.post("/{thread_id}/cancel")
+async def cancel_diagnosis(thread_id: str):
+    """取消正在运行的诊断流程。"""
+    task = running_tasks.get(thread_id)
+    if task is None or task.done():
+        raise HTTPException(status_code=400, detail="该诊断未在运行中")
 
-    await app.aupdate_state(config, {"adopted_plan_ids": request.plan_ids})
-
-    asyncio.create_task(_resume_after_adoption(thread_id, config))
-
-    return {"status": "resumed", "adopted_plan_ids": request.plan_ids}
-
-
-async def _resume_after_adoption(thread_id: str, config: dict):
-    """Resume LangGraph 执行。"""
-    app = await get_graph_app()
-
-    try:
-        async for event in app.astream_events(None, config=config, version="v2"):
-            kind = event["event"]
-            if kind == "on_chain_end":
-                node_name = event.get("name", "")
-                output = event.get("data", {}).get("output", {})
-
-                if not node_name or node_name.startswith("__"):
-                    continue
-
-                if isinstance(output, dict) and "progress_messages" in output:
-                    for msg in output["progress_messages"]:
-                        content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-                        await manager.send_progress(thread_id, {
-                            "type": "progress",
-                            "message": content,
-                            "timestamp": datetime.now().isoformat(),
-                        })
-
-                await manager.send_progress(thread_id, {
-                    "type": "node_complete",
-                    "node": node_name,
-                    "timestamp": datetime.now().isoformat(),
-                })
-    except Exception as e:
-        logger.error("恢复执行异常: %s", e, exc_info=True)
-        await manager.send_progress(thread_id, {
-            "type": "error",
-            "message": f"执行出错: {str(e)}",
-        })
-        return
+    task.cancel()
+    running_tasks.pop(thread_id, None)
 
     await manager.send_progress(thread_id, {
-        "type": "completed",
-        "message": "方案执行任务已全部创建",
+        "type": "cancelled",
+        "message": "诊断流程已取消",
+        "timestamp": datetime.now().isoformat(),
     })
+
+    return {"status": "cancelled", "thread_id": thread_id}
+
+
+@router.get("/{thread_id}/report")
+async def get_diagnosis_report(thread_id: str):
+    """获取单次诊断报告（优先从诊断系统 PG 读，无则从 LangGraph state 读）。"""
+    report = await get_report_from_db(thread_id)
+    if report is not None:
+        return report
+    app = await get_graph_app()
+    config = {"configurable": {"thread_id": thread_id}}
+    state = await app.aget_state(config)
+    if state and state.values:
+        report = state.values.get("diagnosis_report")
+        if report is not None:
+            return report
+    raise HTTPException(status_code=404, detail="该次诊断报告不存在或尚未生成")
+
+
+@router.get("/{thread_id}/anomalies/{indicator_code}")
+async def get_anomaly_detail(thread_id: str, indicator_code: str):
+    """获取单次诊断中某个异常指标的详情（含根因、钻取明细等）。"""
+    report = await get_report_from_db(thread_id)
+    if report is None:
+        app = await get_graph_app()
+        config = {"configurable": {"thread_id": thread_id}}
+        state = await app.aget_state(config)
+        if state and state.values:
+            report = state.values.get("diagnosis_report")
+    if report is None:
+        raise HTTPException(status_code=404, detail="该次诊断报告不存在或尚未生成")
+    anomalies = report.get("anomalies") or []
+    for a in anomalies:
+        if a.get("indicator_code") == indicator_code:
+            return a
+    raise HTTPException(status_code=404, detail=f"未找到异常指标: {indicator_code}")
 
 
 @router.get("/{thread_id}/state")

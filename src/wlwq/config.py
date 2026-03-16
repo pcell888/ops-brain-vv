@@ -1,16 +1,12 @@
-"""wlwq 服务配置 — MySQL 连接等。"""
+"""wlwq 服务配置 — 模拟业务库使用 PostgreSQL。"""
 
 from __future__ import annotations
 
 import os
 
+# 模拟业务数据库：优先 WLWQ_POSTGRES_URI，否则 POSTGRES_URI，默认本地 wlwq
+DEFAULT_WLWQ_POSTGRES_URI = "postgresql+asyncpg://postgres:postgres@localhost:5432/wlwq"
 
-def get_mysql_config() -> dict:
-    return {
-        "host": os.getenv("WLWQ_MYSQL_HOST", "192.168.1.249"),
-        "port": int(os.getenv("WLWQ_MYSQL_PORT", "3306")),
-        "user": os.getenv("WLWQ_MYSQL_USER", "wlwq"),
-        "password": os.getenv("WLWQ_MYSQL_PASSWORD", "Mysql@db$123!"),
-        "db": os.getenv("WLWQ_MYSQL_DATABASE", "wlwq-enterprise-service"),
-        "autocommit": True,
-    }
+
+def get_wlwq_postgres_uri() -> str:
+    return os.getenv("WLWQ_POSTGRES_URI") or os.getenv("POSTGRES_URI", DEFAULT_WLWQ_POSTGRES_URI)

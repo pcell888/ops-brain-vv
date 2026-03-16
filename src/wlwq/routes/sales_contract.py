@@ -23,11 +23,10 @@ async def statistics(
     try:
         async with get_cursor() as cur:
             await cur.execute(
-                "SELECT COUNT(*) AS signed_count FROM sales_contract WHERE 1=1 "
-                + (" AND store_id=%s" if storeId else "")
-                + (" AND signed_at>=%s" if startDate else "")
-                + (" AND signed_at<=%s" if endDate else ""),
-                tuple(x for x in [storeId, startDate, endDate] if x is not None),
+                "SELECT COUNT(*) AS signed_count FROM sales_contract WHERE del_status=0 "
+                + (" AND sign_time>=%s" if startDate else "")
+                + (" AND sign_time<=%s" if endDate else ""),
+                tuple(x for x in [startDate, endDate] if x is not None),
             )
             row = await cur.fetchone()
             signed = (row or {}).get("signed_count", 0)
