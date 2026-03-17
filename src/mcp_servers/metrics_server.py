@@ -84,15 +84,15 @@ async def get_marketing_indicators(
     """
     采集营销效果维度指标。
     返回: coupon_redemption_rate, browse_to_order_rate, order_conversion_rate,
-          customer_acquisition_cost
+          seckill_conversion_rate
     """
     params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
 
-    coupon_data, order_data, activity_data, exposure_data = await asyncio.gather(
+    coupon_data, order_data, exposure_data, seckill_data = await asyncio.gather(
         biz.get(tenant_id, "/account-coupon/statistics", params),
         biz.get(tenant_id, "/store-order/conversion-stats", params),
-        biz.get(tenant_id, "/store-activities/roi", params),
         biz.get(tenant_id, "/manage-data/exposure-stats", params),
+        biz.get(tenant_id, "/seckill-apply/conversion-stats", params),
     )
 
     total_coupons = coupon_data.get("totalIssued", 0)
@@ -107,9 +107,9 @@ async def get_marketing_indicators(
     completed_orders = order_data.get("completedOrders", 0)
     order_conversion = (completed_orders / total_orders * 100) if total_orders > 0 else 0
 
-    marketing_spend = activity_data.get("totalSpend", 0)
-    new_customers = order_data.get("newCustomers", 1)
-    cac = marketing_spend / new_customers if new_customers > 0 else 0
+    seckill_total = seckill_data.get("totalSeckillGoods", 0)
+    seckill_sold = seckill_data.get("soldGoods", 0)
+    seckill_rate = (seckill_sold / seckill_total * 100) if seckill_total > 0 else 0
 
     return {
         "tenant_id": tenant_id,
@@ -134,11 +134,11 @@ async def get_marketing_indicators(
                 "direction": "higher_is_better",
                 "raw_data": {"total_orders": total_orders, "completed_orders": completed_orders},
             },
-            "customer_acquisition_cost": {
-                "value": round(cac, 2),
-                "unit": "元",
-                "direction": "lower_is_better",
-                "raw_data": {"marketing_spend": marketing_spend, "new_customers": new_customers},
+            "seckill_conversion_rate": {
+                "value": round(seckill_rate, 2),
+                "unit": "%",
+                "direction": "higher_is_better",
+                "raw_data": {"total_seckill_goods": seckill_total, "sold_goods": seckill_sold},
             },
         },
     }
@@ -276,58 +276,6 @@ async def get_efficiency_indicators(
 
 
 @server.tool()
-async def get_inventory_indicators(
-    tenant_id: str,
-    store_id: str,
-    start_date: str,
-    end_date: str,
-) -> dict:
-    """
-    采集库存维度指标。
-    返回: stock_turnover_days, stockout_rate, overstock_rate
-    """
-    params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
-
-    stock_data, goods_data = await asyncio.gather(
-        biz.get(tenant_id, "/stock/statistics", params),
-        biz.get(tenant_id, "/store-goods/statistics", params),
-    )
-
-    total_sku = goods_data.get("totalSku", 0)
-    stockout_sku = stock_data.get("stockoutSku", 0)
-    overstock_sku = stock_data.get("overstockSku", 0)
-    stockout_rate = (stockout_sku / total_sku * 100) if total_sku > 0 else 0
-    overstock_rate = (overstock_sku / total_sku * 100) if total_sku > 0 else 0
-    turnover_days = stock_data.get("avgTurnoverDays", 0)
-
-    return {
-        "tenant_id": tenant_id,
-        "dimension": "inventory",
-        "period": f"{start_date} ~ {end_date}",
-        "indicators": {
-            "stock_turnover_days": {
-                "value": round(turnover_days, 2),
-                "unit": "天",
-                "direction": "lower_is_better",
-                "raw_data": {"avg_turnover_days": turnover_days},
-            },
-            "stockout_rate": {
-                "value": round(stockout_rate, 2),
-                "unit": "%",
-                "direction": "lower_is_better",
-                "raw_data": {"stockout_sku": stockout_sku, "total_sku": total_sku},
-            },
-            "overstock_rate": {
-                "value": round(overstock_rate, 2),
-                "unit": "%",
-                "direction": "lower_is_better",
-                "raw_data": {"overstock_sku": overstock_sku, "total_sku": total_sku},
-            },
-        },
-    }
-
-
-@server.tool()
 async def drill_down_indicator(
     tenant_id: str,
     store_id: str,
@@ -358,7 +306,7 @@ async def drill_down_indicator(
         "coupon_redemption_rate": ("/account-coupon/statistics", {"filterType": "unused"}),
         "browse_to_order_rate": ("/manage-data/exposure-stats", {"detail": "true"}),
         "order_conversion_rate": ("/store-order/conversion-stats", {"detail": "true"}),
-        "customer_acquisition_cost": ("/store-activities/roi", {"filterType": "high_cost"}),
+        "seckill_conversion_rate": ("/seckill-apply/conversion-stats", {"detail": "true"}),
         # 客户留存
         "repurchase_rate": ("/client-record/list", {"filterType": "no_repurchase"}),
         "refund_rate": ("/store-refund-order/statistics", {"detail": "true"}),
@@ -370,9 +318,6 @@ async def drill_down_indicator(
         "avg_shipping_hours": ("/store-order/shipping-stats", {"detail": "true"}),
         "task_on_time_rate": ("/examine-initiate/turnaround-stats", {"filterType": "overdue"}),
         # 库存
-        "stock_turnover_days": ("/stock/statistics", {"detail": "true", "filterType": "slow_turnover"}),
-        "stockout_rate": ("/stock/statistics", {"detail": "true", "filterType": "stockout"}),
-        "overstock_rate": ("/stock/statistics", {"detail": "true", "filterType": "overstock"}),
     }
 
     if indicator_code not in drill_map:

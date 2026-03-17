@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""8000 诊断服务测试 CLI — 检查 /health、/api/diagnosis 等，支持完整诊断流程与进度推送。"""
+"""8000 诊断服务测试 CLI — 检查 /health、/api/v1/diagnosis 等，支持完整诊断流程与进度推送。"""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from rich.text import Text
 
 console = Console()
 DEFAULT_BASE = "http://127.0.0.1:8000"
+API_PREFIX = "/api/v1"
 FINAL_TYPES = ("completed", "error")
 
 
@@ -35,7 +36,7 @@ async def check_health(base_url: str) -> tuple[bool, str]:
 
 
 async def check_history(base_url: str, tenant_id: str, store_id: str) -> tuple[bool, str]:
-    url = base_url.rstrip("/") + f"/api/diagnosis/history?tenant_id={tenant_id}&store_id={store_id}&page=1&page_size=5"
+    url = base_url.rstrip("/") + f"{API_PREFIX}/diagnosis/history?tenant_id={tenant_id}&store_id={store_id}&page=1&page_size=5"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(url)
@@ -49,7 +50,7 @@ async def check_history(base_url: str, tenant_id: str, store_id: str) -> tuple[b
 
 
 async def check_indicators(base_url: str) -> tuple[bool, str]:
-    url = base_url.rstrip("/") + "/api/diagnosis/indicators"
+    url = base_url.rstrip("/") + f"{API_PREFIX}/diagnosis/indicators"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(url)
@@ -70,7 +71,7 @@ def _http_to_ws(base_url: str, path: str) -> str:
     return f"{scheme}://{netloc}{path}"
 
 async def check_start(base_url: str, tenant_id: str, store_id: str) -> tuple[bool, str, dict | None]:
-    url = base_url.rstrip("/") + "/api/diagnosis/start"
+    url = base_url.rstrip("/") + f"{API_PREFIX}/diagnosis/start"
     body = {
         "tenant_id": tenant_id,
         "store_id": store_id,
@@ -119,7 +120,7 @@ def _format_progress(msg: dict) -> str:
 
 
 async def _fetch_solutions(base_url: str, thread_id: str) -> list[dict]:
-    url = base_url.rstrip("/") + f"/api/diagnosis/{thread_id}/solutions"
+    url = base_url.rstrip("/") + f"{API_PREFIX}/solutions/{thread_id}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(url)
@@ -152,9 +153,21 @@ def _interactive_adopt(plans: list[dict]) -> list[str]:
     return [pid for pid in chosen if any(p.get("plan_id") == pid for p in plans)]
 
 
-async def run_ws_progress(base_url: str, thread_id: str, adopt_plan_ids: list[str] | None) -> tuple[bool, list[dict]]:
-    path = f"/ws/diagnosis/{thread_id}"
-    ws_url = _http_to_ws(base_url, path)
+def _resolve_ws_url(base_url: str, ws_url: str | None, thread_id: str) -> str:
+    if ws_url:
+        if ws_url.startswith(("ws://", "wss://")):
+            return ws_url
+        return _http_to_ws(base_url, ws_url)
+    return _http_to_ws(base_url, f"{API_PREFIX}/ws/diagnosis/{thread_id}")
+
+
+async def run_ws_progress(
+    base_url: str,
+    thread_id: str,
+    adopt_plan_ids: list[str] | None,
+    ws_url: str | None = None,
+) -> tuple[bool, list[dict]]:
+    ws_url = _resolve_ws_url(base_url, ws_url, thread_id)
     received: list[dict] = []
     done = False
     success = False
@@ -211,7 +224,7 @@ async def run_diagnose(base_url: str, tenant_id: str, store_id: str, adopt_plan_
         failed += 1
 
     console.print()
-    console.print(Panel("[bold]/api/diagnosis/indicators[/bold]", style="dim"))
+    console.print(Panel("[bold]/api/v1/diagnosis/indicators[/bold]", style="dim"))
     ok, msg = await check_indicators(base_url)
     if ok:
         console.print(Text("OK ", style="bold green") + Text(msg, style="dim"))
@@ -220,7 +233,7 @@ async def run_diagnose(base_url: str, tenant_id: str, store_id: str, adopt_plan_
         failed += 1
 
     console.print()
-    console.print(Panel(f"[bold]/api/diagnosis/start[/bold] (tenant_id={tenant_id!r} store_id={store_id!r})", style="dim"))
+    console.print(Panel(f"[bold]/api/v1/diagnosis/start[/bold] (tenant_id={tenant_id!r} store_id={store_id!r})", style="dim"))
     ok, msg, start_data = await check_start(base_url, tenant_id, store_id)
     if ok:
         console.print(Text("OK ", style="bold green") + Text(msg, style="dim"))
@@ -228,12 +241,12 @@ async def run_diagnose(base_url: str, tenant_id: str, store_id: str, adopt_plan_
         if thread_id:
             console.print()
             console.print(Panel("[bold]WebSocket 进度推送[/bold]", style="dim"))
-            ws_ok, _ = await run_ws_progress(base_url, thread_id, adopt_plan_ids)
+            ws_ok, _ = await run_ws_progress(base_url, thread_id, adopt_plan_ids, start_data.get("ws_url"))
             if not ws_ok:
                 failed += 1
                 console.print(Text("进度流未正常完成 (completed)", style="red"))
             console.print()
-            console.print(Panel("[bold]/api/diagnosis/history[/bold] (验证落库)", style="dim"))
+            console.print(Panel("[bold]/api/v1/diagnosis/history[/bold] (验证落库)", style="dim"))
             ok, msg = await check_history(base_url, tenant_id, store_id)
             if ok:
                 console.print(Text("OK ", style="bold green") + Text(msg, style="dim"))

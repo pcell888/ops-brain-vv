@@ -174,7 +174,6 @@ CREATE TABLE IF NOT EXISTS store_goods (
   update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
-# 店铺活动（业务库无 total_spend，模拟统计用）
 STORE_ACTIVITIES_SQL = """
 CREATE TABLE IF NOT EXISTS store_activities (
   id BIGSERIAL PRIMARY KEY,
@@ -183,7 +182,6 @@ CREATE TABLE IF NOT EXISTS store_activities (
   start_time TIMESTAMP,
   end_time TIMESTAMP,
   status SMALLINT DEFAULT 1,
-  total_spend NUMERIC(14,2) DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -246,6 +244,21 @@ CREATE TABLE IF NOT EXISTS seckill_apply (
   end_time TIMESTAMP,
   status SMALLINT DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+SECKILL_GOODS_TIME_SQL = """
+CREATE TABLE IF NOT EXISTS seckill_goods_time (
+  seckill_goods_time_id VARCHAR(20) PRIMARY KEY,
+  store_goods_id VARCHAR(20),
+  start_time TIMESTAMP,
+  end_time TIMESTAMP,
+  del_status SMALLINT DEFAULT 0,
+  create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  discount NUMERIC(10,2),
+  limit_num INT DEFAULT 0,
+  goods_num INT DEFAULT 0,
+  surplus_goods_num INT DEFAULT 0,
+  seckill_apply_id VARCHAR(20)
 );
 """
 
@@ -418,6 +431,7 @@ async def ensure_wlwq_tables():
         ("oa_examine_flow", OA_EXAMINE_FLOW_SQL.strip()),
         ("coupon", COUPON_SQL.strip()),
         ("seckill_apply", SECKILL_APPLY_SQL.strip()),
+        ("seckill_goods_time", SECKILL_GOODS_TIME_SQL.strip()),
         ("client_record", CLIENT_RECORD_SQL.strip()),
         ("sales_contract", SALES_CONTRACT_SQL.strip()),
         ("sales", SALES_SQL.strip()),
@@ -577,9 +591,15 @@ async def _seed_business_data_if_empty(conn):
             f"sg_{i:05d}", f"SKU商品{i}",
         )
 
-    # 活动花费
     await conn.execute(
-        "INSERT INTO store_activities (activity_name, activity_type, status, total_spend) VALUES ('年度大促', 1, 1, 28000)"
+        "INSERT INTO store_activities (activity_name, activity_type, status) VALUES ('年度大促', 1, 1)"
     )
+
+    for i in range(1, 11):
+        await conn.execute(
+            "INSERT INTO seckill_goods_time (seckill_goods_time_id, store_goods_id, goods_num, surplus_goods_num, seckill_apply_id) "
+            "VALUES ($1, $2, $3, $4, 'sa_001') ON CONFLICT (seckill_goods_time_id) DO NOTHING",
+            f"sgt_{i:04d}", f"sg_{i:05d}", 50, max(50 - i * 9, 5),
+        )
 
     logger.info("wlwq business seed data inserted")

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from src.agent.state import DiagnosisState
 from src.agent.tools import mcp_call, emit_progress
-from src.core.calculator import extract_indicator_codes, resolve_active_indicators
+from src.core.calculator import extract_indicator_codes, resolve_active_indicators, NOT_APPLICABLE_MAP
 from src.core.config import get_settings
 from src.core.tenant_config import get_tenant_config
 
@@ -16,7 +16,6 @@ DIMENSION_TOOL_MAP: dict[str, str] = {
     "marketing": "get_marketing_indicators",
     "retention": "get_retention_indicators",
     "efficiency": "get_efficiency_indicators",
-    "inventory": "get_inventory_indicators",
 }
 
 DIMENSION_STATE_KEY: dict[str, str] = {
@@ -24,7 +23,6 @@ DIMENSION_STATE_KEY: dict[str, str] = {
     "marketing": "marketing_indicators",
     "retention": "retention_indicators",
     "efficiency": "efficiency_indicators",
-    "inventory": "inventory_indicators",
 }
 
 
@@ -55,7 +53,7 @@ async def collect_data_node(state: DiagnosisState) -> dict:
 
     tasks = [mcp_call("crm-server", "get_store_profile", {"tenant_id": tenant_id, "store_id": store_id})]
     ordered_dims: list[str] = []
-    for dim in ("crm", "marketing", "retention", "efficiency", "inventory"):
+    for dim in ("crm", "marketing", "retention", "efficiency"):
         if dim in active_dims:
             tasks.append(mcp_call("metrics-server", DIMENSION_TOOL_MAP[dim], common_args))
             ordered_dims.append(dim)
@@ -77,11 +75,20 @@ async def collect_data_node(state: DiagnosisState) -> dict:
 
     emit_progress(state, f"已采集 {len(filtered_codes)} 项指标，行业基准数据就绪")
 
+    business_mode = profile.get("business_mode", "hybrid")
+    na_codes = NOT_APPLICABLE_MAP.get(business_mode, set())
+
     output: dict = {
         "store_profile": profile,
         "benchmarks": benchmarks,
     }
-    for dim in ("crm", "marketing", "retention", "efficiency", "inventory"):
-        output[DIMENSION_STATE_KEY[dim]] = dim_results.get(dim)
+    for dim in ("crm", "marketing", "retention", "efficiency"):
+        dim_data = dim_results.get(dim)
+        if dim_data and na_codes:
+            raw = dim_data.get("indicators", {})
+            for code in na_codes:
+                if code in raw:
+                    raw[code]["not_applicable"] = True
+        output[DIMENSION_STATE_KEY[dim]] = dim_data
 
     return output

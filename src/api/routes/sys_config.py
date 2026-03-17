@@ -8,7 +8,7 @@ from typing import Literal
 
 from src.core.tenant_config import get_tenant_config, update_tenant_config, sync_tenant
 
-router = APIRouter(prefix="/api/tenant-config", tags=["tenant-config"])
+router = APIRouter(prefix="/tenant-config", tags=["系统配置"])
 
 
 class SyncTenantRequest(BaseModel):
@@ -37,7 +37,7 @@ class UpdateTenantConfigRequest(BaseModel):
     )
 
 
-@router.get("/{tenant_id}")
+@router.get("/{tenant_id}", summary="获取企业诊断配置")
 async def get_config(tenant_id: str):
     """获取企业诊断配置。"""
     config = await get_tenant_config(tenant_id)
@@ -59,7 +59,7 @@ async def get_config(tenant_id: str):
     }
 
 
-@router.put("/{tenant_id}")
+@router.put("/{tenant_id}", summary="更新企业诊断配置")
 async def update_config(tenant_id: str, request: UpdateTenantConfigRequest):
     """更新企业诊断配置（只传需要修改的字段）。"""
     patch = {}
@@ -75,7 +75,7 @@ async def update_config(tenant_id: str, request: UpdateTenantConfigRequest):
     return {"tenant_id": tenant_id, "config": updated}
 
 
-@router.post("/sync")
+@router.post("/sync", summary="同步企业信息")
 async def sync_tenant_info(request: SyncTenantRequest):
     """
     同步企业信息（供第三方企业 App 调用，每次进入调用）。

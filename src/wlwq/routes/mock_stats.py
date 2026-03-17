@@ -17,6 +17,14 @@ def _mock(**kwargs):
     return _ok(kwargs)
 
 
+def _store_filter(store_id: str | None, alias: str = "") -> tuple[str, list]:
+    """返回 (SQL片段, 参数列表)。store_id 为空/None 时不过滤（全企业）。"""
+    col = f"{alias}.store_id" if alias else "store_id"
+    if store_id:
+        return f" AND {col} = $1", [store_id]
+    return "", []
+
+
 @router.get("/service-order/completion-stats")
 async def service_completion(
     storeId: str | None = Query(None),
@@ -24,10 +32,11 @@ async def service_completion(
     endDate: str | None = Query(None),
 ):
     try:
+        sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
             await cur.execute(
                 "SELECT COUNT(*) AS total, SUM(CASE WHEN order_status=8 THEN 1 ELSE 0 END) AS completed "
-                "FROM service_order WHERE 1=1"
+                f"FROM service_order WHERE 1=1{sf}", sp,
             )
             row = await cur.fetchone()
             total = (row or {}).get("total", 0) or 1
@@ -45,8 +54,11 @@ async def shipping_stats(
     endDate: str | None = Query(None),
 ):
     try:
+        sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
-            await cur.execute("SELECT AVG(shipping_hours) AS avg_hours FROM store_order WHERE shipping_hours IS NOT NULL")
+            await cur.execute(
+                f"SELECT AVG(shipping_hours) AS avg_hours FROM store_order WHERE shipping_hours IS NOT NULL{sf}", sp,
+            )
             row = await cur.fetchone()
             avg_h = float((row or {}).get("avg_hours", 0) or 12.0)
         return _ok({"avgShippingHours": avg_h})
@@ -61,11 +73,12 @@ async def coupon_statistics(
     endDate: str | None = Query(None),
 ):
     try:
+        sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
             await cur.execute(
                 "SELECT COUNT(*) AS total_issued, "
                 "SUM(CASE WHEN use_status=1 THEN 1 ELSE 0 END) AS total_used "
-                "FROM account_coupon WHERE 1=1"
+                f"FROM account_coupon WHERE 1=1{sf}", sp,
             )
             row = await cur.fetchone()
             return _ok({
@@ -83,9 +96,9 @@ async def exposure_stats(
     endDate: str | None = Query(None),
 ):
     try:
+        sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
-            # date_type=1 曝光记录，统计条数即曝光量
-            await cur.execute("SELECT COUNT(*) AS bu FROM manage_data WHERE date_type=1")
+            await cur.execute(f"SELECT COUNT(*) AS bu FROM manage_data WHERE date_type=1{sf}", sp)
             row = await cur.fetchone()
             return _ok({"browseUsers": (row or {}).get("bu", 0)})
     except Exception:
@@ -99,12 +112,13 @@ async def conversion_stats(
     endDate: str | None = Query(None),
 ):
     try:
+        sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
             await cur.execute(
                 "SELECT COUNT(*) AS total_orders, "
                 "SUM(CASE WHEN order_status>=3 THEN 1 ELSE 0 END) AS completed, "
                 "COUNT(DISTINCT account_id) AS order_users "
-                "FROM store_order WHERE 1=1"
+                f"FROM store_order WHERE 1=1{sf}", sp,
             )
             row = await cur.fetchone()
             total = (row or {}).get("total_orders", 0)
@@ -120,19 +134,27 @@ async def conversion_stats(
         return _ok({"orderUsers": 820, "totalOrders": 2280, "completedOrders": 2050, "newCustomers": 320})
 
 
-@router.get("/store-activities/roi")
-async def activities_roi(
+@router.get("/seckill-apply/conversion-stats")
+async def seckill_conversion_stats(
     storeId: str | None = Query(None),
     startDate: str | None = Query(None),
     endDate: str | None = Query(None),
 ):
     try:
+        sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
-            await cur.execute("SELECT COALESCE(SUM(total_spend), 0) AS total FROM store_activities WHERE 1=1")
+            await cur.execute(
+                "SELECT COALESCE(SUM(goods_num), 0) AS total, "
+                "COALESCE(SUM(goods_num - surplus_goods_num), 0) AS sold "
+                f"FROM seckill_goods_time WHERE del_status = 0{sf}", sp,
+            )
             row = await cur.fetchone()
-            return _ok({"totalSpend": float((row or {}).get("total", 0) or 28000)})
+            return _ok({
+                "totalSeckillGoods": int((row or {}).get("total", 0)),
+                "soldGoods": int((row or {}).get("sold", 0)),
+            })
     except Exception:
-        return _ok({"totalSpend": 28000})
+        return _ok({"totalSeckillGoods": 500, "soldGoods": 185})
 
 
 @router.get("/store-refund-order/statistics")
@@ -142,12 +164,13 @@ async def refund_statistics(
     endDate: str | None = Query(None),
 ):
     try:
+        sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
-            await cur.execute("SELECT COUNT(*) AS refund_orders FROM store_refund_order WHERE 1=1")
+            await cur.execute(f"SELECT COUNT(*) AS refund_orders FROM store_refund_order WHERE 1=1{sf}", sp)
             row = await cur.fetchone()
             refund = (row or {}).get("refund_orders", 0)
             await cur.execute(
-                "SELECT COUNT(*) AS total FROM store_order WHERE order_status>=3"
+                f"SELECT COUNT(*) AS total FROM store_order WHERE order_status>=3{sf}", sp,
             )
             row2 = await cur.fetchone()
             total_completed = (row2 or {}).get("total", 0)
@@ -163,11 +186,12 @@ async def evaluate_statistics(
     endDate: str | None = Query(None),
 ):
     try:
+        sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
             await cur.execute(
                 "SELECT COUNT(*) AS total_reviews, "
                 "SUM(CASE WHEN star>=4 THEN 1 ELSE 0 END) AS positive "
-                "FROM store_order_evaluate WHERE 1=1"
+                f"FROM store_order_evaluate WHERE 1=1{sf}", sp,
             )
             row = await cur.fetchone()
             return _ok({
@@ -185,11 +209,13 @@ async def repurchase_stats(
     endDate: str | None = Query(None),
 ):
     try:
+        sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
             await cur.execute(
                 "SELECT COUNT(DISTINCT account_id) AS total_buyers, "
                 "SUM(CASE WHEN order_count>1 THEN 1 ELSE 0 END) AS repeat_buyers "
-                "FROM (SELECT account_id, COUNT(*) AS order_count FROM store_order GROUP BY account_id) t"
+                f"FROM (SELECT account_id, COUNT(*) AS order_count FROM store_order WHERE 1=1{sf} GROUP BY account_id) t",
+                sp,
             )
             row = await cur.fetchone()
             total = (row or {}).get("total_buyers", 0)
@@ -208,39 +234,3 @@ async def repurchase_stats(
         })
 
 
-@router.get("/stock/statistics")
-async def stock_statistics(
-    storeId: str | None = Query(None),
-    startDate: str | None = Query(None),
-    endDate: str | None = Query(None),
-):
-    try:
-        async with get_cursor() as cur:
-            await cur.execute(
-                "SELECT SUM(CASE WHEN stock_num=0 THEN 1 ELSE 0 END) AS stockout, "
-                "SUM(CASE WHEN stock_num>500 THEN 1 ELSE 0 END) AS overstock "
-                "FROM stock WHERE 1=1"
-            )
-            row = await cur.fetchone()
-            return _ok({
-                "stockoutSku": (row or {}).get("stockout", 0),
-                "overstockSku": (row or {}).get("overstock", 0),
-                "avgTurnoverDays": 28.5,
-            })
-    except Exception:
-        return _ok({"stockoutSku": 12, "overstockSku": 35, "avgTurnoverDays": 28.5})
-
-
-@router.get("/store-goods/statistics")
-async def store_goods_statistics(
-    storeId: str | None = Query(None),
-    startDate: str | None = Query(None),
-    endDate: str | None = Query(None),
-):
-    try:
-        async with get_cursor() as cur:
-            await cur.execute("SELECT COUNT(*) AS total FROM store_goods WHERE 1=1")
-            row = await cur.fetchone()
-            return _ok({"totalSku": (row or {}).get("total", 0), "activeSku": 0})
-    except Exception:
-        return _ok({"totalSku": 480, "activeSku": 420})

@@ -20,7 +20,6 @@ DIMENSION_TOOL_MAP: dict[str, str] = {
     "marketing": "get_marketing_indicators",
     "retention": "get_retention_indicators",
     "efficiency": "get_efficiency_indicators",
-    "inventory": "get_inventory_indicators",
 }
 
 
@@ -79,7 +78,7 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
 
     ordered_dims: list[str] = []
     tasks: list = []
-    for dim in ("crm", "marketing", "retention", "efficiency", "inventory"):
+    for dim in ("crm", "marketing", "retention", "efficiency"):
         if dim in active_dims:
             tasks.append(mcp_call("metrics-server", DIMENSION_TOOL_MAP[dim], common_args))
             ordered_dims.append(dim)

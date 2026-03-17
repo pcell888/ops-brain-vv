@@ -88,6 +88,45 @@ wlwq 端点应返回以下标准格式：
 
 ### 3.1 crm-server — 客户数据与企业画像
 
+> **诊断范围说明**
+>
+> 诊断可针对 **单店铺** 或 **全企业**。区别如下：
+>
+> | 维度 | 店铺级诊断 | 全企业诊断（`storeId` 为空） |
+> |------|-----------|---------------------------|
+> | 画像来源 | `GET /store/{id}` | `GET /store/list` 聚合所有店铺 |
+> | 指标采集 | 各统计端点传 `storeId` | 各统计端点不传 `storeId`，后端返回全企业汇总 |
+> | 部门/人员 | 对应店铺的部门树 | 所有店铺的部门树合并 |
+> | 任务推送 | 推送到该店铺 | 按异常指标归属店铺拆分推送 |
+
+#### GET `/store/list`
+
+获取企业下所有店铺列表（用于全企业诊断时聚合画像）。
+
+**查询参数：** 无（租户由鉴权信息确定）
+
+**响应 data：**
+
+```json
+{
+  "list": [
+    {
+      "storeId": "s001",
+      "storeName": "杭州旗舰店",
+      "storeType": "retail",
+      "businessMode": "mall",
+      "industryCode": "retail_general",
+      "province": "浙江省",
+      "city": "杭州市",
+      "customerCount": 3280,
+      "monthlyGmv": 425000,
+      "employeeCount": 18,
+      "adminAccountIds": ["admin-001"]
+    }
+  ]
+}
+```
+
 #### GET `/store/{id}`
 
 获取店铺基础信息。
@@ -98,13 +137,14 @@ wlwq 端点应返回以下标准格式：
 |------|------|------|
 | `storeName` | string | 店铺名称 |
 | `storeType` | string | 店铺类型 |
+| `businessMode` | string | 经营模式：`mall`（商城）/ `service`（服务）/ `hybrid`（混合） |
 | `classId` | string | 行业分类 ID |
 | `industryCode` | string | 行业编码 |
 | `province` | string | 省 |
 | `city` | string | 市 |
 | `county` | string | 区 |
 | `customerCount` | int | 客户总数 |
-| `monthlyGmv` | float | 月 GMV |
+| `monthlyGmv` | float | 月 GMV（商品交易总额） |
 | `employeeCount` | int | 员工数 |
 | `createdDays` | int | 开店天数 |
 | `adminAccountIds` | string[] | 管理员账号 ID 列表 |
@@ -112,6 +152,15 @@ wlwq 端点应返回以下标准格式：
 #### GET `/store-class/{id}`
 
 获取行业分类详情。
+
+**响应 data：**
+
+```json
+{
+  "classCode": "retail_general",
+  "className": "综合零售"
+}
+```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -127,9 +176,20 @@ wlwq 端点应返回以下标准格式：
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `storeId` | string | 店铺 ID |
-| `filterType` | string | `all` / `high_value` / `churn_risk` / `new` / `low_conversion` / `no_repurchase` |
+| `filterType` | string | 客户筛选类型：`all` 全部；`high_value` 高价值；`churn_risk` 流失风险；`new` 新客；`low_conversion` 低转化；`no_repurchase` 未复购 |
 | `page` | int | 页码 |
 | `pageSize` | int | 每页条数 |
+
+**`filterType` 判定规则（以服务端实现为准）：**
+
+| 取值 | 判定逻辑 |
+|------|----------|
+| `all` | 不做筛选，返回该店铺下全部客户 |
+| `high_value` | 消费金额或频次高于设定阈值（如 RFM 中 R/F/M 综合或单维度达标） |
+| `churn_risk` | 超过设定天数未下单（如 lastOrderDays > N），或活跃度明显下降 |
+| `new` | 首单/注册时间在近 N 天内 |
+| `low_conversion` | 有浏览/加购等行为但未下单或下单率低于阈值 |
+| `no_repurchase` | 仅有 1 次订单，且超过设定天数未再次购买 |
 
 **响应 data：**
 
@@ -164,7 +224,31 @@ wlwq 端点应返回以下标准格式：
 
 获取销售合同列表。
 
-**查询参数：** `clientRecordId`（可选，按客户筛选）
+**查询参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `clientRecordId` | string | 客户 ID（可选，按客户筛选） |
+
+**响应 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 合同 ID |
+| `amount` | float | 金额 |
+| `status` | string | 状态，见下表 |
+
+**`status` 取值：**
+
+| 取值 | 说明 |
+|------|------|
+| `draft` | 草稿 |
+| `pending` | 待签 |
+| `signed` | 已签 |
+| `executed` | 已执行 |
+| `cancelled` | 已取消 |
+| `expired` | 已过期 |
+
 
 ```json
 {
@@ -179,7 +263,16 @@ wlwq 端点应返回以下标准格式：
 
 获取订单分析数据。
 
-**查询参数：** `storeId`, `startDate`, `endDate`, `groupBy`(`day`/`week`/`month`)
+**查询参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `storeId` | string | 店铺 ID |
+| `startDate` | string | 开始日期 |
+| `endDate` | string | 结束日期 |
+| `groupBy` | string | `day` / `week` / `month` |
+
+**响应 data：**
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -191,7 +284,11 @@ wlwq 端点应返回以下标准格式：
 
 获取部门树。
 
-**查询参数：** `storeId`
+**查询参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `storeId` | string | 店铺 ID |
 
 ```json
 {
@@ -205,7 +302,11 @@ wlwq 端点应返回以下标准格式：
 
 获取部门下用户列表。
 
-**查询参数：** `deptId`
+**查询参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `deptId` | string | 部门 ID |
 
 ```json
 {
@@ -219,37 +320,48 @@ wlwq 端点应返回以下标准格式：
 
 ### 3.2 metrics-server — 运营指标采集
 
-所有指标采集端点均需 `storeId`, `startDate`, `endDate` 参数。
+以下**公共查询参数**适用于本节所有指标采集端点：
 
-#### GET `/client-record/statistics` — CRM 维度
+| 参数 | 类型 | 必传 | 说明 |
+|------|------|------|------|
+| `storeId` | string | 否 | 店铺 ID；**为空时返回全企业汇总**（SQL 不加 `store_id` 过滤条件） |
+| `startDate` | string | 是 | 开始日期 |
+| `endDate` | string | 是 | 结束日期 |
+
+#### GET `/client-record/statistics` — CRM 维度（线索转化率）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `total` | int | 客户总数 |
 | `newClients` | int | 新增客户数 |
 
-#### GET `/sales-contract/statistics` — CRM 维度
+#### GET `/sales-contract/statistics` — CRM 维度（线索转化率）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `signedCount` | int | 签约数 |
 | `totalAmount` | float | 签约总额 |
 
-#### GET `/examine-initiate/follow-stats` — CRM 维度
+#### GET `/examine-initiate/follow-stats` — CRM 维度（平均响应时间，跟进次数）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `followTotal` | int | 跟进总次数 |
 | `avgResponseHours` | float | 平均响应时间（小时） |
 
-#### GET `/account-coupon/statistics` — 营销维度
+**计算方式：**
+
+- `followTotal`：统计 `examine_initiate` 表在时间范围内（及可选 storeId）的记录条数。
+- `avgResponseHours`：`examine_initiate.response_hours` 在时间范围内的平均值。
+
+#### GET `/account-coupon/statistics` — 营销维度（优惠券核销率）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `totalIssued` | int | 优惠券发放总数 |
 | `totalUsed` | int | 已使用数 |
 
-#### GET `/store-order/conversion-stats` — 营销维度
+#### GET `/store-order/conversion-stats` — 营销维度（浏览转化率，订单转化率）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -258,19 +370,27 @@ wlwq 端点应返回以下标准格式：
 | `completedOrders` | int | 完成订单数 |
 | `newCustomers` | int | 新客户数 |
 
-#### GET `/store-activities/roi` — 营销维度
+#### GET `/seckill-apply/conversion-stats` — 营销维度（秒杀转化率）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `totalSpend` | float | 营销总花费 |
+| `totalSeckillGoods` | int | 参与秒杀商品总量 |
+| `soldGoods` | int | 已售出商品数 |
 
-#### GET `/manage-data/exposure-stats` — 营销维度
+**计算方式：** 基于 `seckill_goods_time` 表，按时间范围和可选 storeId 过滤。
+
+| 字段 | 计算方式 |
+|------|----------|
+| `totalSeckillGoods` | `SUM(goods_num)` |
+| `soldGoods` | `SUM(goods_num - surplus_goods_num)` |
+
+#### GET `/manage-data/exposure-stats` — 营销维度（浏览转化率）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `browseUsers` | int | 浏览用户数 |
+| `browseUsers` | int | 曝光量（基于 `manage_data` 表 `date_type=1` 记录条数） |
 
-#### GET `/store-order/repurchase-stats` — 留存维度
+#### GET `/store-order/repurchase-stats` — 留存维度（复购率，流失率，平均客户生命周期价值）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -280,53 +400,51 @@ wlwq 端点应返回以下标准格式：
 | `churnedCustomers` | int | 流失客户数 |
 | `avgLifetimeValue` | float | 平均客户生命周期价值 |
 
-#### GET `/store-refund-order/statistics` — 留存维度
+**计算方式：** 基于 `store_order` 表，可按时间范围与可选 `storeId` 过滤。
+
+| 字段 | 计算方式 |
+|------|----------|
+| `totalBuyers` | `COUNT(DISTINCT account_id)` |
+| `repeatBuyers` | 先按 `account_id` 分组得每人订单数 `order_count`，再 `SUM(CASE WHEN order_count > 1 THEN 1 ELSE 0 END)` |
+| `activeCustomers` | 当前实现与 `totalBuyers` 一致 |
+| `churnedCustomers` | 估算值，如 `max(0, totalBuyers * 0.17)` |
+| `avgLifetimeValue` | 按 `account_id` 汇总每客户订单总金额后求平均，即 所有客户累计订单金额之和 / totalBuyers（需订单金额字段） |
+
+#### GET `/store-refund-order/statistics` — 留存维度（退款率）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `totalCompletedOrders` | int | 已完成订单数 |
 | `refundOrders` | int | 退款订单数 |
 
-#### GET `/store-order-evaluate/statistics` — 留存维度
+#### GET `/store-order-evaluate/statistics` — 留存维度（好评率）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `totalReviews` | int | 评价总数 |
 | `positiveReviews` | int | 好评数 |
 
-#### GET `/examine-initiate/turnaround-stats` — 效率维度
+#### GET `/store-order/conversion-stats` — 效率维度（商品订单完成率）
+
+> 与营销维度共用同一端点，效率维度关注 `completedOrders / totalOrders`。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `onTimeRate` | float | 按时完成率（%） |
+| `totalOrders` | int | 订单总数 |
+| `completedOrders` | int | 完成订单数 |
 
-#### GET `/service-order/completion-stats` — 效率维度
+#### GET `/service-order/completion-stats` — 效率维度（服务订单完成率）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `totalServiceOrders` | int | 服务工单总数 |
 | `completedOrders` | int | 已完成工单数 |
 
-#### GET `/store-order/shipping-stats` — 效率维度
+#### GET `/store-order/shipping-stats` — 效率维度（平均发货时效）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `avgShippingHours` | float | 平均发货时长（小时） |
-
-#### GET `/stock/statistics` — 库存维度
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `stockoutSku` | int | 缺货 SKU 数 |
-| `overstockSku` | int | 积压 SKU 数 |
-| `avgTurnoverDays` | float | 平均周转天数 |
-
-#### GET `/store-goods/statistics` — 库存维度
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `totalSku` | int | SKU 总数 |
-| `activeSku` | int | 在售 SKU 数 |
 
 ---
 
@@ -336,7 +454,12 @@ wlwq 端点应返回以下标准格式：
 
 #### GET `/industry-trend-statistics/benchmark`
 
-**查询参数：** `industryCode`, `period`
+**查询参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `industryCode` | string | 行业编码 |
+| `period` | string | 统计周期 |
 
 **响应 data：**
 
@@ -352,7 +475,7 @@ wlwq 端点应返回以下标准格式：
 }
 ```
 
-支持的指标码：`lead_conversion_rate`, `response_time_avg`, `follow_up_count`, `coupon_redemption_rate`, `browse_to_order_rate`, `order_conversion_rate`, `customer_acquisition_cost`, `repurchase_rate`, `refund_rate`, `churn_rate`, `positive_review_rate`, `avg_customer_lifetime_value`, `service_completion_rate`, `avg_shipping_hours`, `task_on_time_rate`, `stock_turnover_days`, `stockout_rate`, `overstock_rate`
+支持的指标码：`lead_conversion_rate`, `response_time_avg`, `follow_up_count`, `coupon_redemption_rate`, `browse_to_order_rate`, `order_conversion_rate`, `seckill_conversion_rate`, `repurchase_rate`, `refund_rate`, `churn_rate`, `positive_review_rate`, `avg_customer_lifetime_value`, `service_completion_rate`, `avg_shipping_hours`
 
 #### GET `/store-class/list`
 
@@ -368,7 +491,13 @@ wlwq 端点应返回以下标准格式：
 
 #### GET `/industry-trend-statistics/trend`
 
-**查询参数：** `industryCode`, `indicatorCode`, `periods`（最近 N 个月）
+**查询参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `industryCode` | string | 行业编码 |
+| `indicatorCode` | string | 指标编码 |
+| `periods` | int | 最近 N 个月 |
 
 ```json
 {
@@ -575,22 +704,240 @@ wlwq 端点应返回以下标准格式：
 
 ---
 
+### 3.6 指标钻取 — 明细数据下钻
+
+诊断系统在发现异常指标后，会对每个异常指标发起**钻取请求**，获取明细列表数据，用于根因分析和报告展示。
+
+#### 钻取机制
+
+钻取**复用已有的统计/列表端点**，通过附加查询参数切换到明细模式：
+
+| 切换方式 | 查询参数 | 说明 |
+|---------|---------|------|
+| 明细模式 | `detail=true` | 统计端点不再返回聚合数，改为返回明细列表 |
+| 筛选模式 | `filterType=xxx` | 列表端点按特定条件筛选 |
+
+#### 公共查询参数
+
+与 3.2 节相同（`storeId`、`startDate`、`endDate`），额外支持分页：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `page` | int | 页码，从 1 开始 |
+| `pageSize` | int | 每页条数，默认 20 |
+
+#### 明细响应格式
+
+当传入 `detail=true` 或 `filterType` 时，端点应返回分页列表：
+
+```json
+{
+  "total": 58,
+  "list": [
+    { "字段1": "值1", "字段2": "值2", ... }
+  ]
+}
+```
+
+#### 各指标钻取端点与预期字段
+
+##### CRM 维度
+
+| 指标 | 钻取端点 | 额外参数 | 说明 |
+|------|---------|---------|------|
+| `lead_conversion_rate` | `GET /client-record/list` | `filterType=low_conversion` | 低转化线索客户列表 |
+| `response_time_avg` | `GET /examine-initiate/follow-stats` | `filterType=slow_response` | 响应慢的协同记录 |
+| `follow_up_count` | `GET /examine-initiate/follow-stats` | `detail=true` | 跟进记录明细 |
+
+**`lead_conversion_rate` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `client_record_id` | string | 客户 ID |
+| `client_name` | string | 客户名称 |
+| `contact_person` | string | 联系人 |
+| `contact_number` | string | 联系电话 |
+| `create_time` | string | 创建时间 |
+
+**`response_time_avg` / `follow_up_count` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `examine_initiate_id` | string | 审批/跟进 ID |
+| `content` | string | 内容 |
+| `create_time` | string | 创建时间 |
+| `finish_time` | string | 完成时间（仅 response_time_avg） |
+| `user_name` | string | 发起人 |
+
+##### 营销维度
+
+| 指标 | 钻取端点 | 额外参数 | 说明 |
+|------|---------|---------|------|
+| `coupon_redemption_rate` | `GET /account-coupon/statistics` | `filterType=unused` | 未核销优惠券列表 |
+| `browse_to_order_rate` | `GET /manage-data/exposure-stats` | `detail=true` | 浏览-下单漏斗明细 |
+| `order_conversion_rate` | `GET /store-order/conversion-stats` | `detail=true` | 订单转化漏斗明细 |
+| `seckill_conversion_rate` | `GET /seckill-apply/conversion-stats` | `detail=true` | 秒杀商品销售明细 |
+
+**`coupon_redemption_rate` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `account_coupon_id` | string | 用户优惠券 ID |
+| `coupon_name` | string | 优惠券名称 |
+| `phone` | string | 手机号 |
+| `use_status` | int | 使用状态 |
+| `start_time` | string | 开始时间 |
+| `end_time` | string | 结束时间 |
+| `create_time` | string | 创建时间 |
+
+**`browse_to_order_rate` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `account_id` | string | 用户 ID |
+| `browse_time` | string | 浏览时间 |
+| `order_count` | int | 订单数 |
+| `first_order_time` | string | 首单时间 |
+
+> 有多少浏览了商品的用户最终产生了下单行为
+
+**`order_conversion_rate` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `account_id` | string | 用户 ID |
+| `order_sn` | string | 订单号 |
+| `pay_time` | string | 支付时间 |
+| `pay_price` | float | 实付金额 |
+| `order_status` | int | 订单状态 |
+
+> 订单转化率 = `completedOrders / totalOrders × 100`，衡量从下单到完成支付的转化效率；明细记录每笔订单的支付与状态信息，用于定位支付流失环节。
+
+**`seckill_conversion_rate` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `seckill_apply_id` | string | 秒杀申请 ID |
+| `goods_name` | string | 商品名称 |
+| `goods_num` | int | 商品数量 |
+| `surplus_goods_num` | int | 剩余数量 |
+| `start_time` | string | 开始时间 |
+| `end_time` | string | 结束时间 |
+
+##### 客户留存维度
+
+| 指标 | 钻取端点 | 额外参数 | 说明 |
+|------|---------|---------|------|
+| `repurchase_rate` | `GET /client-record/list` | `filterType=no_repurchase` | 未复购客户列表 |
+| `refund_rate` | `GET /store-refund-order/statistics` | `detail=true` | 退款订单列表 |
+| `churn_rate` | `GET /client-record/list` | `filterType=churn_risk` | 流失风险客户列表 |
+| `positive_review_rate` | `GET /store-order-evaluate/statistics` | `filterType=negative` | 差评订单列表 |
+| `avg_customer_lifetime_value` | `GET /store-order/repurchase-stats` | `detail=true` | 客户 LTV 明细 |
+
+**`repurchase_rate` / `churn_rate` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `client_record_id` | string | 客户 ID |
+| `client_name` | string | 客户名称 |
+| `contact_number` | string | 联系电话 |
+| `create_time` | string | 创建时间 |
+
+**`refund_rate` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `store_refund_order_id` | string | 退款单 ID |
+| `store_order_id` | string | 订单 ID |
+| `order_sn` | string | 订单号 |
+| `refund_price` | float | 退款金额 |
+| `refund_cause` | string | 退款原因 |
+| `refund_apply_time` | string | 申请退款时间 |
+| `refund_success_time` | string | 退款成功时间 |
+
+**`positive_review_rate` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `store_order_evaluate_id` | string | 评价 ID |
+| `store_order_id` | string | 订单 ID |
+| `star` | int | 星级 |
+| `level` | int | 评价等级 |
+| `content` | string | 评价内容 |
+| `create_time` | string | 创建时间 |
+
+**`avg_customer_lifetime_value` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `account_id` | string | 用户 ID |
+| `order_count` | int | 订单数 |
+| `total_amount` | float | 累计金额 |
+| `last_order_time` | string | 最近订单时间 |
+
+##### 运营效率维度
+
+| 指标 | 钻取端点 | 额外参数 | 说明 |
+|------|---------|---------|------|
+| `service_completion_rate` | `GET /service-order/completion-stats` | `detail=true` | 未完成服务订单列表 |
+| `avg_shipping_hours` | `GET /store-order/shipping-stats` | `detail=true` | 发货时效明细 |
+**`service_completion_rate` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `service_order_id` | string | 服务订单 ID |
+| `order_sn` | string | 订单号 |
+| `order_status` | int | 订单状态 |
+| `create_time` | string | 创建时间 |
+| `finish_time` | string | 完成时间 |
+
+**`avg_shipping_hours` 明细 list 项字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `store_order_id` | string | 订单 ID |
+| `order_sn` | string | 订单号 |
+| `pay_time` | string | 支付时间 |
+| `delivery_time` | string | 发货时间 |
+| `shipping_hours` | float | 发货时效（小时） |
+
+#### wlwq 端点改造要点
+
+已有统计端点需支持以下扩展：
+
+| 端点 | 新增参数 | 行为变化 |
+|------|---------|---------|
+| `/examine-initiate/follow-stats` | `detail=true` / `filterType=slow_response` | 返回跟进记录明细列表 |
+| `/account-coupon/statistics` | `filterType=unused` | 返回未核销优惠券列表 |
+| `/manage-data/exposure-stats` | `detail=true` | 返回浏览用户明细 |
+| `/store-order/conversion-stats` | `detail=true` | 返回订单明细列表 |
+| `/seckill-apply/conversion-stats` | `detail=true` | 返回秒杀商品明细 |
+| `/store-refund-order/statistics` | `detail=true` | 返回退款订单列表 |
+| `/store-order-evaluate/statistics` | `filterType=negative` | 返回差评订单列表 |
+| `/store-order/repurchase-stats` | `detail=true` | 返回客户 LTV 明细 |
+| `/service-order/completion-stats` | `detail=true` | 返回未完成服务订单列表 |
+| `/store-order/shipping-stats` | `detail=true` | 返回发货时效明细 |
+
+---
+
 ## 4. wlwq 需实现端点汇总
 
 | 领域 | 端点 |
 |------|------|
-| **店铺/CRM** | `/store/{id}`, `/store-class/{id}`, `/client-record/list`, `/client-record/{id}`, `/client-record/statistics`, `/sales-contract/list`, `/sales-contract/statistics` |
+| **店铺/CRM** | `/store/list`, `/store/{id}`, `/store-class/{id}`, `/client-record/list`, `/client-record/{id}`, `/client-record/statistics`, `/sales-contract/list`, `/sales-contract/statistics` |
 | **订单** | `/store-order/analytics`, `/store-order/conversion-stats`, `/store-order/repurchase-stats`, `/store-order/shipping-stats` |
-| **营销** | `/account-coupon/statistics`, `/store-activities/roi`, `/manage-data/exposure-stats`, `/coupon/create`, `/coupon/distribute`, `/seckill-apply/create` |
-| **跟进/审批** | `/examine-initiate/follow-stats`, `/examine-initiate/turnaround-stats`, `/examine-initiate/create` |
+| **营销** | `/account-coupon/statistics`, `/seckill-apply/conversion-stats`, `/manage-data/exposure-stats`, `/coupon/create`, `/coupon/distribute`, `/seckill-apply/create` |
+| **跟进/审批** | `/examine-initiate/follow-stats`（含 detail/filterType 钻取）, `/examine-initiate/create` |
 | **售后/评价** | `/store-refund-order/statistics`, `/store-order-evaluate/statistics` |
-| **服务/库存** | `/service-order/completion-stats`, `/stock/statistics`, `/store-goods/statistics` |
+| **服务** | `/service-order/completion-stats` |
 | **组织** | `/sys-dept/tree`, `/sys-user/list` |
 | **消息** | `/message-remind/create`, `/message-remind/batch-create`, `/message-remind/targeted`, `/message-record/create` |
 | **AI 任务** | `/ai-diagnosis/exec-task/batch-create`, `/ai-diagnosis/exec-task/{id}/status` |
 | **平台中台** | `/industry-trend-statistics/benchmark`, `/industry-trend-statistics/trend`, `/store-class/list` |
 
-**共计约 30 个端点。**
+| **钻取扩展** | 上述 9 个统计端点需支持 `detail=true` / `filterType` 参数返回明细列表（见 3.6 节） |
+
+**共计约 30 个端点，9 个已有端点需钻取扩展。**
 
 ---
 
@@ -606,7 +953,7 @@ wlwq 端点应返回以下标准格式：
 | 优惠券核销率 | `totalUsed / totalIssued × 100` | ↑ |
 | 浏览-下单转化率 | `orderUsers / browseUsers × 100` | ↑ |
 | 订单转化率 | `completedOrders / totalOrders × 100` | ↑ |
-| 获客成本 | `totalSpend / newCustomers` | ↓ |
+| 秒杀转化率 | `soldGoods / totalSeckillGoods × 100` | ↑ |
 | 复购率 | `repeatBuyers / totalBuyers × 100` | ↑ |
 | 退款率 | `refundOrders / totalCompletedOrders × 100` | ↓ |
 | 流失率 | `churnedCustomers / activeCustomers × 100` | ↓ |
@@ -614,7 +961,3 @@ wlwq 端点应返回以下标准格式：
 | 客户 LTV | `avgLifetimeValue`（直接取） | ↑ |
 | 服务完成率 | `completedOrders / totalServiceOrders × 100` | ↑ |
 | 平均发货时长 | `avgShippingHours`（直接取） | ↓ |
-| 任务按时率 | `onTimeRate`（直接取） | ↑ |
-| 库存周转天数 | `avgTurnoverDays`（直接取） | ↓ |
-| 缺货率 | `stockoutSku / totalSku × 100` | ↓ |
-| 积压率 | `overstockSku / totalSku × 100` | ↓ |

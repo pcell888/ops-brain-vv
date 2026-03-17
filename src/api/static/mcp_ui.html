@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MCP Tool Runner</title>
+    <style>
+      :root {
+        --bg: #f6f4ef;
+        --panel: #ffffff;
+        --ink: #1f2937;
+        --muted: #6b7280;
+        --line: #e5e7eb;
+        --accent: #0f766e;
+        --accent-weak: #e7f5f2;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--ink);
+        background: radial-gradient(1200px 800px at 10% 10%, #fff5e6, transparent),
+                    radial-gradient(900px 600px at 90% 0%, #e8f7f3, transparent),
+                    var(--bg);
+      }
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 240px 1fr 1fr;
+        gap: 16px;
+        padding: 16px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .panel h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+        letter-spacing: 0.3px;
+      }
+      .server-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        overflow: auto;
+      }
+      .server-btn {
+        text-align: left;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fafafa;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .server-btn.active {
+        background: var(--accent-weak);
+        border-color: var(--accent);
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .row { display: flex; gap: 10px; align-items: center; }
+      label { font-size: 12px; color: var(--muted); }
+      select, textarea, input {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 14px;
+        font-family: inherit;
+      }
+      textarea {
+        flex: 1 1 auto;
+        resize: none;
+        min-height: 220px;
+        line-height: 1.5;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      }
+      .editor {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      #argInput, #highlight {
+        position: absolute;
+        inset: 0;
+        border-radius: 10px;
+        padding: 12px;
+        font-size: 13px;
+        line-height: 1.5;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+        white-space: pre;
+        overflow: auto;
+        height: 100%;
+      }
+      #argInput {
+        background: transparent;
+        color: transparent;
+        caret-color: #111827;
+        border: 1px solid var(--line);
+        z-index: 2;
+      }
+      #highlight {
+        background: #f8fafc;
+        border: 1px solid var(--line);
+        z-index: 1;
+        pointer-events: none;
+      }
+      .json-key { color: #0f766e; }
+      .json-string { color: #7c3aed; }
+      .json-number { color: #b45309; }
+      .json-boolean { color: #0ea5e9; }
+      .json-null { color: #6b7280; font-style: italic; }
+      .btn {
+        border: 0;
+        background: var(--accent);
+        color: white;
+        padding: 10px 14px;
+        border-radius: 10px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .btn.secondary {
+        background: #111827;
+      }
+      .btn.ghost {
+        background: #f3f4f6;
+        color: #111827;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 6px;
+      }
+      pre {
+        flex: 1 1 auto;
+        margin: 0;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #0f172a;
+        color: #e2e8f0;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 13px;
+        min-height: 0;
+        max-height: 840px;
+      }
+      #resultBox {
+        white-space: pre-wrap;
+      }
+      .status {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      @media (max-width: 1100px) {
+        .app { grid-template-columns: 1fr; }
+      }
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.18);
+        backdrop-filter: blur(2px);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 999;
+      }
+      .overlay-card {
+        background: #0f172a;
+        color: #e2e8f0;
+        padding: 16px 20px;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.25);
+        min-width: 200px;
+      }
+      .spinner {
+        width: 18px;
+        height: 18px;
+        border: 2px solid rgba(226, 232, 240, 0.35);
+        border-top-color: #38bdf8;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <section class="panel">
+        <h2>服务列表</h2>
+        <div id="serverList" class="server-list"></div>
+      </section>
+
+      <section class="panel">
+        <h2>输入参数并执行</h2>
+        <div class="row">
+          <label style="min-width: 72px;">工具</label>
+          <select id="toolSelect"></select>
+        </div>
+        <div class="row" style="margin-top: 10px;">
+          <label style="min-width: 72px;">参数</label>
+          <div class="hint" id="toolDesc"></div>
+        </div>
+        <div class="editor">
+          <pre id="highlight"></pre>
+          <textarea id="argInput" spellcheck="false" placeholder='{"tenant_id":"wlwq_local","store_id":"st_001"}'></textarea>
+        </div>
+        <div class="actions">
+          <button class="btn" id="runBtn">执行</button>
+          <button class="btn ghost" id="templateBtn">加载模板</button>
+          <button class="btn secondary" id="formatBtn">格式化</button>
+        </div>
+        <div class="hint">提示：可直接粘贴 JSON 参数。点击「加载模板」会按工具生成字段占位。</div>
+      </section>
+
+      <section class="panel">
+        <h2>结果</h2>
+        <div class="status" id="statusLine">等待执行</div>
+        <pre id="resultBox">{}</pre>
+      </section>
+    </div>
+    <div id="loadingOverlay" class="overlay">
+      <div class="overlay-card">
+        <div class="spinner"></div>
+        <div id="loadingText">加载中...</div>
+      </div>
+    </div>
+
+    <script>
+      const apiBase = "";
+      const serverListEl = document.getElementById("serverList");
+      const toolSelect = document.getElementById("toolSelect");
+      const argInput = document.getElementById("argInput");
+      const resultBox = document.getElementById("resultBox");
+      const highlightEl = document.getElementById("highlight");
+      const statusLine = document.getElementById("statusLine");
+      const toolDesc = document.getElementById("toolDesc");
+      const loadingOverlay = document.getElementById("loadingOverlay");
+      const loadingText = document.getElementById("loadingText");
+      let currentServer = null;
+      let currentTools = [];
+
+      const setLoading = (on, text) => {
+        if (on) {
+          loadingText.textContent = text || "加载中...";
+          loadingOverlay.style.display = "flex";
+        } else {
+          loadingOverlay.style.display = "none";
+        }
+      };
+
+      const fetchJSON = async (url, options = {}) => {
+        const { loadingText: lt, showLoading = true, ...fetchOptions } = options;
+        if (showLoading) setLoading(true, lt || "加载中...");
+        const res = await fetch(apiBase + url, fetchOptions);
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = { raw: text }; }
+        if (!res.ok) {
+          if (showLoading) setLoading(false);
+          throw new Error(data.detail || res.statusText);
+        }
+        if (showLoading) setLoading(false);
+        return data;
+      };
+
+      const renderServers = (servers) => {
+        serverListEl.innerHTML = "";
+        servers.forEach((name, idx) => {
+          const btn = document.createElement("button");
+          btn.className = "server-btn" + (idx === 0 ? " active" : "");
+          btn.textContent = name;
+          btn.onclick = () => selectServer(name, btn);
+          serverListEl.appendChild(btn);
+        });
+      };
+
+      const selectServer = async (name, btnEl) => {
+        currentServer = name;
+        document.querySelectorAll(".server-btn").forEach(btn => btn.classList.remove("active"));
+        if (btnEl) btnEl.classList.add("active");
+        statusLine.textContent = "加载工具中...";
+        const data = await fetchJSON(`/mcp/tools?server=${encodeURIComponent(name)}`, { loadingText: "加载工具中..." });
+        currentTools = data.tools || [];
+        toolSelect.innerHTML = "";
+        currentTools.forEach((t) => {
+          const opt = document.createElement("option");
+          opt.value = t.name;
+          opt.textContent = t.name;
+          toolSelect.appendChild(opt);
+        });
+        updateToolDesc();
+        await loadTemplate();
+        statusLine.textContent = `已选择 ${name}`;
+      };
+
+      const updateToolDesc = () => {
+        const tool = currentTools.find(t => t.name === toolSelect.value);
+        toolDesc.textContent = tool && tool.description ? tool.description : "无描述";
+      };
+
+      const loadTemplate = async () => {
+        if (!currentServer || !toolSelect.value) return;
+        const data = await fetchJSON(
+          `/mcp/template?server=${encodeURIComponent(currentServer)}&tool=${encodeURIComponent(toolSelect.value)}`,
+          { loadingText: "加载模板中..." }
+        );
+        const template = data.template || {};
+        applyDefaults(template);
+        argInput.value = JSON.stringify(template, null, 2);
+        syncHighlight();
+      };
+
+      const runTool = async () => {
+        if (!currentServer || !toolSelect.value) return;
+        let args = {};
+        const raw = argInput.value.trim();
+        if (raw) {
+          try { args = JSON.parse(raw); }
+          catch (e) {
+            statusLine.textContent = "参数 JSON 解析失败";
+            resultBox.textContent = e.message;
+            return;
+          }
+        }
+        statusLine.textContent = "执行中...";
+        try {
+          const data = await fetchJSON("/mcp/call", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              server: currentServer,
+              tool: toolSelect.value,
+              arguments: args,
+            }),
+            loadingText: "执行中...",
+          });
+          const resultText = JSON.stringify(data.result, null, 2);
+          resultBox.innerHTML = highlightJson(resultText);
+          statusLine.textContent = "执行成功";
+        } catch (e) {
+          resultBox.textContent = e.message;
+          statusLine.textContent = "执行失败";
+        }
+      };
+
+      const formatArgs = () => {
+        const raw = argInput.value.trim();
+        if (!raw) return;
+        try {
+          const parsed = JSON.parse(raw);
+          applyDefaults(parsed);
+          argInput.value = JSON.stringify(parsed, null, 2);
+          syncHighlight();
+        } catch (e) {
+          statusLine.textContent = "格式化失败：JSON 不合法";
+        }
+      };
+
+      const syncHighlight = () => {
+        const text = argInput.value || "";
+        highlightEl.innerHTML = highlightJson(text);
+        highlightEl.scrollTop = argInput.scrollTop;
+        highlightEl.scrollLeft = argInput.scrollLeft;
+      };
+
+      const highlightJson = (text) => {
+        const escaped = text
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+        return escaped.replace(
+          /("(?:\\.|[^"\\])*")(:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
+          (match, str, colon, boolNull) => {
+            if (str) {
+              if (colon) return `<span class="json-key">${str}</span>${colon}`;
+              return `<span class="json-string">${str}</span>`;
+            }
+            if (boolNull) {
+              if (boolNull === "null") return `<span class="json-null">${boolNull}</span>`;
+              return `<span class="json-boolean">${boolNull}</span>`;
+            }
+            return `<span class="json-number">${match}</span>`;
+          }
+        );
+      };
+
+      const applyDefaults = (obj) => {
+        const isEmpty = (v) => v === "" || v === null || v === undefined;
+        const pad = (n) => String(n).padStart(2, "0");
+        const now = new Date();
+        const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+        const nowLocal = `${today}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+        const walk = (node) => {
+          if (Array.isArray(node)) {
+            node.forEach(item => walk(item));
+            return;
+          }
+          if (node && typeof node === "object") {
+            Object.keys(node).forEach((key) => {
+              const value = node[key];
+              if (value && typeof value === "object") {
+                walk(value);
+                return;
+              }
+              const k = key.toLowerCase();
+              if (k === "tenant_id" && isEmpty(value)) {
+                node[key] = "wlwq_local";
+                return;
+              }
+              if (k === "store_id" && isEmpty(value)) {
+                node[key] = "test-store";
+                return;
+              }
+              const isDateKey = k.includes("date");
+              const isDateTimeKey = k.includes("datetime") || k.includes("timestamp") || (k.includes("time") && !isDateKey);
+              if (isEmpty(value)) {
+                if (isDateTimeKey) {
+                  node[key] = nowLocal;
+                } else if (isDateKey) {
+                  node[key] = today;
+                }
+              }
+            });
+          }
+        };
+        walk(obj);
+      };
+
+      document.getElementById("runBtn").onclick = runTool;
+      document.getElementById("templateBtn").onclick = loadTemplate;
+      document.getElementById("formatBtn").onclick = formatArgs;
+      argInput.addEventListener("input", syncHighlight);
+      argInput.addEventListener("scroll", () => {
+        highlightEl.scrollTop = argInput.scrollTop;
+        highlightEl.scrollLeft = argInput.scrollLeft;
+      });
+      toolSelect.onchange = () => {
+        updateToolDesc();
+        loadTemplate();
+      };
+
+      const init = async () => {
+        try {
+          const data = await fetchJSON("/mcp/servers", { loadingText: "加载服务中..." });
+          renderServers(data.servers || []);
+          if (data.servers && data.servers.length) {
+            await selectServer(data.servers[0], document.querySelector(".server-btn"));
+          }
+          syncHighlight();
+        } catch (e) {
+          statusLine.textContent = "加载服务失败";
+          resultBox.textContent = e.message;
+        }
+      };
+
+      init();
+    </script>
+  </body>
+</html>

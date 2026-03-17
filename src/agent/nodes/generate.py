@@ -118,7 +118,6 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
             "marketing": state.get("marketing_indicators", {}),
             "retention": state.get("retention_indicators", {}),
             "efficiency": state.get("efficiency_indicators", {}),
-            "inventory": state.get("inventory_indicators", {}),
         },
         historical_cases=historical_cases if historical_cases else None,
     )

@@ -85,7 +85,6 @@ async def diagnose_node(state: DiagnosisState) -> dict:
         "marketing": "marketing_indicators",
         "retention": "retention_indicators",
         "efficiency": "efficiency_indicators",
-        "inventory": "inventory_indicators",
     }
 
     dimension_scores: dict = {}

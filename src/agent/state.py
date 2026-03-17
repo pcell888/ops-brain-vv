@@ -25,7 +25,6 @@ class DiagnosisState(TypedDict):
     marketing_indicators: dict | None
     retention_indicators: dict | None
     efficiency_indicators: dict | None
-    inventory_indicators: dict | None
     benchmarks: dict | None
 
     # ── 诊断阶段产出 ──

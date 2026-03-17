@@ -54,7 +54,7 @@ VALUES ('ent_001', '企业A', 'https://ent-a.wlwq.com/api', 'token', 'encrypted_
 ### 5. 发起诊断
 
 ```bash
-curl -X POST http://localhost:8000/api/diagnosis/start \
+curl -X POST http://localhost:8000/api/v1/diagnosis/start \
   -H "Content-Type: application/json" \
   -d '{"tenant_id": "ent_001", "store_id": "S100", "trigger_type": "manual"}'
 ```
@@ -65,10 +65,10 @@ curl -X POST http://localhost:8000/api/diagnosis/start \
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/diagnosis/start` | 启动诊断 |
-| POST | `/api/diagnosis/{thread_id}/adopt` | 采纳方案 |
-| GET | `/api/diagnosis/{thread_id}/state` | 查询状态 |
-| WS | `/ws/diagnosis/{thread_id}` | 实时进度推送 |
+| POST | `/api/v1/diagnosis/start` | 启动诊断 |
+| POST | `/api/v1/diagnosis/{thread_id}/adopt` | 采纳方案 |
+| GET | `/api/v1/diagnosis/{thread_id}/state` | 查询状态 |
+| WS | `/api/v1/ws/diagnosis/{thread_id}` | 实时进度推送 |
 | GET | `/health` | 健康检查 |
 
 ## 开发

@@ -40,6 +40,7 @@ async def get_store_profile(tenant_id: str, store_id: str = "") -> dict:
         "store_id": store_id,
         "store_name": store_data.get("storeName", ""),
         "store_type": store_data.get("storeType", ""),
+        "business_mode": store_data.get("businessMode", "mall"),
         "industry_code": class_data.get("classCode", store_data.get("industryCode", "")),
         "industry_name": class_data.get("className", ""),
         "province": store_data.get("province", ""),
@@ -54,14 +55,13 @@ async def get_store_profile(tenant_id: str, store_id: str = "") -> dict:
 
 
 async def _get_tenant_profile(tenant_id: str) -> dict:
-    """从 tenant_registry.config 构建企业级画像。"""
-    from src.core.tenant_config import get_tenant_config
-    cfg = await get_tenant_config(tenant_id)
-    stores = cfg.get("stores", [])
-    store_names = [s.get("store_name", s.get("store_id", "")) for s in stores]
-
+    """调用 /store/list 获取全部店铺，聚合为企业级画像。"""
     import psycopg
     from src.core.config import get_settings
+
+    store_list_data = await biz.get(tenant_id, "/store/list")
+    stores = store_list_data.get("list", [])
+
     settings = get_settings()
     async with await psycopg.AsyncConnection.connect(settings.postgres_uri) as conn:
         async with conn.cursor() as cur:
@@ -73,24 +73,44 @@ async def _get_tenant_profile(tenant_id: str) -> dict:
     tenant_name = (row[0] if row else "") or ""
     industry_code = (row[1] if row else "") or ""
 
+    all_admin_ids: list[str] = []
+    total_customers = 0
+    total_gmv = 0.0
+    total_employees = 0
+    store_names: list[str] = []
+    business_modes: set[str] = set()
+    for s in stores:
+        store_names.append(s.get("storeName", s.get("storeId", "")))
+        total_customers += s.get("customerCount", 0)
+        total_gmv += s.get("monthlyGmv", 0)
+        total_employees += s.get("employeeCount", 0)
+        all_admin_ids.extend(s.get("adminAccountIds", []))
+        bm = s.get("businessMode", "")
+        if bm:
+            business_modes.add(bm)
+        if not industry_code:
+            industry_code = s.get("industryCode", "")
+
     return {
         "tenant_id": tenant_id,
         "store_id": "",
         "store_name": f"{tenant_name}（全企业）",
         "store_type": "enterprise",
+        "business_mode": business_modes.pop() if len(business_modes) == 1 else "hybrid",
         "industry_code": industry_code,
         "industry_name": "",
         "province": "",
         "city": "",
         "county": "",
-        "customer_count": 0,
-        "monthly_gmv": 0,
-        "employee_count": cfg.get("team_size", 0),
+        "customer_count": total_customers,
+        "monthly_gmv": total_gmv,
+        "employee_count": total_employees,
         "created_days": 0,
-        "admin_account_ids": [],
+        "admin_account_ids": list(set(all_admin_ids)),
         "scope": "enterprise",
         "store_count": len(stores),
         "store_names": store_names,
+        "stores": [{"store_id": s.get("storeId"), "store_name": s.get("storeName")} for s in stores],
     }
 
 
@@ -146,8 +166,33 @@ async def get_order_analytics(
 
 
 @server.tool()
-async def get_dept_structure(tenant_id: str, store_id: str) -> dict:
-    """获取企业部门架构与人员信息（用于任务分配匹配）。从 wlwq /sys-dept/tree、/sys-user/list 拉取。"""
+async def get_dept_structure(tenant_id: str, store_id: str = "") -> dict:
+    """获取部门架构与人员信息。store_id 为空时聚合所有店铺的部门树。"""
+    if store_id:
+        return await _fetch_dept_tree(tenant_id, store_id)
+
+    store_list_data = await biz.get(tenant_id, "/store/list")
+    stores = store_list_data.get("list", [])
+    if not stores:
+        return {"store_id": "", "departments": []}
+
+    import asyncio
+    trees = await asyncio.gather(*[
+        _fetch_dept_tree(tenant_id, s.get("storeId", ""))
+        for s in stores
+    ])
+    seen_ids: set[str] = set()
+    merged: list[dict] = []
+    for tree in trees:
+        for dept in tree.get("departments", []):
+            did = dept.get("dept_id")
+            if did and did not in seen_ids:
+                seen_ids.add(did)
+                merged.append(dept)
+    return {"store_id": "", "departments": merged}
+
+
+async def _fetch_dept_tree(tenant_id: str, store_id: str) -> dict:
     dept_tree = await biz.get(tenant_id, "/sys-dept/tree", {"storeId": store_id})
     raw_list = dept_tree.get("list") or dept_tree.get("children") or []
     departments = []

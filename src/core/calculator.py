@@ -11,7 +11,7 @@ INDICATOR_META: dict[str, dict] = {
     "coupon_redemption_rate": {"name": "优惠券核销率", "dimension": "marketing", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "未核销优惠券列表"},
     "browse_to_order_rate": {"name": "浏览转化率", "dimension": "marketing", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "浏览-下单漏斗明细"},
     "order_conversion_rate": {"name": "订单转化率", "dimension": "marketing", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "订单转化漏斗明细"},
-    "customer_acquisition_cost": {"name": "获客成本", "dimension": "marketing", "direction": "lower_is_better", "unit": "元", "drillable": True, "drill_desc": "高获客成本活动列表"},
+    "seckill_conversion_rate": {"name": "秒杀转化率", "dimension": "marketing", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "秒杀商品销售明细"},
     # 客户留存
     "repurchase_rate": {"name": "复购率", "dimension": "retention", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "未复购客户列表"},
     "refund_rate": {"name": "退款率", "dimension": "retention", "direction": "lower_is_better", "unit": "%", "drillable": True, "drill_desc": "退款订单列表"},
@@ -22,10 +22,6 @@ INDICATOR_META: dict[str, dict] = {
     "service_completion_rate": {"name": "服务订单完成率", "dimension": "efficiency", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "未完成服务订单列表"},
     "avg_shipping_hours": {"name": "平均发货时效", "dimension": "efficiency", "direction": "lower_is_better", "unit": "小时", "drillable": True, "drill_desc": "发货时效明细"},
     "task_on_time_rate": {"name": "任务按时完成率", "dimension": "efficiency", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "逾期任务列表"},
-    # 库存维度
-    "stock_turnover_days": {"name": "库存周转天数", "dimension": "inventory", "direction": "lower_is_better", "unit": "天", "drillable": True, "drill_desc": "周转慢的商品列表"},
-    "stockout_rate": {"name": "缺货率", "dimension": "inventory", "direction": "lower_is_better", "unit": "%", "drillable": True, "drill_desc": "缺货商品列表"},
-    "overstock_rate": {"name": "积压率", "dimension": "inventory", "direction": "lower_is_better", "unit": "%", "drillable": True, "drill_desc": "积压商品列表"},
 }
 
 # 各指标钻取 items 中单条记录的约定字段（企业 API 返回 list/items 时应尽量符合）
@@ -42,7 +38,7 @@ DRILL_ITEM_FIELDS: dict[str, list[str]] = {
     "coupon_redemption_rate": ["account_coupon_id", "coupon_name", "phone", "use_status", "start_time", "end_time", "create_time"],
     "browse_to_order_rate": ["account_id", "browse_time", "order_count", "first_order_time"],
     "order_conversion_rate": ["account_id", "order_sn", "pay_time", "pay_price", "order_status"],
-    "customer_acquisition_cost": ["id", "activity_name", "start_time", "end_time", "spend", "cost_per_acquisition"],
+    "seckill_conversion_rate": ["seckill_apply_id", "goods_name", "goods_num", "surplus_goods_num", "start_time", "end_time"],
     # 留存
     "refund_rate": ["store_refund_order_id", "store_order_id", "order_sn", "refund_price", "refund_cause", "refund_apply_time", "refund_success_time"],
     "positive_review_rate": ["store_order_evaluate_id", "store_order_id", "star", "level", "content", "create_time"],
@@ -50,10 +46,6 @@ DRILL_ITEM_FIELDS: dict[str, list[str]] = {
     # 效率
     "service_completion_rate": ["service_order_id", "order_sn", "order_status", "create_time", "finish_time"],
     "avg_shipping_hours": ["store_order_id", "order_sn", "pay_time", "delivery_time", "shipping_hours"],
-    # 库存
-    "stock_turnover_days": ["goods_id", "goods_name", "stock_num", "turnover_days", "last_sale_time"],
-    "stockout_rate": ["goods_id", "goods_name", "stock_num", "stockout_days"],
-    "overstock_rate": ["goods_id", "goods_name", "stock_num", "overstock_days", "last_sale_time"],
 }
 
 # 钻取字段 key -> 中文标签，供前端表头/展示用
@@ -81,10 +73,10 @@ DRILL_FIELD_LABELS: dict[str, str] = {
     "pay_time": "支付时间",
     "pay_price": "实付金额",
     "order_status": "订单状态",
-    "id": "活动ID",
-    "activity_name": "活动名称",
-    "spend": "投入金额",
-    "cost_per_acquisition": "单客成本",
+    "seckill_apply_id": "秒杀申请ID",
+    "goods_name": "商品名称",
+    "goods_num": "商品数量",
+    "surplus_goods_num": "剩余数量",
     "store_refund_order_id": "退款单ID",
     "store_order_id": "订单ID",
     "refund_price": "退款金额",
@@ -99,23 +91,20 @@ DRILL_FIELD_LABELS: dict[str, str] = {
     "service_order_id": "服务订单ID",
     "delivery_time": "发货时间",
     "shipping_hours": "发货时效(小时)",
-    "goods_id": "商品ID",
-    "goods_name": "商品名称",
-    "stock_num": "库存数量",
-    "turnover_days": "周转天数",
-    "last_sale_time": "最近销售时间",
-    "stockout_days": "缺货天数",
-    "overstock_days": "积压天数",
 }
 
-ALL_DIMENSIONS = ["crm", "marketing", "retention", "efficiency", "inventory"]
+NOT_APPLICABLE_MAP: dict[str, set[str]] = {
+    "service": {"avg_shipping_hours", "seckill_conversion_rate", "browse_to_order_rate"},
+    "mall":    {"service_completion_rate"},
+}
+
+ALL_DIMENSIONS = ["crm", "marketing", "retention", "efficiency"]
 
 DEFAULT_DIMENSION_WEIGHTS: dict[str, float] = {
-    "crm": 0.20,
-    "marketing": 0.25,
-    "retention": 0.25,
+    "crm": 0.25,
+    "marketing": 0.30,
+    "retention": 0.30,
     "efficiency": 0.15,
-    "inventory": 0.15,
 }
 
 ANOMALY_THRESHOLD_PCT = 15.0  # 偏离行业均值超过此百分比视为异常
@@ -213,6 +202,8 @@ def calculate_dimension_score(
     for code, meta in dim_indicators.items():
         ind_data = raw_indicators.get(code)
         if ind_data is None:
+            continue
+        if isinstance(ind_data, dict) and ind_data.get("not_applicable"):
             continue
 
         current_value = ind_data["value"] if isinstance(ind_data, dict) else ind_data

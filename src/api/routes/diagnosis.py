@@ -8,6 +8,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Query, HTTPException
 
+from src.api.constants import API_PREFIX
 from src.core.models import DiagnosisRequest, DiagnosisStartResponse
 from src.core.calculator import list_available_indicators
 from src.core.diagnosis_report_repo import list_reports, get_report as get_report_from_db
@@ -15,7 +16,7 @@ from src.api.deps import get_graph_app, manager, running_tasks, generate_thread_
 from src.agent.tools import set_progress_sender, clear_progress_sender
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/diagnosis", tags=["diagnosis"])
+router = APIRouter(prefix="/diagnosis", tags=["诊断"])
 
 # 仅处理图内节点事件，避免顶层 LangGraph 的 on_chain_end 重复推送整图 progress_messages
 _WORKFLOW_NODES = frozenset({
@@ -24,7 +25,7 @@ _WORKFLOW_NODES = frozenset({
 })
 
 
-@router.get("/indicators")
+@router.get("/indicators", summary="获取可选指标清单")
 async def get_available_indicators(
     dimensions: list[str] | None = Query(default=None, description="按维度筛选，如 ?dimensions=crm&dimensions=marketing"),
 ):
@@ -143,7 +144,7 @@ async def _run_diagnosis_with_stream(
         })
 
 
-@router.get("/history")
+@router.get("/history", summary="获取诊断历史列表")
 async def get_diagnosis_history(
     tenant_id: str | None = Query(default=None, description="租户ID"),
     store_id: str | None = Query(default=None, description="门店ID"),
@@ -158,7 +159,7 @@ async def get_diagnosis_history(
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
-@router.post("/start", response_model=DiagnosisStartResponse)
+@router.post("/start", response_model=DiagnosisStartResponse, summary="启动诊断流程")
 async def start_diagnosis(request: DiagnosisRequest):
     """启动诊断流程，返回 thread_id 和 WebSocket URL。报告完成后落库到诊断系统 PG。"""
     thread_id = generate_thread_id()
@@ -179,11 +180,11 @@ async def start_diagnosis(request: DiagnosisRequest):
 
     return DiagnosisStartResponse(
         thread_id=thread_id,
-        ws_url=f"/ws/diagnosis/{thread_id}",
+        ws_url=f"{API_PREFIX}/ws/diagnosis/{thread_id}",
     )
 
 
-@router.post("/{thread_id}/cancel")
+@router.post("/{thread_id}/cancel", summary="取消诊断流程")
 async def cancel_diagnosis(thread_id: str):
     """取消正在运行的诊断流程。"""
     task = running_tasks.get(thread_id)
@@ -202,7 +203,7 @@ async def cancel_diagnosis(thread_id: str):
     return {"status": "cancelled", "thread_id": thread_id}
 
 
-@router.get("/{thread_id}/report")
+@router.get("/{thread_id}/report", summary="获取诊断报告")
 async def get_diagnosis_report(thread_id: str):
     """获取单次诊断报告（优先从诊断系统 PG 读，无则从 LangGraph state 读）。"""
     report = await get_report_from_db(thread_id)
@@ -218,7 +219,7 @@ async def get_diagnosis_report(thread_id: str):
     raise HTTPException(status_code=404, detail="该次诊断报告不存在或尚未生成")
 
 
-@router.get("/{thread_id}/anomalies/{indicator_code}")
+@router.get("/{thread_id}/anomalies/{indicator_code}", summary="获取异常指标详情")
 async def get_anomaly_detail(thread_id: str, indicator_code: str):
     """获取单次诊断中某个异常指标的详情（含根因、钻取明细等）。"""
     report = await get_report_from_db(thread_id)
@@ -237,7 +238,7 @@ async def get_anomaly_detail(thread_id: str, indicator_code: str):
     raise HTTPException(status_code=404, detail=f"未找到异常指标: {indicator_code}")
 
 
-@router.get("/{thread_id}/state")
+@router.get("/{thread_id}/state", summary="获取诊断流程状态")
 async def get_diagnosis_state(thread_id: str):
     """获取当前诊断流程状态。"""
     app = await get_graph_app()

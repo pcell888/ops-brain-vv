@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import diagnosis, solutions, sys_config, ws
+from src.api.constants import API_PREFIX
+from src.api.routes import diagnosis, solutions, sys_config, track, review, ws, mcp
 from src.agent.graph import close_checkpointer
 from src.agent.tools import close_all_sessions as close_mcp_sessions
 from src.core.db_init import (
@@ -19,7 +20,6 @@ from src.core.db_init import (
     ensure_ai_review_report,
 )
 from src.wlwq.database import close_pool as wlwq_close_pool, get_pool as wlwq_get_pool
-from src.wlwq.routes import client_record, examine_initiate, mock_stats, sales_contract
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +28,7 @@ logging.basicConfig(
 
 app = FastAPI(
     title="企业运营AI智能诊断系统",
-    description="基于 LangGraph + MCP 的多租户 SaaS 智能诊断服务",
+    description="基多租户 SaaS 智能诊断服务",
     version="0.1.0",
 )
 
@@ -40,14 +40,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(diagnosis.router)
-app.include_router(solutions.router)
-app.include_router(sys_config.router)
-app.include_router(ws.router)
-app.include_router(client_record.router)
-app.include_router(sales_contract.router)
-app.include_router(examine_initiate.router)
-app.include_router(mock_stats.router)
+api_router = APIRouter(prefix=API_PREFIX)
+api_router.include_router(diagnosis.router)
+api_router.include_router(solutions.router)
+api_router.include_router(track.router)
+api_router.include_router(review.router)
+api_router.include_router(sys_config.router)
+api_router.include_router(ws.router)
+api_router.include_router(mcp.router)
+
+app.include_router(api_router)
+
 
 
 @app.on_event("startup")

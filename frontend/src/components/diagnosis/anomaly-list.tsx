@@ -1,0 +1,314 @@
+
+
+import { Button, Tag, Empty, Tooltip, Popover } from 'antd';
+import { RightOutlined, BulbOutlined, TagsOutlined, ThunderboltOutlined, ArrowRightOutlined, LoadingOutlined } from '@ant-design/icons';
+import clsx from 'clsx';
+import { useNavigate } from 'react-router-dom';
+import { getTagLabel } from '@/lib/tag-labels';
+
+export interface AnomalyItem {
+  id: string;
+  name: string;
+  desc: string;
+  currentValue: string;
+  benchmark: string;
+  gap: number;
+  severity: 'severe' | 'moderate';
+  metricName?: string;
+  dimension?: string;
+  solutionTags?: string[];
+  rootCauseChain?: string[];
+}
+
+interface AnomalyListProps {
+  anomalies?: AnomalyItem[];
+  diagnosisId?: string | null;
+  /** 是否已有方案（兼容旧逻辑） */
+  hasSolutions?: boolean;
+  /** 已有方案的异常 ID 集合（用于单独判断每个异常是否有方案） */
+  anomalyIdsWithSolutions?: Set<string>;
+  /** 正在生成方案的异常 ID（null 表示没有正在生成） */
+  generatingAnomalyId?: string | null;
+  onViewSolution?: (anomalyId: string) => void;
+  onViewDetail?: (anomalyId: string) => void;
+  onDrillDown?: (metricName: string, dimension: string) => void;
+  /** 生成方案回调 */
+  onGenerateSolution?: (anomalyId: string, solutionTags: string[]) => void;
+  showSolutionFlow?: boolean;
+}
+
+// 标签到方案模板的映射（简化版）
+const tagToSolutionMap: Record<string, string> = {
+  lead_conversion: '线索转化率优化方案',
+  crm_optimization: '线索转化率优化方案',
+  sales_process: '线索转化率优化方案',
+  marketing_roi: '营销ROI提升方案',
+  audience_targeting: '营销ROI提升方案',
+  churn_prevention: '客户流失预防方案',
+  customer_retention: '客户流失预防方案',
+  task_management: '任务效率提升方案',
+  workload_optimization: '任务效率提升方案',
+};
+
+
+// 默认的静态数据（用于开发时展示）
+const defaultAnomalies: AnomalyItem[] = [
+  {
+    id: '1',
+    name: '线索转化率严重低于行业水平',
+    desc: '根因：跟进记录同步延迟 → 销售响应不及时 → 客户流失',
+    currentValue: '12.3%',
+    benchmark: '18.1%',
+    gap: 32,
+    severity: 'severe',
+  },
+  {
+    id: '2',
+    name: '营销触达ROI低于预期',
+    desc: '根因：受众定向不精准 → 触达成本高 → 转化率低',
+    currentValue: '2.1x',
+    benchmark: '2.5x',
+    gap: 18,
+    severity: 'moderate',
+  },
+  {
+    id: '3',
+    name: '任务完成率偏低',
+    desc: '根因：任务分配不均衡 → 部分员工超负荷 → 延期增加',
+    currentValue: '67.2%',
+    benchmark: '79.0%',
+    gap: 15,
+    severity: 'moderate',
+  },
+];
+
+export function AnomalyList({ 
+  anomalies, 
+  diagnosisId,
+  hasSolutions = false,
+  anomalyIdsWithSolutions,
+  generatingAnomalyId = null,
+  onViewSolution,
+  onViewDetail,
+  onDrillDown,
+  onGenerateSolution,
+}: AnomalyListProps) {
+  const navigate = useNavigate();
+  
+  // 有 diagnosisId 时只用真实数据，避免用占位 id(1/2/3) 请求详情导致 404；无 diagnosisId 时可用默认数据展示
+  const displayAnomalies =
+    diagnosisId && (!anomalies || anomalies.length === 0)
+      ? []
+      : (anomalies && anomalies.length > 0 ? anomalies : defaultAnomalies);
+
+  // 判断某个异常是否已有方案
+  const hasAnomalySolution = (anomalyId: string) => {
+    // 优先使用精确的异常 ID 判断
+    if (anomalyIdsWithSolutions) {
+      return anomalyIdsWithSolutions.has(anomalyId);
+    }
+    // 兼容旧逻辑：使用全局的 hasSolutions
+    return hasSolutions;
+  };
+
+  // 处理查看/生成方案
+  const handleSolutionAction = (anomaly: AnomalyItem) => {
+    if (hasAnomalySolution(anomaly.id)) {
+      // 方案已存在，跳转到详情页
+      if (onViewSolution) {
+        onViewSolution(anomaly.id);
+      } else if (diagnosisId) {
+        // 跳转到方案详情页，带上 anomaly_id 参数以便自动选择匹配的方案
+        navigate(`/solutions/${diagnosisId}?anomaly_id=${anomaly.id}`);
+      }
+    } else {
+      // 方案不存在，触发生成
+      if (onGenerateSolution && anomaly.solutionTags) {
+        onGenerateSolution(anomaly.id, anomaly.solutionTags);
+      } else if (diagnosisId) {
+        // 跳转到方案页面，带上参数提示需要生成
+        navigate(`/solutions?diagnosis_id=${diagnosisId}&anomaly_id=${anomaly.id}&action=generate`);
+      }
+    }
+  };
+
+  // 处理查看方案（兼容旧逻辑）
+  const handleViewSolution = (anomalyId: string) => {
+    if (onViewSolution) {
+      onViewSolution(anomalyId);
+    } else if (diagnosisId) {
+      // 跳转到方案详情页，带上 anomaly_id 参数以便自动选择匹配的方案
+      navigate(`/solutions/${diagnosisId}?anomaly_id=${anomalyId}`);
+    }
+  };
+
+  // 处理查看明细
+  const handleViewDetail = (anomalyId: string) => {
+    if (onViewDetail) {
+      onViewDetail(anomalyId);
+    } else if (diagnosisId) {
+      // 默认跳转到详情页面
+      navigate(`/diagnosis/${diagnosisId}/anomaly/${anomalyId}`);
+    }
+  };
+
+  // 处理钻取
+  const handleDrillDown = (anomaly: AnomalyItem) => {
+    if (onDrillDown && anomaly.metricName && anomaly.dimension) {
+      onDrillDown(anomaly.metricName, anomaly.dimension);
+    } else if (diagnosisId && anomaly.metricName && anomaly.dimension) {
+      navigate(`/diagnosis/${diagnosisId}/drill-down/${encodeURIComponent(anomaly.metricName)}?dimension=${anomaly.dimension}`);
+    }
+  };
+
+  if (displayAnomalies.length === 0) {
+    return (
+      <Empty 
+        description="暂无异常指标，运营状况良好！" 
+        image={Empty.PRESENTED_IMAGE_SIMPLE}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {displayAnomalies.map((anomaly, index) => (
+        <div
+          key={anomaly.id}
+          className={clsx(
+            'group relative flex items-center gap-5 p-5 rounded-xl border cursor-pointer transition-all duration-300',
+            'hover:scale-[1.01]',
+            anomaly.severity === 'severe'
+              ? 'border-rose-500/20 hover:border-rose-500/40 hover:bg-rose-500/5'
+              : 'border-amber-500/20 hover:border-amber-500/40 hover:bg-amber-500/5'
+          )}
+          style={{ animationDelay: `${index * 100}ms` }}
+        >
+          {/* 背景渐变 */}
+          <div className={clsx(
+            'absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300',
+            anomaly.severity === 'severe'
+              ? 'bg-gradient-to-r from-rose-500/5 to-transparent'
+              : 'bg-gradient-to-r from-amber-500/5 to-transparent'
+          )} />
+
+          {/* 严重程度指示条 */}
+          <div
+            className={clsx(
+              'relative w-1.5 h-14 rounded-full',
+              anomaly.severity === 'severe' 
+                ? 'bg-gradient-to-b from-rose-400 to-rose-600' 
+                : 'bg-gradient-to-b from-amber-400 to-amber-600'
+            )}
+          />
+
+          {/* 信息 */}
+          <div className="relative flex-1 min-w-0">
+            <div className="font-semibold text-white text-base mb-1.5 truncate">
+              {anomaly.name}
+            </div>
+            <div className="text-sm text-gray-500 leading-relaxed mb-2">
+              {anomaly.desc}
+            </div>
+            {/* 方案关联标签 */}
+            {anomaly.solutionTags && anomaly.solutionTags.length > 0 && (
+              <Popover
+                content={
+                  <div className="max-w-xs">
+                    <div className="text-xs text-gray-400 mb-2 flex items-center gap-1">
+                      <ThunderboltOutlined className="text-amber-400" />
+                      基于这些标签将匹配以下方案:
+                    </div>
+                    <div className="space-y-1.5">
+                      {Array.from(new Set(anomaly.solutionTags.map(tag => tagToSolutionMap[tag]).filter(Boolean))).map((solution, idx) => (
+                        <div key={idx} className="flex items-center gap-2 text-sm">
+                          <BulbOutlined className="text-amber-400" />
+                          <span className="text-white">{solution}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 pt-2 border-t border-gray-700">
+                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                        <ArrowRightOutlined className="text-cyan-400" />
+                        {hasAnomalySolution(anomaly.id) 
+                          ? '点击「查看方案」获取详细优化建议' 
+                          : '点击「生成方案」智能匹配解决方案'}
+                      </div>
+                    </div>
+                  </div>
+                }
+                title={
+                  <span className="text-sm flex items-center gap-2">
+                    <TagsOutlined className="text-cyan-400" />
+                    方案匹配标签
+                  </span>
+                }
+                trigger="hover"
+                placement="bottom"
+              >
+                <div className="flex items-center gap-1.5 cursor-help">
+                  <TagsOutlined className="text-cyan-400/70 text-xs" />
+                  <div className="flex gap-1 flex-wrap">
+                    {anomaly.solutionTags.slice(0, 3).map((tag) => (
+                      <Tag 
+                        key={tag} 
+                        className="!m-0 !text-xs !bg-cyan-500/10 !border-cyan-500/30 !text-cyan-400"
+                      >
+                        {getTagLabel(tag)}
+                      </Tag>
+                    ))}
+                    {anomaly.solutionTags.length > 3 && (
+                      <Tag className="!m-0 !text-xs !bg-gray-700 !border-gray-600 !text-gray-400">
+                        +{anomaly.solutionTags.length - 3}
+                      </Tag>
+                    )}
+                  </div>
+                </div>
+              </Popover>
+            )}
+          </div>
+
+          {/* 数据 */}
+          <div className="relative text-right min-w-[100px]">
+            <div
+              className={clsx(
+                'text-2xl font-bold tracking-tight',
+                anomaly.severity === 'severe' ? 'text-rose-400' : 'text-amber-400'
+              )}
+            >
+              {anomaly.currentValue}
+            </div>
+            <div className="text-xs text-gray-500 mt-1">
+              行业均值 {anomaly.benchmark}
+            </div>
+          </div>
+
+          {/* 差距 */}
+          <Tag
+            color={anomaly.severity === 'severe' ? 'red' : 'orange'}
+            className="relative !m-0 !px-3 !py-1 !text-xs !font-semibold !flex !items-center !gap-1"
+          >
+            ↓ 差距 {anomaly.gap}%
+          </Tag>
+
+          {/* 操作 */}
+          <div className="relative flex gap-2">
+            <Button 
+              size="small" 
+              className="!px-3 group-hover:!border-blue-500/50 group-hover:!text-blue-400"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleViewDetail(anomaly.id);
+              }}
+            >
+              诊断明细
+            </Button>
+          </div>
+
+          {/* 悬浮箭头指示 */}
+          <RightOutlined className="relative text-gray-600 opacity-0 group-hover:opacity-100 group-hover:translate-x-1 transition-all duration-300" />
+        </div>
+      ))}
+    </div>
+  );
+}

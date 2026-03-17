@@ -1,0 +1,247 @@
+/**
+ * WebSocket 连接管理
+ */
+
+export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface TaskStatusMessage {
+  type: 'task_status';
+  task_type: 'diagnosis' | 'solution' | 'tracking';
+  task_id: string;
+  enterprise_id: string;
+  status: TaskStatus;
+  progress: number;
+  message: string | null;
+  data: Record<string, unknown> | null;
+}
+
+export interface HeartbeatMessage {
+  type: 'heartbeat' | 'pong';
+}
+
+export interface ConnectedMessage {
+  type: 'connected';
+  message: string;
+}
+
+export type WebSocketMessage = TaskStatusMessage | HeartbeatMessage | ConnectedMessage;
+
+type MessageHandler = (message: TaskStatusMessage) => void;
+type ConnectionHandler = (connected: boolean) => void;
+
+class WebSocketManager {
+  private ws: WebSocket | null = null;
+  private enterpriseId: string | null = null;
+  private messageHandlers: Set<MessageHandler> = new Set();
+  private connectionHandlers: Set<ConnectionHandler> = new Set();
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  private reconnectDelay = 3000;
+  private pingInterval: NodeJS.Timeout | null = null;
+  private isManualClose = false;
+
+  /**
+   * 连接到 WebSocket
+   */
+  connect(enterpriseId: string) {
+    if (this.ws && this.enterpriseId === enterpriseId && 
+        this.ws.readyState === WebSocket.OPEN) {
+      return; // 已连接到相同的企业
+    }
+
+    this.disconnect(); // 先断开之前的连接
+    this.enterpriseId = enterpriseId;
+    this.isManualClose = false;
+
+    // 动态构建 WebSocket URL
+    // 优先使用环境变量
+    let wsBaseUrl = import.meta.env.VITE_WS_URL;
+    
+    if (!wsBaseUrl && typeof window !== 'undefined') {
+      // 在浏览器中，根据当前页面协议和主机构建
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const hostname = window.location.hostname;
+      const port = window.location.port;
+      
+      // Docker 环境端口映射：
+      // 前端: 13000 -> 3000
+      // 后端: 18000 -> 8000
+      // 如果当前端口是 13000（Docker 映射的前端端口），使用 18000（Docker 映射的后端端口）
+      let finalPort = port;
+      if (port === '13000') {
+        finalPort = '18000';
+      } else if (port === '3000' || !port) {
+        // 开发环境或标准端口，使用后端默认端口
+        finalPort = '8000';
+      }
+      
+      wsBaseUrl = `${protocol}//${hostname}:${finalPort}`;
+    }
+    
+    // 回退到默认值
+    wsBaseUrl = wsBaseUrl || 'ws://localhost:8000';
+    
+    const wsUrl = `${wsBaseUrl}/api/v1/ws/tasks/${enterpriseId}`;
+    console.log('[WebSocket] Connecting to:', wsUrl);
+    
+    try {
+      this.ws = new WebSocket(wsUrl);
+      
+      this.ws.onopen = () => {
+        console.log('[WebSocket] Connected to', enterpriseId);
+        this.reconnectAttempts = 0;
+        this.notifyConnectionHandlers(true);
+        this.startPing();
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const message: WebSocketMessage = JSON.parse(event.data);
+          
+          if (message.type === 'task_status') {
+            this.notifyMessageHandlers(message);
+          } else if (message.type === 'heartbeat') {
+            // 收到服务器心跳，发送 pong
+            this.send({ type: 'ping' });
+          }
+        } catch (e) {
+          console.error('[WebSocket] Failed to parse message:', e);
+        }
+      };
+
+      this.ws.onclose = (event) => {
+        console.log('[WebSocket] Disconnected:', event.code, event.reason);
+        this.stopPing();
+        this.notifyConnectionHandlers(false);
+        
+        if (!this.isManualClose && this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.scheduleReconnect();
+        }
+      };
+
+      this.ws.onerror = (error) => {
+        console.error('[WebSocket] Error:', error);
+      };
+    } catch (e) {
+      console.error('[WebSocket] Failed to create connection:', e);
+    }
+  }
+
+  /**
+   * 断开连接
+   */
+  disconnect() {
+    this.isManualClose = true;
+    this.stopPing();
+    
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    
+    this.enterpriseId = null;
+    this.reconnectAttempts = 0;
+  }
+
+  /**
+   * 发送消息
+   */
+  private send(data: object) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(data));
+    }
+  }
+
+  /**
+   * 启动心跳
+   */
+  private startPing() {
+    this.stopPing();
+    this.pingInterval = setInterval(() => {
+      this.send({ type: 'ping' });
+    }, 25000); // 每25秒发送一次ping
+  }
+
+  /**
+   * 停止心跳
+   */
+  private stopPing() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+  }
+
+  /**
+   * 计划重连
+   */
+  private scheduleReconnect() {
+    this.reconnectAttempts++;
+    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+    
+    console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+    
+    setTimeout(() => {
+      if (this.enterpriseId && !this.isManualClose) {
+        this.connect(this.enterpriseId);
+      }
+    }, delay);
+  }
+
+  /**
+   * 注册消息处理器
+   */
+  onMessage(handler: MessageHandler) {
+    this.messageHandlers.add(handler);
+    return () => {
+      this.messageHandlers.delete(handler);
+    };
+  }
+
+  /**
+   * 注册连接状态处理器
+   */
+  onConnectionChange(handler: ConnectionHandler) {
+    this.connectionHandlers.add(handler);
+    return () => {
+      this.connectionHandlers.delete(handler);
+    };
+  }
+
+  /**
+   * 通知所有消息处理器
+   */
+  private notifyMessageHandlers(message: TaskStatusMessage) {
+    this.messageHandlers.forEach(handler => {
+      try {
+        handler(message);
+      } catch (e) {
+        console.error('[WebSocket] Handler error:', e);
+      }
+    });
+  }
+
+  /**
+   * 通知所有连接状态处理器
+   */
+  private notifyConnectionHandlers(connected: boolean) {
+    this.connectionHandlers.forEach(handler => {
+      try {
+        handler(connected);
+      } catch (e) {
+        console.error('[WebSocket] Connection handler error:', e);
+      }
+    });
+  }
+
+  /**
+   * 获取连接状态
+   */
+  isConnected(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+}
+
+// 导出单例
+export const wsManager = new WebSocketManager();
+

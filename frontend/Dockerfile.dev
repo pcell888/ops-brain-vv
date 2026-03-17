@@ -1,0 +1,14 @@
+# 前端开发环境 Dockerfile
+FROM node:20-alpine
+
+WORKDIR /app
+
+# 启用 pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# 暴露 Vite 开发服务器端口
+EXPOSE 3000
+
+# 启动脚本：安装依赖并启动开发服务器
+CMD sh -c "pnpm install && pnpm run dev --host 0.0.0.0"
+

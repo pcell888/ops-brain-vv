@@ -87,7 +87,6 @@ DIMENSION_TOOL_MAP: dict[str, str] = {
     "marketing": "get_marketing_indicators",
     "retention": "get_retention_indicators",
     "efficiency": "get_efficiency_indicators",
-    "inventory": "get_inventory_indicators",
 }
 
 DIMENSION_STATE_KEY: dict[str, str] = {
@@ -95,7 +94,6 @@ DIMENSION_STATE_KEY: dict[str, str] = {
     "marketing": "marketing_indicators",
     "retention": "retention_indicators",
     "efficiency": "efficiency_indicators",
-    "inventory": "inventory_indicators",
 }
 
 
@@ -121,7 +119,7 @@ async def track_effects_node(state: DiagnosisState) -> dict:
 
     ordered_dims: list[str] = []
     tasks: list = []
-    for dim in ("crm", "marketing", "retention", "efficiency", "inventory"):
+    for dim in ("crm", "marketing", "retention", "efficiency"):
         if dim in active_dims:
             tasks.append(mcp_call("metrics-server", DIMENSION_TOOL_MAP[dim], common_args))
             ordered_dims.append(dim)

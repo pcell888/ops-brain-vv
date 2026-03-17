@@ -27,9 +27,38 @@ class BizAPIError(Exception):
 
 MOCK_DATA: dict[str, dict | list] = {
     # ── CRM ──
+    "/store/list": {
+        "list": [
+            {
+                "storeId": "s001",
+                "storeName": "杭州旗舰店",
+                "storeType": "retail",
+                "industryCode": "retail_general",
+                "province": "浙江省",
+                "city": "杭州市",
+                "customerCount": 3280,
+                "monthlyGmv": 425000,
+                "employeeCount": 18,
+                "adminAccountIds": ["admin-001", "admin-002"],
+            },
+            {
+                "storeId": "s002",
+                "storeName": "上海体验店",
+                "storeType": "retail",
+                "industryCode": "retail_general",
+                "province": "上海市",
+                "city": "上海市",
+                "customerCount": 2150,
+                "monthlyGmv": 310000,
+                "employeeCount": 12,
+                "adminAccountIds": ["admin-003"],
+            },
+        ],
+    },
     "/store/{id}": {
         "storeName": "AI示范店",
         "storeType": "retail",
+        "businessMode": "mall",
         "classId": "CLS001",
         "industryCode": "retail_general",
         "province": "浙江省",
@@ -102,7 +131,7 @@ MOCK_DATA: dict[str, dict | list] = {
         "completedOrders": 2050,
         "newCustomers": 320,
     },
-    "/store-activities/roi": {"totalSpend": 28000},
+    "/seckill-apply/conversion-stats": {"totalSeckillGoods": 500, "soldGoods": 185},
     "/manage-data/exposure-stats": {"browseUsers": 12600},
 
     # ── Metrics: 留存维度 ──
@@ -121,17 +150,6 @@ MOCK_DATA: dict[str, dict | list] = {
     "/service-order/completion-stats": {"totalServiceOrders": 360, "completedOrders": 306},
     "/store-order/shipping-stats": {"avgShippingHours": 14.2},
 
-    # ── Metrics: 库存维度 ──
-    "/stock/statistics": {
-        "stockoutSku": 12,
-        "overstockSku": 35,
-        "avgTurnoverDays": 28.5,
-    },
-    "/store-goods/statistics": {
-        "totalSku": 480,
-        "activeSku": 420,
-    },
-
     # ── Benchmark ──
     "/industry-trend-statistics/benchmark": {
         "benchmarks": {
@@ -141,7 +159,7 @@ MOCK_DATA: dict[str, dict | list] = {
             "coupon_redemption_rate": {"avg_value": 32.0, "median_value": 30.0, "excellent_value": 50.0},
             "browse_to_order_rate": {"avg_value": 5.8, "median_value": 5.0, "excellent_value": 10.0},
             "order_conversion_rate": {"avg_value": 85.0, "median_value": 83.0, "excellent_value": 95.0},
-            "customer_acquisition_cost": {"avg_value": 120, "median_value": 100, "excellent_value": 50},
+            "seckill_conversion_rate": {"avg_value": 30.0, "median_value": 28.0, "excellent_value": 55.0},
             "repurchase_rate": {"avg_value": 35.0, "median_value": 32.0, "excellent_value": 55.0},
             "refund_rate": {"avg_value": 5.0, "median_value": 4.5, "excellent_value": 2.0},
             "churn_rate": {"avg_value": 18.0, "median_value": 16.0, "excellent_value": 8.0},
@@ -150,9 +168,6 @@ MOCK_DATA: dict[str, dict | list] = {
             "service_completion_rate": {"avg_value": 80.0, "median_value": 78.0, "excellent_value": 95.0},
             "avg_shipping_hours": {"avg_value": 18.0, "median_value": 16.0, "excellent_value": 6.0},
             "task_on_time_rate": {"avg_value": 75.0, "median_value": 72.0, "excellent_value": 92.0},
-            "stock_turnover_days": {"avg_value": 30.0, "median_value": 28.0, "excellent_value": 15.0},
-            "stockout_rate": {"avg_value": 5.0, "median_value": 4.0, "excellent_value": 1.0},
-            "overstock_rate": {"avg_value": 10.0, "median_value": 8.0, "excellent_value": 3.0},
         },
     },
     "/store-class/list": [
