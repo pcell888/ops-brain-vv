@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.constants import API_PREFIX
 from src.api.routes import diagnosis, solutions, sys_config, track, review, ws, mcp
+from src.api.routes import compat_enterprises, compat_diagnosis, compat_dimensions, compat_solutions, compat_ws, compat_execution, compat_tracking
 from src.agent.graph import close_checkpointer
 from src.agent.tools import close_all_sessions as close_mcp_sessions
 from src.core.db_init import (
@@ -49,6 +50,15 @@ api_router.include_router(sys_config.router)
 api_router.include_router(ws.router)
 api_router.include_router(mcp.router)
 
+# 前端兼容层路由（优先匹配，放在原始路由之后即可，因为路径不冲突）
+api_router.include_router(compat_enterprises.router)
+api_router.include_router(compat_diagnosis.router)
+api_router.include_router(compat_dimensions.router)
+api_router.include_router(compat_solutions.router)
+api_router.include_router(compat_execution.router)
+api_router.include_router(compat_tracking.router)
+api_router.include_router(compat_ws.router)
+
 app.include_router(api_router)
 
 
@@ -62,6 +72,9 @@ async def startup():
     await ensure_ai_effect_tracking()
     await ensure_ai_review_report()
     await wlwq_get_pool()
+
+    from src.api.deps import manager as diag_manager
+    compat_ws.install_enterprise_bridge(diag_manager)
 
 
 @app.on_event("shutdown")

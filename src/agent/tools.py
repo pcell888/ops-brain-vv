@@ -144,24 +144,30 @@ async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) 
         ) from e
 
 
-def emit_progress(state: dict, message: str):
+def emit_progress(state: dict, message: str, percent: int | float | None = None):
     """向 state 中追加进度消息（会被 LangGraph add_messages reducer 合并）；若已 set_progress_sender 则同时实时推送到 WS。"""
     state.setdefault("progress_messages", [])
     ts = datetime.now().isoformat()
-    state["progress_messages"].append({
+    payload = {
         "type": "human",
         "content": message,
         "timestamp": ts,
-    })
+    }
+    if percent is not None:
+        payload["percent"] = percent
+    state["progress_messages"].append(payload)
     sender = _progress_sender.get()
     if sender:
         thread_id, manager = sender
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(manager.send_progress(thread_id, {
+            ws_payload = {
                 "type": "progress",
                 "message": message,
                 "timestamp": ts,
-            }))
+            }
+            if percent is not None:
+                ws_payload["percent"] = percent
+            loop.create_task(manager.send_progress(thread_id, ws_payload))
         except RuntimeError:
             pass

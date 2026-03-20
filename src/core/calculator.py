@@ -108,6 +108,23 @@ DEFAULT_DIMENSION_WEIGHTS: dict[str, float] = {
 }
 
 ANOMALY_THRESHOLD_PCT = 15.0  # 偏离行业均值超过此百分比视为异常
+DEFAULT_BENCHMARKS: dict[str, dict[str, float]] = {
+    "lead_conversion_rate": {"avg_value": 5.2, "excellent_value": 8.5},
+    "response_time_avg": {"avg_value": 6.0, "excellent_value": 2.0},
+    "follow_up_count": {"avg_value": 800.0, "excellent_value": 1500.0},
+    "coupon_redemption_rate": {"avg_value": 32.0, "excellent_value": 50.0},
+    "browse_to_order_rate": {"avg_value": 5.8, "excellent_value": 10.0},
+    "order_conversion_rate": {"avg_value": 85.0, "excellent_value": 95.0},
+    "seckill_conversion_rate": {"avg_value": 30.0, "excellent_value": 55.0},
+    "repurchase_rate": {"avg_value": 35.0, "excellent_value": 55.0},
+    "refund_rate": {"avg_value": 5.0, "excellent_value": 2.0},
+    "churn_rate": {"avg_value": 18.0, "excellent_value": 8.0},
+    "positive_review_rate": {"avg_value": 82.0, "excellent_value": 95.0},
+    "avg_customer_lifetime_value": {"avg_value": 1200.0, "excellent_value": 2500.0},
+    "service_completion_rate": {"avg_value": 80.0, "excellent_value": 95.0},
+    "avg_shipping_hours": {"avg_value": 18.0, "excellent_value": 6.0},
+    "task_on_time_rate": {"avg_value": 75.0, "excellent_value": 92.0},
+}
 
 
 def list_available_indicators(
@@ -208,6 +225,10 @@ def calculate_dimension_score(
 
         current_value = ind_data["value"] if isinstance(ind_data, dict) else ind_data
         bench = benchmark_data.get(code)
+        if isinstance(bench, dict) and (bench.get("avg_value") in (None, 0)):
+            bench = DEFAULT_BENCHMARKS.get(code, bench)
+        elif bench in (None, 0):
+            bench = DEFAULT_BENCHMARKS.get(code)
         if bench is None:
             total_score += 60
             count += 1
@@ -284,6 +305,46 @@ def extract_indicator_codes(*indicator_dicts: dict) -> list[str]:
     return [c for c in codes if c in INDICATOR_META]
 
 
+def calculate_dimension_benchmarks_scores(
+    dimension_benchmarks: dict[str, list[dict]],
+) -> dict[str, float]:
+    """按维度计算行业基准得分。"""
+    dimension_benchmarks_scores: dict[str, float] = {}
+    for dim in ALL_DIMENSIONS:
+        items = dimension_benchmarks.get(dim) if isinstance(dimension_benchmarks, dict) else None
+        if not isinstance(items, list) or not items:
+            dimension_benchmarks_scores[dim] = 60.0
+            continue
+
+        indicator_base_scores: list[float] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("indicator_code") or "")
+            meta = INDICATOR_META.get(code, {})
+            direction = meta.get("direction", "higher_is_better")
+            avg_val = item.get("avg_value")
+            excellent_val = item.get("excellent_value")
+            try:
+                avg_num = float(avg_val)
+                excellent_num = float(excellent_val)
+                if avg_num <= 0 or excellent_num <= 0:
+                    raise ValueError("invalid benchmark values")
+                if direction == "lower_is_better":
+                    score = excellent_num / avg_num * 100
+                else:
+                    score = avg_num / excellent_num * 100
+                indicator_base_scores.append(max(0.0, min(100.0, round(score, 2))))
+            except (TypeError, ValueError):
+                indicator_base_scores.append(60.0)
+
+        if not indicator_base_scores:
+            dimension_benchmarks_scores[dim] = 60.0
+        else:
+            dimension_benchmarks_scores[dim] = round(sum(indicator_base_scores) / len(indicator_base_scores), 2)
+    return dimension_benchmarks_scores
+
+
 def build_diagnosis_report(
     store_profile: dict,
     health_score: float,
@@ -327,6 +388,8 @@ def build_diagnosis_report(
     else:
         summary_parts.append("各项指标表现正常，暂未发现异常。")
 
+    dimension_benchmarks_scores = calculate_dimension_benchmarks_scores(dimension_benchmarks)
+
     return {
         "tenant_id": store_profile.get("tenant_id", ""),
         "store_id": store_profile.get("store_id", ""),
@@ -335,6 +398,7 @@ def build_diagnosis_report(
         "dimension_scores": dimension_scores,
         "dimension_indicator_scores": dimension_indicator_scores,
         "dimension_benchmarks": dimension_benchmarks,
+        "dimension_benchmarks_scores": dimension_benchmarks_scores,
         "anomalies": anomalies_with_root,
         "root_causes": root_causes,
         "summary": "".join(summary_parts),

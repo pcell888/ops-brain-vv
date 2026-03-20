@@ -1,20 +1,16 @@
 
 
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Tag, Spin, Empty, Button, Descriptions, Timeline, Tooltip, App, Progress } from 'antd';
+import { Card, Tag, Spin, Empty, Button, Descriptions, Timeline, Tooltip } from 'antd';
 import { 
   ArrowLeftOutlined, 
   LoadingOutlined,
   ExclamationCircleOutlined,
   BulbOutlined,
-  ThunderboltOutlined,
   LineChartOutlined,
-  CheckOutlined,
 } from '@ant-design/icons';
-import { useMemo, useState, useEffect, useRef } from 'react';
 import clsx from 'clsx';
-import { useAnomalyDetail, useDimensionConfig, useGenerateSolutions } from '@/lib/hooks';
-import { useQueryClient } from '@tanstack/react-query';
+import { useAnomalyDetail, useDimensionConfig } from '@/lib/hooks';
 import { useAppStore } from '@/stores/app-store';
 import { getTagLabel } from '@/lib/tag-labels';
 
@@ -29,106 +25,28 @@ const severityConfig: Record<string, { color: string; text: string; bgClass: str
 export default function AnomalyDetailPage() {
   const params = useParams();
   const navigate = useNavigate();
-  const { message } = App.useApp();
   const { currentEnterprise } = useAppStore();
   
   const diagnosisId = params.diagnosisId as string;
   const anomalyId = params.anomalyId as string;
   
-  const queryClient = useQueryClient();
   const enterpriseId = currentEnterprise?.id || null;
   const { data: anomalyDetail, isLoading } = useAnomalyDetail(diagnosisId, anomalyId);
   const { getDimensionDisplayName, getMetricDisplayName } = useDimensionConfig(enterpriseId);
   
-  // 从详情中获取异常和根因分析
   const anomaly = anomalyDetail?.anomaly;
   const rootCauseAnalysis = anomalyDetail?.root_cause_analysis;
-  
-  // 从异常详情中获取方案ID（如果有）
-  const solutionId = anomalyDetail?.solution_id;
-  const hasSolution = !!solutionId;
 
-  // 获取指标单位（优先 anomaly.unit → 默认 %）
   const unit = anomaly?.unit || '%';
   
-  // 返回上一页
   const handleBack = () => {
     navigate(-1);
   };
-  
-  // 生成方案
-  const [overlayVisible, setOverlayVisible] = useState(false);
-  const [progressStep, setProgressStep] = useState<number | null>(null);
-  const [progressStatus, setProgressStatus] = useState<'generating' | 'success' | 'error'>('generating');
-  
-  const generateSolutions = useGenerateSolutions((step) => {
-    setProgressStep(step);
-  });
 
-  const progressSteps = [
-    { label: '正在分析异常指标...', icon: <LoadingOutlined spin /> },
-    { label: '正在匹配解决方案库...', icon: <LoadingOutlined spin /> },
-    { label: '正在生成优化方案...', icon: <LoadingOutlined spin /> },
-    { label: '正在评估方案可行性...', icon: <LoadingOutlined spin /> },
-  ];
-
-  // 处理方案按钮点击
-  const handleSolutionAction = async () => {
-    if (hasSolution) {
-      // 已有方案，跳转查看
-      navigate(`/solutions/${diagnosisId}?anomaly_id=${anomalyId}`);
-      return;
-    }
-    // 无方案，触发生成
-    if (!enterpriseId) {
-      message.warning('请先选择企业');
-      return;
-    }
-    setProgressStep(0);
-    setProgressStatus('generating');
-    setOverlayVisible(true);
-    try {
-      const result = await generateSolutions.mutateAsync({
-        enterprise_id: enterpriseId,
-        diagnosis_id: diagnosisId,
-        anomaly_ids: [anomalyId],
-        ranking_strategy: 'balanced',
-      });
-      
-      // 检查是否生成了方案
-      const solutionCount = (result as { solution_count?: number })?.solution_count || 0;
-      if (solutionCount === 0) {
-        setProgressStatus('error');
-        message.error('未能生成任何方案。可能原因：异常指标没有匹配的解决方案标签，或没有找到匹配的方案模板。');
-        setTimeout(() => {
-          setOverlayVisible(false);
-          setProgressStep(null);
-        }, 2000);
-        return;
-      }
-      
-      setProgressStatus('success');
-      // 等待缓存刷新完成，确保跳转后能拿到最新数据
-      await queryClient.refetchQueries({ queryKey: ['solutions', 'list', diagnosisId] });
-      const targetUrl = `/solutions/${diagnosisId}?anomaly_id=${anomalyId}`;
-      // 显示成功状态 1s 后跳转
-      setTimeout(() => {
-        setOverlayVisible(false);
-        setProgressStep(null);
-        navigate(targetUrl);
-      }, 1000);
-    } catch (error: any) {
-      setProgressStatus('error');
-      const errorMessage = error?.message || '方案生成失败';
-      message.error(errorMessage);
-      setTimeout(() => {
-        setOverlayVisible(false);
-        setProgressStep(null);
-      }, 2000);
-    }
+  const handleViewSolutions = () => {
+    navigate(`/solutions/${diagnosisId}`);
   };
 
-  // 处理钻取
   const handleDrillDown = () => {
     if (anomaly?.metric_name && anomaly?.dimension) {
       navigate(`/diagnosis/${diagnosisId}/drill-down/${encodeURIComponent(anomaly.metric_name)}?dimension=${anomaly.dimension}`);
@@ -167,84 +85,6 @@ export default function AnomalyDetailPage() {
   
   return (
     <div className="space-y-6">
-      {/* 生成方案蒙版 */}
-      {overlayVisible && (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-gray-900/95 border border-gray-700/60 rounded-2xl p-8 w-[420px] shadow-2xl">
-            {progressStatus === 'success' ? (
-              <div className="text-center">
-                <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center mx-auto mb-4">
-                  <CheckOutlined className="text-3xl text-emerald-400" />
-                </div>
-                <div className="text-xl font-semibold text-white mb-2">方案生成完成</div>
-                <div className="text-gray-400 text-sm">正在跳转到方案详情...</div>
-              </div>
-            ) : progressStatus === 'error' ? (
-              <div className="text-center">
-                <div className="w-16 h-16 rounded-full bg-rose-500/20 flex items-center justify-center mx-auto mb-4">
-                  <ExclamationCircleOutlined className="text-3xl text-rose-400" />
-                </div>
-                <div className="text-xl font-semibold text-white mb-2">生成失败</div>
-                <div className="text-gray-400 text-sm">请稍后重试</div>
-              </div>
-            ) : (
-              <div>
-                <div className="flex items-center justify-center mb-6">
-                  <div className="w-16 h-16 rounded-full bg-blue-500/20 flex items-center justify-center">
-                    <BulbOutlined className="text-3xl text-blue-400 animate-pulse" />
-                  </div>
-                </div>
-                <div className="text-center text-xl font-semibold text-white mb-6">AI 正在生成优化方案</div>
-                <div className="space-y-3">
-                  {progressSteps.map((step, idx) => {
-                    const stepValue = progressStep ?? -1;
-                    return (
-                      <div 
-                        key={idx}
-                        className={clsx(
-                          'flex items-center gap-3 px-4 py-2.5 rounded-lg transition-all duration-500',
-                          idx < stepValue ? 'bg-emerald-500/10' :
-                          idx === stepValue ? 'bg-blue-500/10' :
-                          'bg-gray-800/30 opacity-40'
-                        )}
-                      >
-                        <span className="flex-shrink-0 w-6 h-6 flex items-center justify-center">
-                          {idx < stepValue ? (
-                            <CheckOutlined className="text-emerald-400" />
-                          ) : idx === stepValue ? (
-                            <LoadingOutlined spin className="text-blue-400" />
-                          ) : (
-                            <span className="w-2 h-2 rounded-full bg-gray-600" />
-                          )}
-                        </span>
-                        <span className={clsx(
-                          'text-sm',
-                          idx < stepValue ? 'text-emerald-400' :
-                          idx === stepValue ? 'text-blue-300' :
-                          'text-gray-500'
-                        )}>
-                          {step.label}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="mt-6">
-                  <Progress 
-                    percent={progressStep !== null ? Math.min(95, ((progressStep + 1) / progressSteps.length) * 90) : 0}
-                    showInfo={false}
-                    strokeColor={{ from: '#3b82f6', to: '#06b6d4' }}
-                    trailColor="rgba(255,255,255,0.05)"
-                    strokeWidth={6}
-                  />
-                </div>
-                <div className="text-center text-gray-500 text-xs mt-3">预计需要 10-30 秒，请稍候...</div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* 页面标题 */}
       <div className="flex justify-between items-center">
         <div className="flex items-center gap-4">
@@ -272,12 +112,10 @@ export default function AnomalyDetailPage() {
         </div>
         <div className="flex gap-3">
           <Button 
-            type={hasSolution ? 'primary' : 'default'}
             icon={<BulbOutlined />}
-            loading={generateSolutions.isPending}
-            onClick={handleSolutionAction}
+            onClick={handleViewSolutions}
           >
-            {hasSolution ? '查看方案' : '生成方案'}
+            查看方案
           </Button>
           {anomaly?.metric_name && anomaly?.dimension && (
             <Button 
@@ -443,15 +281,9 @@ export default function AnomalyDetailPage() {
               <div className="text-gray-500 text-xs mb-2">相关方案标签</div>
               <div className="flex flex-wrap gap-2">
                 {anomaly.solution_tags.map((tag: string, index: number) => (
-                  <Tooltip key={index} title="点击查看相关方案">
-                    <Tag 
-                      color="processing" 
-                      className="!cursor-pointer hover:!opacity-80"
-                      onClick={handleSolutionAction}
-                    >
-                      {getTagLabel(tag)}
-                    </Tag>
-                  </Tooltip>
+                  <Tag key={index} color="processing">
+                    {getTagLabel(tag)}
+                  </Tag>
                 ))}
               </div>
             </div>

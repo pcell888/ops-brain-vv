@@ -12,8 +12,6 @@ const AnomalyDetailPage = lazy(() => import('@/pages/diagnosis/[diagnosisId]/ano
 const DrillDownPage = lazy(() => import('@/pages/diagnosis/[diagnosisId]/drill-down/[metricName]'));
 const SolutionsPage = lazy(() => import('@/pages/solutions'));
 const SolutionDiagnosisPage = lazy(() => import('@/pages/solutions/[diagnosisId]'));
-const SolutionLibraryPage = lazy(() => import('@/pages/solutions/library'));
-const SolutionTemplatePage = lazy(() => import('@/pages/solutions/library/[templateId]'));
 const ExecutionPage = lazy(() => import('@/pages/execution'));
 const ExecutionDetailPage = lazy(() => import('@/pages/execution/[planId]'));
 const TrackingPage = lazy(() => import('@/pages/tracking'));
@@ -22,7 +20,6 @@ const TrackingReportPage = lazy(() => import('@/pages/tracking/[trackingId]/repo
 const TrackingCasesPage = lazy(() => import('@/pages/tracking/cases'));
 const TrackingCaseDetailPage = lazy(() => import('@/pages/tracking/cases/[caseId]'));
 const SettingsPage = lazy(() => import('@/pages/settings'));
-const CRMRealtimeDashboard = lazy(() => import('@/pages/crm'));
 
 const PageLoading = () => (
   <div className="flex items-center justify-center h-[60vh]">
@@ -42,18 +39,15 @@ export default function App() {
           <Route path="/diagnosis/:diagnosisId/anomaly/:anomalyId" element={<AnomalyDetailPage />} />
           <Route path="/diagnosis/:diagnosisId/drill-down/:metricName" element={<DrillDownPage />} />
           <Route path="/solutions" element={<SolutionsPage />} />
-          <Route path="/solutions/library" element={<SolutionLibraryPage />} />
-          <Route path="/solutions/library/:templateId" element={<SolutionTemplatePage />} />
           <Route path="/solutions/:diagnosisId" element={<SolutionDiagnosisPage />} />
           <Route path="/execution" element={<ExecutionPage />} />
           <Route path="/execution/:planId" element={<ExecutionDetailPage />} />
           <Route path="/tracking" element={<TrackingPage />} />
-          <Route path="/tracking/:trackingId" element={<TrackingDetailPage />} />
-          <Route path="/tracking/:trackingId/report" element={<TrackingReportPage />} />
           <Route path="/tracking/cases" element={<TrackingCasesPage />} />
           <Route path="/tracking/cases/:caseId" element={<TrackingCaseDetailPage />} />
+          <Route path="/tracking/:trackingId" element={<TrackingDetailPage />} />
+          <Route path="/tracking/:trackingId/report" element={<TrackingReportPage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/crm" element={<CRMRealtimeDashboard />} />
         </Route>
       </Routes>
     </Suspense>

@@ -169,13 +169,23 @@ export const industryBenchmarkApi = {
     api.delete<{ ok: boolean }>(`/enterprises/industry-benchmarks/${id}`),
 };
 export const diagnosisApi = {
-  // 启动诊断
+  // 启动诊断（映射 enterprise_id → tenant_id/store_id）
   start: (data: { 
     enterprise_id: string; 
     trigger_type?: string;
     dimensions?: string[];
     async_mode?: boolean;
-  }) => api.post('/diagnosis/start', data),
+    store_id?: string;
+  }) => api.post('/diagnosis/start', {
+    tenant_id: data.enterprise_id,
+    store_id: data.store_id || '',
+    trigger_type: data.trigger_type || 'manual',
+    selected_dimensions: data.dimensions || null,
+  }).then((res: any) => ({
+    ...res,
+    diagnosis_id: res.thread_id,
+    status: 'running',
+  })),
   
   // 获取诊断状态
   getStatus: (diagnosisId: string) =>

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from src.wlwq.database import get_cursor
+from src.wlwq.routes._random_control import random_enabled, random_int
 
 router = APIRouter(prefix="/sales-contract", tags=["sales-contract"])
 
@@ -18,8 +19,18 @@ async def statistics(
     storeId: str | None = Query(None, alias="storeId"),
     startDate: str | None = Query(None, alias="startDate"),
     endDate: str | None = Query(None, alias="endDate"),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
     """签约数等。"""
+    if random_enabled(useRandom):
+        return _ok({
+            "signedCount": random_int(
+                "WLWQ_SALES_CONTRACT_RANDOM_MIN",
+                "WLWQ_SALES_CONTRACT_RANDOM_MAX",
+                70,
+                120,
+            )
+        })
     try:
         async with get_cursor() as cur:
             await cur.execute(

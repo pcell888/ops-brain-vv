@@ -62,7 +62,14 @@ export function useDiagnosisList(enterpriseId: string | null, skip = 0, limit = 
     queryFn: () => diagnosisApi.list({ enterprise_id: enterpriseId!, skip, limit }),
     enabled: !!enterpriseId,
     staleTime: 0,
-    refetchOnMount: true,
+    refetchOnMount: 'always',
+    refetchInterval: (query) => {
+      const items = (query.state.data as DiagnosisListResponse | undefined)?.items;
+      if (items?.some(i => i.status === 'running' || i.status === 'pending')) {
+        return 2000;
+      }
+      return false;
+    },
   });
 }
 

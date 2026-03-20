@@ -9,7 +9,6 @@ import {
   RocketOutlined,
   LineChartOutlined,
   SettingOutlined,
-  TeamOutlined,
 } from '@ant-design/icons';
 
 const menuItems = [
@@ -31,18 +30,6 @@ const menuItems = [
     ],
   },
   {
-    key: 'crm',
-    label: 'CRM 实时看板',
-    type: 'group' as const,
-    children: [
-      {
-        key: '/crm',
-        icon: <TeamOutlined />,
-        label: '线索看板',
-      },
-    ],
-  },
-  {
     key: 'solution',
     label: '优化方案',
     type: 'group' as const,
@@ -50,12 +37,7 @@ const menuItems = [
       {
         key: '/solutions',
         icon: <BulbOutlined />,
-        label: '推荐方案',
-      },
-      {
-        key: '/solutions/library',
-        icon: <FileSearchOutlined />,
-        label: '方案库',
+        label: '方案管理',
       },
     ],
   },
@@ -67,7 +49,7 @@ const menuItems = [
       {
         key: '/execution',
         icon: <RocketOutlined />,
-        label: '执行监控',
+        label: '任务执行',
       },
     ],
   },

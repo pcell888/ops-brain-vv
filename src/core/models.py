@@ -120,6 +120,7 @@ class DiagnosisReport(BaseModel):
     dimension_scores: dict[str, DimensionScore]
     dimension_indicator_scores: dict[str, list[DimensionIndicatorScore]] = Field(default_factory=dict)
     dimension_benchmarks: dict[str, list[DimensionBenchmark]] = Field(default_factory=dict)
+    dimension_benchmarks_scores: dict[str, float] = Field(default_factory=dict)
     anomalies: list[Anomaly]
     root_causes: list[RootCause]
     summary: str

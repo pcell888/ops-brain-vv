@@ -42,7 +42,7 @@ async def collect_data_node(state: DiagnosisState) -> dict:
     start_date = (datetime.now() - timedelta(days=int(lookback_days))).strftime("%Y-%m-%d")
 
     scope_label = "全企业" if not store_id else f"店铺 {store_id}"
-    emit_progress(state, f"开始采集{scope_label}运营数据（{len(active_dims)}个维度, {len(active_inds)}项指标）...")
+    emit_progress(state, f"开始采集{scope_label}运营数据（{len(active_dims)}个维度, {len(active_inds)}项指标）...", percent=10)
 
     common_args = {
         "tenant_id": tenant_id,
@@ -60,9 +60,17 @@ async def collect_data_node(state: DiagnosisState) -> dict:
 
     results = await asyncio.gather(*tasks)
     profile = results[0]
+    if isinstance(profile, str):
+        import json as _json
+        try:
+            profile = _json.loads(profile)
+        except (ValueError, TypeError):
+            profile = {}
+    if not isinstance(profile, dict):
+        profile = {}
     dim_results = dict(zip(ordered_dims, results[1:]))
 
-    emit_progress(state, "数据采集完成，正在获取行业基准数据...")
+    emit_progress(state, "数据采集完成，正在获取行业基准数据...", percent=25)
 
     indicator_dicts = [dim_results[d] for d in ordered_dims]
     all_indicator_codes = extract_indicator_codes(*indicator_dicts)
@@ -73,7 +81,7 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         "indicator_codes": filtered_codes,
     })
 
-    emit_progress(state, f"已采集 {len(filtered_codes)} 项指标，行业基准数据就绪")
+    emit_progress(state, f"已采集 {len(filtered_codes)} 项指标，行业基准数据就绪", percent=33)
 
     business_mode = profile.get("business_mode", "hybrid")
     na_codes = NOT_APPLICABLE_MAP.get(business_mode, set())

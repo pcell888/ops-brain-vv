@@ -10,12 +10,13 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "qwen-max"
     llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    llm_enabled: bool = True
 
     credential_encrypt_key: str = ""
 
     diagnosis_lookback_days: int = 90
     tenant_cache_ttl: int = 600
-    benchmark_cache_ttl: int = 86400
+    benchmark_cache_ttl: int = 600
 
     # 为 True 时先按 5.2.3 规则推送指标动作任务，再推送采纳方案任务（两次）；为 False 时仅推送采纳方案任务（一次）
     exec_push_rule_tasks: bool = True

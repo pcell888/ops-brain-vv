@@ -34,6 +34,21 @@ async def _llm_generate_solutions(
     historical_cases: list[dict] | None = None,
 ) -> list[dict]:
     settings = get_settings()
+    if not settings.llm_enabled:
+        logger.info("LLM_ENABLED=false，跳过方案LLM生成")
+        return [{
+            "plan_id": f"plan_{uuid.uuid4().hex[:8]}",
+            "plan_name": "调试模式默认优化方案",
+            "description": "LLM 已关闭，生成本地兜底方案。",
+            "target_indicators": [a.get("indicator_code") for a in anomalies[:3] if a.get("indicator_code")],
+            "expected_improvement": {},
+            "expected_roi": 1.0,
+            "difficulty_score": 5,
+            "urgency_score": 5,
+            "priority_level": "medium",
+            "steps": [],
+            "auto_actions": [],
+        }]
     llm = ChatOpenAI(
         model=settings.llm_model,
         api_key=settings.llm_api_key,
@@ -90,7 +105,7 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
     if not anomalies:
         return {"solution_plans": []}
 
-    emit_progress(state, "正在匹配优化方案模板...")
+    emit_progress(state, "正在匹配优化方案模板...", percent=78)
 
     store_profile = state.get("store_profile", {})
     benchmarks = state.get("benchmarks", {})
@@ -106,7 +121,7 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
     if historical_cases:
         emit_progress(state, f"已匹配 {len(historical_cases)} 个历史成功案例作为参考")
 
-    emit_progress(state, "AI正在生成个性化优化方案...")
+    emit_progress(state, "AI正在生成个性化优化方案...", percent=88)
 
     plans = await _llm_generate_solutions(
         store_profile=store_profile,
@@ -130,7 +145,7 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
 
     plans.sort(key=lambda p: p.get("priority_score", 0), reverse=True)
 
-    emit_progress(state, f"已生成 {len(plans)} 个优化方案，等待采纳")
+    emit_progress(state, f"已生成 {len(plans)} 个优化方案，等待采纳", percent=98)
 
     try:
         plans_summary = [{"name": p.get("plan_name", ""), "priority": p.get("priority_level", "medium")} for p in plans]

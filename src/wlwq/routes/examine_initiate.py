@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, Query, Body
 
 from src.wlwq.database import get_pool, get_cursor
+from src.wlwq.routes._random_control import random_enabled, random_float, random_int
 
 router = APIRouter(prefix="/examine-initiate", tags=["examine-initiate"])
 
@@ -24,8 +25,14 @@ async def follow_stats(
     storeId: str | None = Query(None, alias="storeId"),
     startDate: str | None = Query(None, alias="startDate"),
     endDate: str | None = Query(None, alias="endDate"),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
     """跟进统计：followTotal, avgResponseHours。"""
+    if random_enabled(useRandom):
+        return _ok({
+            "followTotal": random_int("WLWQ_FOLLOW_TOTAL_RANDOM_MIN", "WLWQ_FOLLOW_TOTAL_RANDOM_MAX", 380, 720),
+            "avgResponseHours": random_float("WLWQ_AVG_RESPONSE_RANDOM_MIN", "WLWQ_AVG_RESPONSE_RANDOM_MAX", 8.0, 12.0, 2),
+        })
     try:
         async with get_cursor() as cur:
             await cur.execute(
@@ -50,8 +57,13 @@ async def turnaround_stats(
     storeId: str | None = Query(None, alias="storeId"),
     startDate: str | None = Query(None, alias="startDate"),
     endDate: str | None = Query(None, alias="endDate"),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
     """审批时效：onTimeRate。"""
+    if random_enabled(useRandom):
+        return _ok({
+            "onTimeRate": random_float("WLWQ_ON_TIME_RATE_RANDOM_MIN", "WLWQ_ON_TIME_RATE_RANDOM_MAX", 45.0, 68.0, 2)
+        })
     try:
         async with get_cursor() as cur:
             await cur.execute(

@@ -2,22 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
 
 from langchain_openai import ChatOpenAI
 
 from src.agent.state import DiagnosisState
 from src.agent.tools import mcp_call, emit_progress
-from src.core.tenant_config import get_tenant_config
 from src.agent.prompts.root_cause_analysis import (
     ROOT_CAUSE_ANALYSIS_SYSTEM,
     ROOT_CAUSE_ANALYSIS_USER,
 )
 from src.core.calculator import (
     INDICATOR_META,
+    DEFAULT_BENCHMARKS,
     calculate_dimension_score,
     build_diagnosis_report,
     resolve_active_indicators,
@@ -40,6 +38,9 @@ async def _llm_root_cause_analysis(
     all_indicators: dict,
 ) -> list[dict]:
     settings = get_settings()
+    if not settings.llm_enabled:
+        logger.info("LLM_ENABLED=false，跳过根因LLM分析")
+        return []
     llm = ChatOpenAI(
         model=settings.llm_model,
         api_key=settings.llm_api_key,
@@ -58,18 +59,25 @@ async def _llm_root_cause_analysis(
         {"role": "user", "content": user_msg},
     ])
 
+    text = ""
     try:
         text = resp.content.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        return json.loads(text)
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict):
+            return [parsed]
+        logger.warning("LLM根因分析输出类型异常: %s", type(parsed).__name__)
+        return []
     except (json.JSONDecodeError, IndexError):
         logger.warning("LLM根因分析输出解析失败，返回原始文本")
         return [{"anomaly_indicator": "unknown", "cause": text, "evidence": "", "confidence": 0.5}]
 
 
 async def diagnose_node(state: DiagnosisState) -> dict:
-    emit_progress(state, "正在计算运营健康度...")
+    emit_progress(state, "正在计算运营健康度...", percent=45)
 
     active_dims, active_inds = resolve_active_indicators(
         state.get("selected_dimensions"),
@@ -78,7 +86,13 @@ async def diagnose_node(state: DiagnosisState) -> dict:
     weights = rebalance_weights(active_dims)
 
     benchmarks = state.get("benchmarks", {})
+    if not isinstance(benchmarks, dict):
+        logger.warning("benchmarks 类型异常，已降级为空对象: %s", type(benchmarks).__name__)
+        benchmarks = {}
     benchmark_data = benchmarks.get("benchmarks", benchmarks)
+    if not isinstance(benchmark_data, dict):
+        logger.warning("benchmark_data 类型异常，已降级为空对象: %s", type(benchmark_data).__name__)
+        benchmark_data = {}
 
     dim_state_map = {
         "crm": "crm_indicators",
@@ -95,6 +109,9 @@ async def diagnose_node(state: DiagnosisState) -> dict:
         if dim_name not in active_dims:
             continue
         indicators = state.get(state_key, {})
+        if not isinstance(indicators, dict):
+            logger.warning("%s 类型异常，已降级为空对象: %s", state_key, type(indicators).__name__)
+            indicators = {}
         weight = weights.get(dim_name, 0)
 
         if not indicators:
@@ -123,6 +140,8 @@ async def diagnose_node(state: DiagnosisState) -> dict:
         dimension_benchmarks[dim_name] = []
         for code, meta in dim_indicators:
             bench = benchmark_data.get(code)
+            if (isinstance(bench, dict) and bench.get("avg_value") in (None, 0)) or bench in (None, 0):
+                bench = DEFAULT_BENCHMARKS.get(code, bench)
             if isinstance(bench, dict):
                 dimension_benchmarks[dim_name].append({
                     "indicator_code": code,
@@ -151,7 +170,7 @@ async def diagnose_node(state: DiagnosisState) -> dict:
                     "excellent_value": None,
                 })
 
-    emit_progress(state, f"健康度评分: {health_score:.1f}分, 发现 {len(anomalies)} 项异常指标")
+    emit_progress(state, f"健康度评分: {health_score:.1f}分, 发现 {len(anomalies)} 项异常指标", percent=50)
 
     all_indicators = {
         dim: state.get(key, {})
@@ -161,38 +180,12 @@ async def diagnose_node(state: DiagnosisState) -> dict:
 
     root_causes: list[dict] = []
     if anomalies:
-        emit_progress(state, "AI正在分析异常根因...")
+        emit_progress(state, "AI正在分析异常根因...", percent=55)
         root_causes = await _llm_root_cause_analysis(
             store_profile=state.get("store_profile", {}),
             anomalies=anomalies,
             all_indicators=all_indicators,
         )
-
-    drill_details: dict[str, dict] = {}
-    if anomalies:
-        emit_progress(state, f"正在钻取 {len(anomalies)} 项异常指标的明细数据...")
-        settings = get_settings()
-        tenant_config = await get_tenant_config(state["tenant_id"])
-        lookback_days = tenant_config.get("analysis_period_days") or settings.diagnosis_lookback_days
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date = (datetime.now() - timedelta(days=int(lookback_days))).strftime("%Y-%m-%d")
-        drill_tasks = {
-            a["indicator_code"]: mcp_call("metrics-server", "drill_down_indicator", {
-                "tenant_id": state["tenant_id"],
-                "store_id": state["store_id"],
-                "indicator_code": a["indicator_code"],
-                "start_date": start_date,
-                "end_date": end_date,
-                "page": 1,
-                "page_size": 5,
-            })
-            for a in anomalies
-        }
-        results = await asyncio.gather(*drill_tasks.values())
-        drill_details = dict(zip(drill_tasks.keys(), results))
-
-    for a in anomalies:
-        a["drill_down"] = drill_details.get(a["indicator_code"])
 
     diagnosis_report = build_diagnosis_report(
         store_profile=state.get("store_profile", {}),
@@ -206,7 +199,7 @@ async def diagnose_node(state: DiagnosisState) -> dict:
 
     is_scheduled = state.get("trigger_type") == "scheduled"
     scope_label = "全企业" if not state.get("store_id") else f"店铺 {state['store_id']}"
-    emit_progress(state, f"{scope_label}诊断完成，正在推送报告...")
+    emit_progress(state, f"{scope_label}诊断完成，正在推送报告...", percent=68)
 
     try:
         report_summary = {

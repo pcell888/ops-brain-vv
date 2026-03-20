@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from src.wlwq.database import get_cursor
+from src.wlwq.routes._random_control import random_enabled, random_float, random_int
 
 router = APIRouter(tags=["mock-stats"])
 
@@ -30,7 +31,14 @@ async def service_completion(
     storeId: str | None = Query(None),
     startDate: str | None = Query(None),
     endDate: str | None = Query(None),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
+    if random_enabled(useRandom):
+        total = random_int("WLWQ_SERVICE_TOTAL_RANDOM_MIN", "WLWQ_SERVICE_TOTAL_RANDOM_MAX", 80, 160)
+        completed = random_int("WLWQ_SERVICE_COMPLETED_RANDOM_MIN", "WLWQ_SERVICE_COMPLETED_RANDOM_MAX", 45, 95)
+        completed = min(completed, total)
+        rate = (completed / total * 100) if total else 0
+        return _ok({"totalServiceOrders": total, "completedOrders": completed, "completionRate": round(rate, 2)})
     try:
         sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
@@ -52,7 +60,18 @@ async def shipping_stats(
     storeId: str | None = Query(None),
     startDate: str | None = Query(None),
     endDate: str | None = Query(None),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
+    if random_enabled(useRandom):
+        return _ok({
+            "avgShippingHours": random_float(
+                "WLWQ_AVG_SHIPPING_RANDOM_MIN",
+                "WLWQ_AVG_SHIPPING_RANDOM_MAX",
+                22.0,
+                32.0,
+                2,
+            )
+        })
     try:
         sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
@@ -71,7 +90,13 @@ async def coupon_statistics(
     storeId: str | None = Query(None),
     startDate: str | None = Query(None),
     endDate: str | None = Query(None),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
+    if random_enabled(useRandom):
+        total_issued = random_int("WLWQ_COUPON_ISSUED_RANDOM_MIN", "WLWQ_COUPON_ISSUED_RANDOM_MAX", 4200, 6200)
+        total_used = random_int("WLWQ_COUPON_USED_RANDOM_MIN", "WLWQ_COUPON_USED_RANDOM_MAX", 600, 1500)
+        total_used = min(total_used, total_issued)
+        return _ok({"totalIssued": total_issued, "totalUsed": total_used})
     try:
         sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
@@ -94,7 +119,17 @@ async def exposure_stats(
     storeId: str | None = Query(None),
     startDate: str | None = Query(None),
     endDate: str | None = Query(None),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
+    if random_enabled(useRandom):
+        return _ok({
+            "browseUsers": random_int(
+                "WLWQ_BROWSE_USERS_RANDOM_MIN",
+                "WLWQ_BROWSE_USERS_RANDOM_MAX",
+                12000,
+                18000,
+            )
+        })
     try:
         sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
@@ -110,7 +145,20 @@ async def conversion_stats(
     storeId: str | None = Query(None),
     startDate: str | None = Query(None),
     endDate: str | None = Query(None),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
+    if random_enabled(useRandom):
+        total_orders = random_int("WLWQ_TOTAL_ORDERS_RANDOM_MIN", "WLWQ_TOTAL_ORDERS_RANDOM_MAX", 1800, 2800)
+        completed_orders = random_int("WLWQ_COMPLETED_ORDERS_RANDOM_MIN", "WLWQ_COMPLETED_ORDERS_RANDOM_MAX", 900, 1650)
+        completed_orders = min(completed_orders, total_orders)
+        order_users = random_int("WLWQ_ORDER_USERS_RANDOM_MIN", "WLWQ_ORDER_USERS_RANDOM_MAX", 300, 650)
+        new_customers = random_int("WLWQ_NEW_CUSTOMERS_RANDOM_MIN", "WLWQ_NEW_CUSTOMERS_RANDOM_MAX", 80, 200)
+        return _ok({
+            "orderUsers": order_users,
+            "totalOrders": total_orders,
+            "completedOrders": completed_orders,
+            "newCustomers": min(new_customers, order_users),
+        })
     try:
         sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
@@ -139,7 +187,13 @@ async def seckill_conversion_stats(
     storeId: str | None = Query(None),
     startDate: str | None = Query(None),
     endDate: str | None = Query(None),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
+    if random_enabled(useRandom):
+        total = random_int("WLWQ_SECKILL_TOTAL_RANDOM_MIN", "WLWQ_SECKILL_TOTAL_RANDOM_MAX", 450, 800)
+        sold = random_int("WLWQ_SECKILL_SOLD_RANDOM_MIN", "WLWQ_SECKILL_SOLD_RANDOM_MAX", 80, 220)
+        sold = min(sold, total)
+        return _ok({"totalSeckillGoods": total, "soldGoods": sold})
     try:
         sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
@@ -162,7 +216,13 @@ async def refund_statistics(
     storeId: str | None = Query(None),
     startDate: str | None = Query(None),
     endDate: str | None = Query(None),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
+    if random_enabled(useRandom):
+        total_completed = random_int("WLWQ_REFUND_TOTAL_COMPLETED_RANDOM_MIN", "WLWQ_REFUND_TOTAL_COMPLETED_RANDOM_MAX", 1500, 2400)
+        refund_orders = random_int("WLWQ_REFUND_ORDERS_RANDOM_MIN", "WLWQ_REFUND_ORDERS_RANDOM_MAX", 120, 260)
+        refund_orders = min(refund_orders, total_completed)
+        return _ok({"totalCompletedOrders": total_completed, "refundOrders": refund_orders})
     try:
         sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
@@ -184,7 +244,13 @@ async def evaluate_statistics(
     storeId: str | None = Query(None),
     startDate: str | None = Query(None),
     endDate: str | None = Query(None),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
+    if random_enabled(useRandom):
+        total_reviews = random_int("WLWQ_TOTAL_REVIEWS_RANDOM_MIN", "WLWQ_TOTAL_REVIEWS_RANDOM_MAX", 900, 1500)
+        positive_reviews = random_int("WLWQ_POSITIVE_REVIEWS_RANDOM_MIN", "WLWQ_POSITIVE_REVIEWS_RANDOM_MAX", 520, 960)
+        positive_reviews = min(positive_reviews, total_reviews)
+        return _ok({"totalReviews": total_reviews, "positiveReviews": positive_reviews})
     try:
         sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
@@ -207,7 +273,24 @@ async def repurchase_stats(
     storeId: str | None = Query(None),
     startDate: str | None = Query(None),
     endDate: str | None = Query(None),
+    useRandom: bool | None = Query(None, alias="useRandom"),
 ):
+    if random_enabled(useRandom):
+        total_buyers = random_int("WLWQ_TOTAL_BUYERS_RANDOM_MIN", "WLWQ_TOTAL_BUYERS_RANDOM_MAX", 2200, 3200)
+        repeat_buyers = random_int("WLWQ_REPEAT_BUYERS_RANDOM_MIN", "WLWQ_REPEAT_BUYERS_RANDOM_MAX", 500, 950)
+        repeat_buyers = min(repeat_buyers, total_buyers)
+        active_customers = random_int("WLWQ_ACTIVE_CUSTOMERS_RANDOM_MIN", "WLWQ_ACTIVE_CUSTOMERS_RANDOM_MAX", 1800, 2800)
+        active_customers = min(active_customers, total_buyers)
+        churned_customers = random_int("WLWQ_CHURNED_CUSTOMERS_RANDOM_MIN", "WLWQ_CHURNED_CUSTOMERS_RANDOM_MAX", 420, 780)
+        churned_customers = min(churned_customers, active_customers)
+        avg_ltv = random_float("WLWQ_AVG_LTV_RANDOM_MIN", "WLWQ_AVG_LTV_RANDOM_MAX", 600.0, 980.0, 2)
+        return _ok({
+            "totalBuyers": total_buyers,
+            "repeatBuyers": repeat_buyers,
+            "activeCustomers": active_customers,
+            "churnedCustomers": churned_customers,
+            "avgLifetimeValue": avg_ltv,
+        })
     try:
         sf, sp = _store_filter(storeId)
         async with get_cursor() as cur:
