@@ -13,7 +13,7 @@ from src.agent.state import DiagnosisState
 from src.agent.tools import mcp_call, emit_progress
 from src.agent.prompts.review_analysis import REVIEW_ANALYSIS_SYSTEM, REVIEW_ANALYSIS_USER
 from src.core.calculator import calculate_effect_changes, resolve_active_indicators
-from src.core.config import get_settings
+from src.core.config import CN_TZ, get_settings
 from src.core.push_log_repo import save_push_log
 from src.core.effect_review_repo import save_effect_tracking, save_review_report
 from src.core.snapshot_repo import list_snapshots
@@ -107,8 +107,9 @@ async def track_effects_node(state: DiagnosisState) -> dict:
 
     tenant_id = state["tenant_id"]
     store_id = state["store_id"]
-    now = datetime.now().strftime("%Y-%m-%d")
-    start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    _now = datetime.now(CN_TZ)
+    now = _now.strftime("%Y-%m-%d")
+    start = (_now - timedelta(days=30)).strftime("%Y-%m-%d")
 
     common_args = {
         "tenant_id": tenant_id,
@@ -138,7 +139,7 @@ async def track_effects_node(state: DiagnosisState) -> dict:
 
     emit_progress(state, "AI正在生成复盘分析报告...")
 
-    adopted_ids = state.get("adopted_plan_ids", [])
+    adopted_ids = (state.get("adopted_plan_ids") or [])[:1]
     adopted_plans = [p for p in state.get("solution_plans", []) if p.get("plan_id") in adopted_ids]
 
     review_report = await _llm_generate_review(

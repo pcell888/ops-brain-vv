@@ -21,11 +21,9 @@ from src.core.db_init import (
     ensure_ai_review_report,
 )
 from src.wlwq.database import close_pool as wlwq_close_pool, get_pool as wlwq_get_pool
+from src.core.logging_setup import setup_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+setup_logging("ops-brain")
 
 app = FastAPI(
     title="企业运营AI智能诊断系统",

@@ -89,7 +89,6 @@
     gap_percentage?: number;
     severity: 'low'|'medium'|'high'|'critical';
     root_cause_chain: string[];
-    solution_tags: string[];
     unit?: string;
   }];
   root_cause_analyses: [...];
@@ -117,7 +116,7 @@
 - 路径不同：`/report/{id}` vs `/{id}/report`
 - `health_score`：前端期望嵌套对象 `{total_score, dimension_scores[], trend}`，后端是 `float`
 - `dimension_scores`：前端期望数组 `[{dimension, score, weight, status, metrics_detail}]`，后端是 dict `{dim: {score, weight}}`
-- `anomalies` 字段名不同：前端用 `id/rule_name/metric_name/benchmark_value/gap_percentage/root_cause_chain/solution_tags`，后端用 `indicator_code/indicator_name/benchmark_avg/deviation_pct/description/root_cause`
+- `anomalies` 字段名不同：前端用 `id/rule_name/metric_name/benchmark_value/gap_percentage/root_cause_chain`，后端用 `indicator_code/indicator_name/benchmark_avg/deviation_pct/description/root_cause`
 - 前端需要 `trend`（上次对比），后端无此字段
 - 前端需要 `benchmark_dimension_scores`，后端无此字段
 

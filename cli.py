@@ -8,7 +8,9 @@ import asyncio
 import json
 import math
 import sys
+from datetime import datetime
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import httpx
 import websockets
@@ -341,6 +343,24 @@ async def fetch_report(base_url: str, thread_id: str) -> tuple[bool, dict | str]
         return False, str(e)
 
 
+def _format_generated_at_display(raw: object) -> str:
+    """展示报告时间：新数据已为中国时区；旧 UTC 存证仍换算为东八区显示。"""
+    if raw is None:
+        return "[dim]-[/dim]"
+    if not isinstance(raw, str):
+        return str(raw)
+    s = raw.strip()
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            return f"{raw} [dim](无时区)[/dim]"
+        return dt.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, OSError):
+        return str(raw)
+
+
 def print_report(report: dict) -> None:
     health = report.get("health_score")
     anomalies = report.get("anomalies") or []
@@ -365,6 +385,7 @@ def print_report(report: dict) -> None:
     overview = Table(show_header=False, box=None, pad_edge=False)
     overview.add_column("k", style="cyan", no_wrap=True, width=12)
     overview.add_column("v", style="white")
+    overview.add_row("诊断时间", _format_generated_at_display(report.get("generated_at")))
     overview.add_row("健康分", f"[bold]{round(health_value, 2) if health_value is not None else '-'}[/bold]")
     overview.add_row("健康等级", level_text)
     overview.add_row("异常指标数", str(len(anomalies)))
@@ -499,7 +520,7 @@ def print_report(report: dict) -> None:
 
 
 def _interactive_adopt(plans: list[dict]) -> list[str]:
-    """展示方案列表并提示用户输入要采纳的 plan_id，返回采纳的 id 列表。"""
+    """展示方案列表并提示用户输入要采纳的 plan_id（至多一个），返回 [plan_id] 或 []。"""
     if not plans:
         console.print(Text("  无方案可选。", style="dim"))
         return []
@@ -514,10 +535,15 @@ def _interactive_adopt(plans: list[dict]) -> list[str]:
             p.get("priority_level", ""),
         )
     console.print(table)
-    prompt = "输入要采纳的方案 ID（逗号分隔），留空则不采纳: "
-    selected = input(prompt)
-    chosen = [x.strip() for x in (selected or "").strip().split(",") if x.strip()]
-    return [pid for pid in chosen if any(p.get("plan_id") == pid for p in plans)]
+    prompt = "输入要采纳的一个方案 ID，留空则不采纳: "
+    selected = (input(prompt) or "").strip()
+    if not selected:
+        return []
+    # 仅采纳第一个有效 id（互斥）
+    for part in [x.strip() for x in selected.split(",") if x.strip()]:
+        if any(p.get("plan_id") == part for p in plans):
+            return [part]
+    return []
 
 
 def _resolve_ws_url(base_url: str, ws_url: str | None, thread_id: str) -> str:
@@ -549,7 +575,8 @@ async def run_ws_progress(
                 console.print(Text("  ", style="dim") + Text(line, style="cyan"))
                 if t == "waiting_adoption":
                     if adopt_plan_ids is not None:
-                        await ws.send(json.dumps({"action": "adopt_plans", "plan_ids": adopt_plan_ids}))
+                        payload = {"action": "adopt_plans", "plan_ids": adopt_plan_ids[:1]}
+                        await ws.send(json.dumps(payload))
                     else:
                         # 交互模式下不在 WS 阶段采纳，直接退出进度流，后续由菜单驱动。
                         done = True
@@ -632,9 +659,9 @@ def main() -> int:
     p.add_argument("--base-url", default=DEFAULT_BASE, help=f"服务 base URL（默认 {DEFAULT_BASE}）")
     p.add_argument("--tenant-id", default="wlwq_local", help="租户ID（默认 wlwq_local）")
     p.add_argument("--store-id", default="test-store", help="店铺ID（默认 test-store）")
-    p.add_argument("--adopt", action="append", metavar="PLAN_ID", help="收到方案后采纳的 plan_id，可多次指定；不指定则仅跑到 waiting_adoption")
+    p.add_argument("--adopt", metavar="PLAN_ID", help="收到方案后采纳的唯一 plan_id（互斥）；不指定则仅跑到 waiting_adoption")
     args = p.parse_args()
-    adopt_ids = args.adopt if args.adopt else None
+    adopt_ids = [args.adopt] if args.adopt else None
     return asyncio.run(run_diagnose(args.base_url, args.tenant_id, args.store_id, adopt_ids))
 
 

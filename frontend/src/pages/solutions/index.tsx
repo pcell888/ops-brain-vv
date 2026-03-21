@@ -1,6 +1,6 @@
-import { Suspense } from 'react';
+import { Suspense, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Table, Tag, Button, Empty, Spin, Row, Col, App, Tooltip } from 'antd';
+import { Card, Table, Tag, Button, Empty, Spin, Row, Col, App } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   BulbOutlined,
@@ -11,10 +11,12 @@ import {
   RocketOutlined,
 } from '@ant-design/icons';
 import {
-  useLatestDiagnosisReport,
+  useDiagnosisSelection,
+  useDiagnosisReport,
   useSolutionList,
   useAdoptSolution,
 } from '@/lib/hooks';
+import { DiagnosisHistorySelect } from '@/components/diagnosis-history-select';
 import { useAppStore } from '@/stores/app-store';
 import type { SolutionSummary, Anomaly } from '@/lib/types';
 
@@ -32,11 +34,24 @@ function SolutionsPage() {
   const navigate = useNavigate();
   const enterpriseId = currentEnterprise?.id || null;
 
-  const { latestDiagnosisId, data: diagnosisReport, isLoading: diagnosisLoading } = useLatestDiagnosisReport(enterpriseId);
-  const { data: solutionData, isLoading: solutionsLoading, refetch } = useSolutionList(latestDiagnosisId || null);
+  const { diagnosisItems, selectedDiagnosisId, setSelectedDiagnosisId, listLoading } =
+    useDiagnosisSelection(enterpriseId);
+
+  const selectedItem = useMemo(
+    () => diagnosisItems.find((i) => i.diagnosis_id === selectedDiagnosisId),
+    [diagnosisItems, selectedDiagnosisId],
+  );
+  const isCompleted = selectedItem?.status === 'completed';
+
+  const { data: diagnosisReport, isLoading: reportLoading } = useDiagnosisReport(
+    isCompleted && selectedDiagnosisId ? selectedDiagnosisId : null,
+  );
+  const { data: solutionData, isLoading: solutionsLoading, refetch } = useSolutionList(
+    isCompleted && selectedDiagnosisId ? selectedDiagnosisId : null,
+  );
   const adoptSolution = useAdoptSolution();
 
-  const isLoading = diagnosisLoading || solutionsLoading;
+  const isLoading = listLoading || (isCompleted && (reportLoading || solutionsLoading));
 
   const handleAdopt = async (solutionId: string) => {
     try {
@@ -49,8 +64,8 @@ function SolutionsPage() {
   };
 
   const handleViewDetail = (solutionId: string) => {
-    if (latestDiagnosisId) {
-      navigate(`/solutions/${latestDiagnosisId}?solution_id=${solutionId}`);
+    if (selectedDiagnosisId) {
+      navigate(`/solutions/${selectedDiagnosisId}?solution_id=${solutionId}`);
     }
   };
 
@@ -102,23 +117,25 @@ function SolutionsPage() {
       },
     },
     {
-      title: '推荐评分',
+      title: '优先级',
       dataIndex: 'score',
       key: 'score',
       width: 100,
       render: (score: number) => (
-        <span className={`font-bold ${score >= 80 ? 'text-emerald-400' : score >= 60 ? 'text-amber-400' : 'text-rose-400'}`}>
+        <span className={`font-bold ${score >= 7 ? 'text-emerald-400' : score >= 5 ? 'text-amber-400' : 'text-rose-400'}`}>
           {score.toFixed(1)}
         </span>
       ),
     },
     {
-      title: '预计周期',
-      dataIndex: 'estimated_duration',
-      key: 'estimated_duration',
-      width: 90,
-      render: (days: number) => (
-        <span className="text-gray-300"><ClockCircleOutlined className="mr-1" />{days}天</span>
+      title: '步骤 / ROI',
+      key: 'step_roi',
+      width: 120,
+      render: (_, record) => (
+        <span className="text-gray-300 text-sm">
+          <ClockCircleOutlined className="mr-1" />
+          {record.step_count} 步 · ROI {record.expected_roi.toFixed(1)}
+        </span>
       ),
     },
     {
@@ -180,16 +197,27 @@ function SolutionsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-          <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20">
-            <BulbOutlined />
-          </span>
-          优化方案
-        </h1>
-        <p className="text-gray-400 mt-2 text-sm">
-          诊断完成后自动生成的优化方案，按综合评分排序
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20">
+              <BulbOutlined />
+            </span>
+            优化方案
+          </h1>
+          <p className="text-gray-400 mt-2 text-sm">
+            诊断完成后自动生成的优化方案，按综合评分排序
+          </p>
+        </div>
+        {enterpriseId && diagnosisItems.length > 0 && (
+          <DiagnosisHistorySelect
+            className="shrink-0 w-full sm:w-[min(100%,320px)]"
+            diagnosisItems={diagnosisItems}
+            value={selectedDiagnosisId}
+            onChange={setSelectedDiagnosisId}
+            loading={listLoading}
+          />
+        )}
       </div>
 
       {solutionData && (
@@ -234,8 +262,10 @@ function SolutionsPage() {
           <div className="flex flex-col items-center justify-center py-20">
             <Spin indicator={<LoadingOutlined style={{ fontSize: 48 }} spin />} />
           </div>
-        ) : !latestDiagnosisId ? (
+        ) : !selectedDiagnosisId ? (
           <Empty description="请先完成诊断后查看方案" />
+        ) : !isCompleted ? (
+          <Empty description="该次诊断尚未完成，暂无方案" />
         ) : (
           <Table
             columns={columns}

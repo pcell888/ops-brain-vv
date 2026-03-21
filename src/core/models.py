@@ -28,6 +28,10 @@ class DiagnosisRequest(BaseModel):
 class DiagnosisStartResponse(BaseModel):
     thread_id: str
     ws_url: str
+    already_running: bool = Field(
+        default=False,
+        description="为 True 时表示未新建任务，仅返回当前正在执行的诊断 thread_id",
+    )
 
 
 class AdoptPlanRequest(BaseModel):
@@ -65,6 +69,7 @@ class RootCauseBrief(BaseModel):
     cause: str
     evidence: str
     confidence: float = Field(ge=0, le=1)
+    recommendations: list[str] = Field(default_factory=list)
 
 
 class Anomaly(BaseModel):
@@ -85,6 +90,7 @@ class RootCause(BaseModel):
     cause: str
     evidence: str
     confidence: float = Field(ge=0, le=1)
+    recommendations: list[str] = Field(default_factory=list)
 
 
 class DimensionScore(BaseModel):

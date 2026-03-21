@@ -185,6 +185,7 @@ export const diagnosisApi = {
     ...res,
     diagnosis_id: res.thread_id,
     status: 'running',
+    already_running: !!res.already_running,
   })),
   
   // 获取诊断状态
@@ -415,9 +416,19 @@ export const executionApi = {
   listPlans: (params: { 
     enterprise_id: string; 
     status?: string;
+    diagnosis_id?: string;
     skip?: number;
     limit?: number;
   }) => api.get('/execution/plans', { params }),
+
+  // 执行任务列表（按诊断/企业拉平，非计划聚合）
+  listTasks: (params: {
+    enterprise_id: string;
+    thread_id?: string;
+    status?: string;
+    skip?: number;
+    limit?: number;
+  }) => api.get('/execution/tasks', { params }),
   
   // 获取计划摘要
   getPlanSummary: (planId: string) =>
@@ -470,6 +481,7 @@ export const trackingApi = {
   list: (params: { 
     enterprise_id: string; 
     status?: string;
+    diagnosis_id?: string;
     skip?: number;
     limit?: number;
   }) => api.get('/tracking/list', { params }),

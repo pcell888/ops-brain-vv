@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
+from .config import CN_TZ
+
 INDICATOR_META: dict[str, dict] = {
     # CRM维度
     "lead_conversion_rate": {"name": "线索转化率", "dimension": "crm", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "低转化线索客户列表"},
@@ -345,6 +349,46 @@ def calculate_dimension_benchmarks_scores(
     return dimension_benchmarks_scores
 
 
+def normalize_llm_root_causes(root_causes: list[dict], anomalies: list[dict]) -> list[dict]:
+    """将 LLM 返回的根因对齐到 anomalies 的 indicator_code（支持中文名、indicator_code 等别名）。"""
+    if not anomalies:
+        return list(root_causes or [])
+    code_set = {a["indicator_code"] for a in anomalies}
+    codes_order = [a["indicator_code"] for a in anomalies]
+    name_to_code = {INDICATOR_META[c]["name"]: c for c in code_set if c in INDICATOR_META}
+    by_code: dict[str, dict] = {}
+    for rc in root_causes or []:
+        if not isinstance(rc, dict):
+            continue
+        raw = (
+            rc.get("anomaly_indicator")
+            or rc.get("indicator_code")
+            or rc.get("metric_code")
+            or rc.get("code")
+        )
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        target: str | None = None
+        if s in code_set:
+            target = s
+        elif s in name_to_code:
+            target = name_to_code[s]
+        else:
+            for code in codes_order:
+                meta = INDICATOR_META.get(code, {})
+                name = meta.get("name", "")
+                if name and (name == s or s in name or name in s):
+                    target = code
+                    break
+        if not target:
+            continue
+        fixed = dict(rc)
+        fixed["anomaly_indicator"] = target
+        by_code[target] = fixed
+    return list(by_code.values())
+
+
 def build_diagnosis_report(
     store_profile: dict,
     health_score: float,
@@ -355,7 +399,6 @@ def build_diagnosis_report(
     root_causes: list[dict],
 ) -> dict:
     """组装完整的诊断报告数据结构。包含：综合健康度、各维度得分、各维度指标得分、各维度行业基准、异常指标（含根因分析）。"""
-    from datetime import datetime
     from copy import deepcopy
 
     severity_order = {"high": 0, "medium": 1, "low": 2}
@@ -366,10 +409,17 @@ def build_diagnosis_report(
         a_copy = deepcopy(a)
         rc = root_by_indicator.get(a.get("indicator_code"))
         if rc:
+            rec_raw = rc.get("recommendations")
+            rec_list: list[str] = []
+            if isinstance(rec_raw, list):
+                rec_list = [x.strip() for x in rec_raw if isinstance(x, str) and x.strip()]
+            elif isinstance(rec_raw, str) and rec_raw.strip():
+                rec_list = [rec_raw.strip()]
             a_copy["root_cause"] = {
                 "cause": rc.get("cause", ""),
                 "evidence": rc.get("evidence", ""),
                 "confidence": rc.get("confidence", 0),
+                "recommendations": rec_list,
             }
         else:
             a_copy["root_cause"] = None
@@ -393,7 +443,7 @@ def build_diagnosis_report(
     return {
         "tenant_id": store_profile.get("tenant_id", ""),
         "store_id": store_profile.get("store_id", ""),
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": datetime.now(CN_TZ).isoformat(),
         "health_score": health_score,
         "dimension_scores": dimension_scores,
         "dimension_indicator_scores": dimension_indicator_scores,

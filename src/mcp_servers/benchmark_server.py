@@ -113,6 +113,11 @@ def _looks_like_zero_cache(all_benchmarks: dict, indicator_codes: list[str]) -> 
     return zero_count == len(targets)
 
 
+async def _fetch_benchmarks_from_platform(industry_code: str, period: str | None) -> dict:
+    """中台基准接口未对接时返回内置 DEFAULT_BENCHMARKS；对接后改为 biz.platform_get。"""
+    return {"benchmarks": DEFAULT_BENCHMARKS.copy()}
+
+
 async def _get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
@@ -141,10 +146,7 @@ async def get_industry_benchmark(
             logger.warning("命中疑似全0基准缓存，准备重拉: %s", cache_key)
             cached = None
     if not cached:
-        data = await biz.platform_get("/industry-trend-statistics/benchmark", {
-            "industryCode": industry_code,
-            "period": period or "",
-        })
+        data = await _fetch_benchmarks_from_platform(industry_code, period)
         all_benchmarks = _normalize_all_benchmarks(data.get("benchmarks", data))
         if not all_benchmarks:
             logger.warning("行业基准为空，使用默认基准兜底: %s", industry_code)

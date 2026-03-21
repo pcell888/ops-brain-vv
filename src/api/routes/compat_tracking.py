@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
-from src.core.config import get_settings
+from src.core.config import CN_TZ, get_settings
 from src.core.db_init import _uri_to_conninfo
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ async def start_tracking(data: dict):
         raise HTTPException(status_code=400, detail="enterprise_id 和 plan_id 必填")
 
     thread_id = f"trk_{uuid.uuid4().hex[:16]}"
-    now = datetime.now()
+    now = datetime.now(CN_TZ)
 
     tracking_data = {
         "plan_id": plan_id,
@@ -83,6 +83,7 @@ async def start_tracking(data: dict):
 async def list_trackings(
     enterprise_id: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    diagnosis_id: str | None = Query(default=None, description="诊断 thread_id，仅返回该次诊断关联执行计划下的追踪"),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
 ):
@@ -92,19 +93,33 @@ async def list_trackings(
                 where_parts = []
                 params: list = []
                 if enterprise_id:
-                    where_parts.append("tenant_id = %s")
+                    where_parts.append("t.tenant_id = %s")
                     params.append(enterprise_id)
+                if diagnosis_id:
+                    where_parts.append(
+                        """EXISTS (
+                        SELECT 1 FROM ai_exec_task e
+                        WHERE e.plan_id = (t.tracking_data->>'plan_id')
+                          AND e.thread_id = %s
+                          AND e.tenant_id = t.tenant_id
+                    )"""
+                    )
+                    params.append(diagnosis_id)
                 where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
                 await cur.execute(
-                    f"SELECT COUNT(*) FROM ai_effect_tracking {where_sql}", params
+                    f"SELECT COUNT(*) FROM ai_effect_tracking t {where_sql}", params
                 )
                 total = (await cur.fetchone() or {}).get("count", 0)
 
                 await cur.execute(
-                    f"""SELECT thread_id, tenant_id, tracking_data, created_at
-                        FROM ai_effect_tracking {where_sql}
-                        ORDER BY created_at DESC OFFSET %s LIMIT %s""",
+                    f"""SELECT t.thread_id, t.tenant_id, t.tracking_data, t.created_at,
+                        (SELECT MIN(e.thread_id) FROM ai_exec_task e
+                         WHERE e.plan_id = (t.tracking_data->>'plan_id')
+                           AND e.tenant_id = t.tenant_id) AS diagnosis_id
+                        FROM ai_effect_tracking t
+                        {where_sql}
+                        ORDER BY t.created_at DESC OFFSET %s LIMIT %s""",
                     params + [skip, limit],
                 )
                 rows = await cur.fetchall()
@@ -121,6 +136,7 @@ async def list_trackings(
             items.append({
                 "tracking_id": row["thread_id"],
                 "plan_id": td.get("plan_id", ""),
+                "diagnosis_id": row.get("diagnosis_id"),
                 "solution_name": td.get("solution_name", ""),
                 "status": td.get("status", "active"),
                 "current_score": td.get("current_score"),
@@ -357,7 +373,7 @@ async def take_snapshot(tracking_id: str):
     """采集当前指标快照并存入 ai_effect_snapshot。"""
     import random
 
-    now = datetime.now()
+    now = datetime.now(CN_TZ)
     snapshot_data = {
         "snapshot_at": now.isoformat(),
         "health_score": round(random.uniform(55, 95), 1),
@@ -464,7 +480,7 @@ async def analyze_tracking(tracking_id: str):
 
 @router.post("/{tracking_id}/complete", summary="完成追踪")
 async def complete_tracking(tracking_id: str):
-    now = datetime.now()
+    now = datetime.now(CN_TZ)
     try:
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:

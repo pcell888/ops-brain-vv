@@ -9,7 +9,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 
 from src.core.models import AdoptPlanRequest
-from src.core.config import get_settings
+from src.core.config import CN_TZ, get_settings
 from src.api.deps import get_graph_app, manager, running_tasks
 from src.agent.tools import set_progress_sender, clear_progress_sender
 
@@ -104,7 +104,7 @@ async def get_diagnosis_solutions(thread_id: str):
     """
     values, next_nodes = await _get_state_values(thread_id)
     plans = values.get("solution_plans") or []
-    adopted_ids = values.get("adopted_plan_ids") or []
+    adopted_ids = (values.get("adopted_plan_ids") or [])[:1]
     anomalies = values.get("anomalies") or []
 
     indicator_names = {
@@ -136,7 +136,7 @@ async def get_diagnosis_solutions(thread_id: str):
 
 @router.post("/{thread_id}/adopt", summary="用户采纳方案")
 async def adopt_plan(thread_id: str, request: AdoptPlanRequest):
-    """用户采纳单个方案后继续执行。"""
+    """用户采纳唯一方案（互斥）后继续执行。"""
     app = await get_graph_app()
     config = {"configurable": {"thread_id": thread_id}}
 
@@ -177,13 +177,13 @@ async def _resume_after_adoption(thread_id: str, config: dict):
                         await manager.send_progress(thread_id, {
                             "type": "progress",
                             "message": content,
-                            "timestamp": datetime.now().isoformat(),
+                            "timestamp": datetime.now(CN_TZ).isoformat(),
                         })
 
                 await manager.send_progress(thread_id, {
                     "type": "node_complete",
                     "node": node_name,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": datetime.now(CN_TZ).isoformat(),
                 })
     except Exception as e:
         logger.error("恢复执行异常: %s", e, exc_info=True)

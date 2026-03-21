@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS ai_diagnosis_report (
     store_id     VARCHAR(32)  NOT NULL,
     trigger_type VARCHAR(32)  NOT NULL DEFAULT 'manual',
     report       JSONB       NOT NULL,
-    created_at   TIMESTAMP   DEFAULT NOW()
+    created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS ix_ai_diagnosis_report_tenant_store ON ai_diagnosis_report (tenant_id, store_id);
 CREATE INDEX IF NOT EXISTS ix_ai_diagnosis_report_created_at ON ai_diagnosis_report (created_at DESC);

@@ -17,6 +17,7 @@ from src.agent.prompts.solution_generation import (
 from src.core.config import get_settings
 from src.core.push_log_repo import save_push_log
 from src.core.solution_knowledge_repo import search_similar_plans
+from src.core.indicator_push_rules import format_indicator_rules_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ async def _llm_generate_solutions(
     benchmarks: dict,
     indicators: dict,
     historical_cases: list[dict] | None = None,
+    indicator_push_rules: str = "",
 ) -> list[dict]:
     settings = get_settings()
     if not settings.llm_enabled:
@@ -66,6 +68,7 @@ async def _llm_generate_solutions(
         root_causes=json.dumps(root_causes, ensure_ascii=False, indent=2),
         benchmarks=json.dumps(benchmarks, ensure_ascii=False, indent=2),
         all_indicators=json.dumps(indicators, ensure_ascii=False, indent=2),
+        indicator_push_rules=indicator_push_rules or format_indicator_rules_for_prompt(anomalies),
         historical_cases=cases_text,
     )
 
@@ -123,6 +126,7 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
 
     emit_progress(state, "AI正在生成个性化优化方案...", percent=88)
 
+    rules_text = format_indicator_rules_for_prompt(anomalies)
     plans = await _llm_generate_solutions(
         store_profile=store_profile,
         anomalies=anomalies,
@@ -135,6 +139,7 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
             "efficiency": state.get("efficiency_indicators", {}),
         },
         historical_cases=historical_cases if historical_cases else None,
+        indicator_push_rules=rules_text,
     )
 
     for plan in plans:

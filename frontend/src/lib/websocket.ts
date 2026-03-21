@@ -53,35 +53,13 @@ class WebSocketManager {
     this.enterpriseId = enterpriseId;
     this.isManualClose = false;
 
-    // 动态构建 WebSocket URL
-    // 优先使用环境变量
-    let wsBaseUrl = import.meta.env.VITE_WS_URL;
-    
-    if (!wsBaseUrl && typeof window !== 'undefined') {
-      // 在浏览器中，根据当前页面协议和主机构建
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const hostname = window.location.hostname;
-      const port = window.location.port;
-      
-      // Docker 环境端口映射：
-      // 前端: 13000 -> 3000
-      // 后端: 18000 -> 8000
-      // 如果当前端口是 13000（Docker 映射的前端端口），使用 18000（Docker 映射的后端端口）
-      let finalPort = port;
-      if (port === '13000') {
-        finalPort = '18000';
-      } else if (port === '3000' || !port) {
-        // 开发环境或标准端口，使用后端默认端口
-        finalPort = '8000';
-      }
-      
-      wsBaseUrl = `${protocol}//${hostname}:${finalPort}`;
-    }
-    
-    // 回退到默认值
-    wsBaseUrl = wsBaseUrl || 'ws://localhost:8000';
-    
-    const wsUrl = `${wsBaseUrl}/api/v1/ws/tasks/${enterpriseId}`;
+    // 与页面同源（经 Vite / nginx 的 /api 反代），避免直连后端端口导致连不上、进度一直为 0
+    const wsBase =
+      import.meta.env.VITE_WS_URL ||
+      (typeof window !== 'undefined'
+        ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
+        : 'ws://localhost:8000');
+    const wsUrl = `${wsBase.replace(/\/$/, '')}/api/v1/ws/tasks/${enterpriseId}`;
     console.log('[WebSocket] Connecting to:', wsUrl);
     
     try {

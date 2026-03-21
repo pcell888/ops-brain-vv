@@ -10,17 +10,34 @@ from fastapi import APIRouter, Query, HTTPException
 
 from src.api.constants import API_PREFIX
 from src.core.models import DiagnosisRequest, DiagnosisStartResponse
+from src.core.config import CN_TZ
 from src.core.calculator import list_available_indicators
 from src.core.calculator import DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS, INDICATOR_META
 from src.core.diagnosis_report_repo import list_reports, get_report as get_report_from_db
 from src.core.tenant_config import get_tenant_config
 from src.api.deps import get_graph_app, manager, running_tasks, generate_thread_id
+from src.api.routes.compat_ws import (
+    get_active_diagnosis_thread_for_tenant,
+    register_thread_enterprise,
+    unregister_thread,
+)
 from src.agent.tools import set_progress_sender, clear_progress_sender
 from src.mcp_servers.tenant_router import TenantRouter
 from src.mcp_servers.biz_api_client import BizAPIClient, BizAPIError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/diagnosis", tags=["诊断"])
+
+# 同一 tenant 并发「立即诊断」时串行化，避免检查与注册之间插入第二个任务
+_diagnosis_start_locks: dict[str, asyncio.Lock] = {}
+_diagnosis_start_lock_mutex = asyncio.Lock()
+
+
+async def _get_tenant_diagnosis_start_lock(tenant_id: str) -> asyncio.Lock:
+    async with _diagnosis_start_lock_mutex:
+        if tenant_id not in _diagnosis_start_locks:
+            _diagnosis_start_locks[tenant_id] = asyncio.Lock()
+        return _diagnosis_start_locks[tenant_id]
 
 # 仅处理图内节点事件，避免顶层 LangGraph 的 on_chain_end 重复推送整图 progress_messages
 _WORKFLOW_NODES = frozenset({
@@ -85,7 +102,7 @@ async def _query_drill_data_from_wlwq(
     page: int,
     page_size: int,
 ) -> tuple[list[dict], int]:
-    now = datetime.now()
+    now = datetime.now(CN_TZ)
     start_at = now - timedelta(days=days)
     endpoint_conf = _DRILL_ENDPOINT_MAP.get(metric_code)
     if endpoint_conf is None:
@@ -155,7 +172,7 @@ async def get_diagnosis_drill_down(
     tenant_config = await get_tenant_config(enterprise_id)
     days = int(tenant_config.get("analysis_period_days") or 30)
     rows, total = await _query_drill_data_from_wlwq(metric_code, enterprise_id, days, page, page_size)
-    now = datetime.now()
+    now = datetime.now(CN_TZ)
     start = now - timedelta(days=days)
     fields = DRILL_ITEM_FIELDS.get(metric_code, [])
     field_labels = {f: DRILL_FIELD_LABELS.get(f, f) for f in fields}
@@ -210,7 +227,7 @@ async def _run_diagnosis_with_stream(
                     payload = {
                         "type": "node_start",
                         "node": node_name,
-                        "timestamp": datetime.now().isoformat(),
+                        "timestamp": datetime.now(CN_TZ).isoformat(),
                     }
                     if node_name in _NODE_START_PERCENT:
                         payload["percent"] = _NODE_START_PERCENT[node_name]
@@ -229,7 +246,7 @@ async def _run_diagnosis_with_stream(
                         payload = {
                             "type": "progress",
                             "message": content,
-                            "timestamp": datetime.now().isoformat(),
+                            "timestamp": datetime.now(CN_TZ).isoformat(),
                         }
                         if isinstance(msg, dict) and msg.get("percent") is not None:
                             payload["percent"] = msg.get("percent")
@@ -238,7 +255,7 @@ async def _run_diagnosis_with_stream(
                 payload = {
                     "type": "node_complete",
                     "node": node_name,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": datetime.now(CN_TZ).isoformat(),
                 }
                 if node_name in _NODE_COMPLETE_PERCENT:
                     payload["percent"] = _NODE_COMPLETE_PERCENT[node_name]
@@ -266,7 +283,7 @@ async def _run_diagnosis_with_stream(
         await manager.send_progress(thread_id, {
             "type": "error",
             "message": f"诊断流程出错: {str(e)}",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(CN_TZ).isoformat(),
         })
         return
     finally:
@@ -311,35 +328,44 @@ async def get_diagnosis_history(
 @router.post("/start", response_model=DiagnosisStartResponse, summary="启动诊断流程")
 async def start_diagnosis(request: DiagnosisRequest):
     """启动诊断流程，返回 thread_id 和 WebSocket URL。报告完成后落库到诊断系统 PG。"""
-    thread_id = generate_thread_id()
+    lock = await _get_tenant_diagnosis_start_lock(request.tenant_id)
+    async with lock:
+        existing = get_active_diagnosis_thread_for_tenant(request.tenant_id)
+        if existing:
+            return DiagnosisStartResponse(
+                thread_id=existing,
+                ws_url=f"{API_PREFIX}/ws/diagnosis/{existing}",
+                already_running=True,
+            )
 
-    task = asyncio.create_task(
-        _run_diagnosis_with_stream(
-            thread_id,
-            request.tenant_id,
-            request.store_id,
-            request.trigger_type,
-            request.triggered_by,
-            request.selected_dimensions,
-            request.selected_indicators,
+        thread_id = generate_thread_id()
+
+        task = asyncio.create_task(
+            _run_diagnosis_with_stream(
+                thread_id,
+                request.tenant_id,
+                request.store_id,
+                request.trigger_type,
+                request.triggered_by,
+                request.selected_dimensions,
+                request.selected_indicators,
+            )
         )
-    )
-    running_tasks[thread_id] = task
+        running_tasks[thread_id] = task
 
-    def _on_done(_):
-        running_tasks.pop(thread_id, None)
-        from src.api.routes.compat_ws import unregister_thread
-        unregister_thread(thread_id)
+        def _on_done(_):
+            running_tasks.pop(thread_id, None)
+            unregister_thread(thread_id)
 
-    task.add_done_callback(_on_done)
+        task.add_done_callback(_on_done)
 
-    from src.api.routes.compat_ws import register_thread_enterprise
-    register_thread_enterprise(thread_id, request.tenant_id)
+        register_thread_enterprise(thread_id, request.tenant_id)
 
-    return DiagnosisStartResponse(
-        thread_id=thread_id,
-        ws_url=f"{API_PREFIX}/ws/diagnosis/{thread_id}",
-    )
+        return DiagnosisStartResponse(
+            thread_id=thread_id,
+            ws_url=f"{API_PREFIX}/ws/diagnosis/{thread_id}",
+            already_running=False,
+        )
 
 
 @router.post("/{thread_id}/cancel", summary="取消诊断流程")
@@ -350,12 +376,12 @@ async def cancel_diagnosis(thread_id: str):
         raise HTTPException(status_code=400, detail="该诊断未在运行中")
 
     task.cancel()
-    running_tasks.pop(thread_id, None)
+    # 不在此处 pop running_tasks，由 task 完成时的 _on_done 统一清理，避免取消过程中又启动同一 tenant 的第二个诊断
 
     await manager.send_progress(thread_id, {
         "type": "cancelled",
         "message": "诊断流程已取消",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(CN_TZ).isoformat(),
     })
 
     return {"status": "cancelled", "thread_id": thread_id}

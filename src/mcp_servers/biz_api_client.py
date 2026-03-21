@@ -196,8 +196,6 @@ MOCK_DATA: dict[str, dict | list] = {
 
     # ── Notify ──
     "/message-remind/batch-create": {},
-    "/message-remind/create": {},
-    "/message-record/create": {},
     "/message-remind/targeted": {"sent_count": 0},
 }
 

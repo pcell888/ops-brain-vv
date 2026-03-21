@@ -10,6 +10,8 @@ from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
+from src.core.config import CN_TZ
+
 # 由 API 在流式运行前设置，用于 emit_progress 时实时推送到 WebSocket
 _progress_sender: ContextVar[tuple[str, Any] | None] = ContextVar("progress_sender", default=None)
 
@@ -147,7 +149,7 @@ async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) 
 def emit_progress(state: dict, message: str, percent: int | float | None = None):
     """向 state 中追加进度消息（会被 LangGraph add_messages reducer 合并）；若已 set_progress_sender 则同时实时推送到 WS。"""
     state.setdefault("progress_messages", [])
-    ts = datetime.now().isoformat()
+    ts = datetime.now(CN_TZ).isoformat()
     payload = {
         "type": "human",
         "content": message,

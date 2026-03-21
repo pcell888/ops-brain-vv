@@ -7,6 +7,8 @@ from datetime import datetime
 
 from fastapi import WebSocket
 
+from src.core.config import CN_TZ
+
 
 class ConnectionManager:
     """WebSocket 连接管理器。"""
@@ -47,4 +49,4 @@ async def get_graph_app():
 
 
 def generate_thread_id() -> str:
-    return f"diag_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    return f"diag_{datetime.now(CN_TZ).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"

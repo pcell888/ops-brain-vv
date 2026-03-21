@@ -6,7 +6,7 @@ import clsx from 'clsx';
 import { useState } from 'react';
 
 // 指标明细类型
-interface MetricDetail {
+export interface MetricDetail {
   name: string;
   display_name: string;
   value: number;
@@ -83,7 +83,37 @@ function getMetricDisplayName(metric: MetricDetail): string {
   return metric.display_name || metric.name;
 }
 
-// 根据得分获取颜色
+// 与 calculator INDICATOR_META.direction 一致，用于「相对均值好坏」着色
+const METRIC_DIRECTION: Record<string, 'higher_is_better' | 'lower_is_better'> = {
+  lead_conversion_rate: 'higher_is_better',
+  response_time_avg: 'lower_is_better',
+  follow_up_count: 'higher_is_better',
+  coupon_redemption_rate: 'higher_is_better',
+  browse_to_order_rate: 'higher_is_better',
+  order_conversion_rate: 'higher_is_better',
+  seckill_conversion_rate: 'higher_is_better',
+  repurchase_rate: 'higher_is_better',
+  refund_rate: 'lower_is_better',
+  churn_rate: 'lower_is_better',
+  positive_review_rate: 'higher_is_better',
+  avg_customer_lifetime_value: 'higher_is_better',
+  service_completion_rate: 'higher_is_better',
+  avg_shipping_hours: 'lower_is_better',
+  task_on_time_rate: 'higher_is_better',
+};
+
+/** 当前值相对行业均值是否处于「不利」一侧（低于均值且越高越好，或高于均值且越低越好） */
+function isWorseThanBenchmark(metric: MetricDetail): boolean {
+  const dir = METRIC_DIRECTION[metric.name];
+  if (!dir) return false;
+  const avg = Number(metric.benchmark_avg);
+  const v = Number(metric.value);
+  if (Number.isNaN(avg) || Number.isNaN(v)) return false;
+  if (dir === 'higher_is_better') return v < avg;
+  return v > avg;
+}
+
+// 根据得分获取颜色（纯分数档）
 function getScoreColor(score: number): string {
   if (score >= 80) return 'text-emerald-400';
   if (score >= 60) return 'text-blue-400';
@@ -91,12 +121,36 @@ function getScoreColor(score: number): string {
   return 'text-rose-400';
 }
 
-// 根据得分获取进度条颜色
 function getProgressColor(score: number): string {
   if (score >= 80) return '#10b981';
   if (score >= 60) return '#3b82f6';
   if (score >= 40) return '#f59e0b';
   return '#f43f5e';
+}
+
+/** 数值与进度条颜色：差于行业均值时避免 40–60 分仍显「中性黄」，与业务含义一致 */
+function getMetricValueColor(metric: MetricDetail): string {
+  const score = metric.score;
+  const worse = isWorseThanBenchmark(metric);
+  if (worse) {
+    if (score >= 80) return 'text-emerald-400';
+    if (score >= 60) return 'text-amber-400';
+    if (score >= 40) return 'text-orange-400';
+    return 'text-rose-400';
+  }
+  return getScoreColor(score);
+}
+
+function getMetricProgressColor(metric: MetricDetail): string {
+  const score = metric.score;
+  const worse = isWorseThanBenchmark(metric);
+  if (worse) {
+    if (score >= 80) return '#10b981';
+    if (score >= 60) return '#f59e0b';
+    if (score >= 40) return '#f97316';
+    return '#f43f5e';
+  }
+  return getProgressColor(score);
 }
 
 export function MetricCard({
@@ -202,10 +256,7 @@ export function MetricCard({
         {/* 指标明细展开面板 */}
         {showDetail && metricsDetail && metricsDetail.length > 0 && (
           <div className="mt-4 pt-3 border-t border-white/10 space-y-3 animate-fadeIn">
-            <div className="text-xs text-gray-500 font-medium mb-2">
-              各项指标得分 
-              <span className="text-gray-600 ml-1">(点击查看明细)</span>
-            </div>
+            <div className="text-xs text-gray-500 font-medium mb-2">各项指标得分</div>
             {metricsDetail.map((metric, idx) => (
               <div 
                 key={idx} 
@@ -226,7 +277,7 @@ export function MetricCard({
                     {getMetricDisplayName(metric)}
                     {onMetricClick && <span className="ml-1 text-gray-600">→</span>}
                   </span>
-                  <span className={clsx('font-medium', getScoreColor(metric.score))}>
+                  <span className={clsx('font-medium', getMetricValueColor(metric))}>
                     {metric.value}{metric.unit} 
                     <span className="text-gray-500 ml-1">({Number.isInteger(metric.score) ? metric.score : metric.score.toFixed(1)}分)</span>
                   </span>
@@ -235,7 +286,7 @@ export function MetricCard({
                   percent={Math.min(100, metric.score)} 
                   size="small" 
                   showInfo={false}
-                  strokeColor={getProgressColor(metric.score)}
+                  strokeColor={getMetricProgressColor(metric)}
                   trailColor="rgba(255,255,255,0.05)"
                 />
                 <div className="flex justify-between text-[10px] text-gray-600">
@@ -247,16 +298,18 @@ export function MetricCard({
           </div>
         )}
 
-        <div 
-          className="mt-4 pt-3 border-t border-white/5 text-xs text-blue-400 flex items-center gap-1.5 cursor-pointer hover:text-blue-300 transition-colors"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDetailClick?.();
-          }}
-        >
-          <span>📋</span>
-          <span>查看明细数据</span>
-        </div>
+        {(!metricsDetail || metricsDetail.length === 0) && onDetailClick && (
+          <div
+            className="mt-4 pt-3 border-t border-white/5 text-xs text-blue-400 flex items-center gap-1.5 cursor-pointer hover:text-blue-300 transition-colors"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDetailClick();
+            }}
+          >
+            <span>📋</span>
+            <span>查看明细数据</span>
+          </div>
+        )}
       </div>
     </Card>
   );

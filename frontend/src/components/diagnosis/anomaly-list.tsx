@@ -1,10 +1,9 @@
 
 
-import { Button, Tag, Empty, Tooltip, Popover } from 'antd';
-import { RightOutlined, BulbOutlined, TagsOutlined, ThunderboltOutlined, ArrowRightOutlined, LoadingOutlined } from '@ant-design/icons';
+import { Button, Tag, Empty } from 'antd';
+import { RightOutlined } from '@ant-design/icons';
 import clsx from 'clsx';
 import { useNavigate } from 'react-router-dom';
-import { getTagLabel } from '@/lib/tag-labels';
 
 export interface AnomalyItem {
   id: string;
@@ -16,8 +15,6 @@ export interface AnomalyItem {
   severity: 'severe' | 'moderate';
   metricName?: string;
   dimension?: string;
-  solutionTags?: string[];
-  rootCauseChain?: string[];
 }
 
 interface AnomalyListProps {
@@ -33,23 +30,8 @@ interface AnomalyListProps {
   onViewDetail?: (anomalyId: string) => void;
   onDrillDown?: (metricName: string, dimension: string) => void;
   /** 生成方案回调 */
-  onGenerateSolution?: (anomalyId: string, solutionTags: string[]) => void;
-  showSolutionFlow?: boolean;
+  onGenerateSolution?: (anomalyId: string) => void;
 }
-
-// 标签到方案模板的映射（简化版）
-const tagToSolutionMap: Record<string, string> = {
-  lead_conversion: '线索转化率优化方案',
-  crm_optimization: '线索转化率优化方案',
-  sales_process: '线索转化率优化方案',
-  marketing_roi: '营销ROI提升方案',
-  audience_targeting: '营销ROI提升方案',
-  churn_prevention: '客户流失预防方案',
-  customer_retention: '客户流失预防方案',
-  task_management: '任务效率提升方案',
-  workload_optimization: '任务效率提升方案',
-};
-
 
 // 默认的静态数据（用于开发时展示）
 const defaultAnomalies: AnomalyItem[] = [
@@ -123,8 +105,8 @@ export function AnomalyList({
       }
     } else {
       // 方案不存在，触发生成
-      if (onGenerateSolution && anomaly.solutionTags) {
-        onGenerateSolution(anomaly.id, anomaly.solutionTags);
+      if (onGenerateSolution) {
+        onGenerateSolution(anomaly.id);
       } else if (diagnosisId) {
         // 跳转到方案页面，带上参数提示需要生成
         navigate(`/solutions?diagnosis_id=${diagnosisId}&anomaly_id=${anomaly.id}&action=generate`);
@@ -210,62 +192,6 @@ export function AnomalyList({
             <div className="text-sm text-gray-500 leading-relaxed mb-2">
               {anomaly.desc}
             </div>
-            {/* 方案关联标签 */}
-            {anomaly.solutionTags && anomaly.solutionTags.length > 0 && (
-              <Popover
-                content={
-                  <div className="max-w-xs">
-                    <div className="text-xs text-gray-400 mb-2 flex items-center gap-1">
-                      <ThunderboltOutlined className="text-amber-400" />
-                      基于这些标签将匹配以下方案:
-                    </div>
-                    <div className="space-y-1.5">
-                      {Array.from(new Set(anomaly.solutionTags.map(tag => tagToSolutionMap[tag]).filter(Boolean))).map((solution, idx) => (
-                        <div key={idx} className="flex items-center gap-2 text-sm">
-                          <BulbOutlined className="text-amber-400" />
-                          <span className="text-white">{solution}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-3 pt-2 border-t border-gray-700">
-                      <div className="text-xs text-gray-500 flex items-center gap-1">
-                        <ArrowRightOutlined className="text-cyan-400" />
-                        {hasAnomalySolution(anomaly.id) 
-                          ? '点击「查看方案」获取详细优化建议' 
-                          : '点击「生成方案」智能匹配解决方案'}
-                      </div>
-                    </div>
-                  </div>
-                }
-                title={
-                  <span className="text-sm flex items-center gap-2">
-                    <TagsOutlined className="text-cyan-400" />
-                    方案匹配标签
-                  </span>
-                }
-                trigger="hover"
-                placement="bottom"
-              >
-                <div className="flex items-center gap-1.5 cursor-help">
-                  <TagsOutlined className="text-cyan-400/70 text-xs" />
-                  <div className="flex gap-1 flex-wrap">
-                    {anomaly.solutionTags.slice(0, 3).map((tag) => (
-                      <Tag 
-                        key={tag} 
-                        className="!m-0 !text-xs !bg-cyan-500/10 !border-cyan-500/30 !text-cyan-400"
-                      >
-                        {getTagLabel(tag)}
-                      </Tag>
-                    ))}
-                    {anomaly.solutionTags.length > 3 && (
-                      <Tag className="!m-0 !text-xs !bg-gray-700 !border-gray-600 !text-gray-400">
-                        +{anomaly.solutionTags.length - 3}
-                      </Tag>
-                    )}
-                  </div>
-                </div>
-              </Popover>
-            )}
           </div>
 
           {/* 数据 */}

@@ -1,7 +1,7 @@
 
 
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Tag, Spin, Empty, Button, Descriptions, Timeline, Tooltip } from 'antd';
+import { Card, Tag, Spin, Empty, Button, Timeline } from 'antd';
 import { 
   ArrowLeftOutlined, 
   LoadingOutlined,
@@ -12,8 +12,6 @@ import {
 import clsx from 'clsx';
 import { useAnomalyDetail, useDimensionConfig } from '@/lib/hooks';
 import { useAppStore } from '@/stores/app-store';
-import { getTagLabel } from '@/lib/tag-labels';
-
 // 严重程度配置
 const severityConfig: Record<string, { color: string; text: string; bgClass: string }> = {
   critical: { color: 'red', text: '严重', bgClass: 'from-rose-500/20 to-rose-600/10' },
@@ -237,7 +235,7 @@ export default function AnomalyDetailPage() {
           {rootCauseAnalysis?.explanation && (
             <div className="mt-4 p-4 bg-gray-800/30 rounded-lg border border-gray-700/50">
               <div className="text-gray-500 text-xs mb-2 flex items-center gap-1">
-                <BulbOutlined /> AI 分析说明
+                <BulbOutlined /> 支撑依据
               </div>
               <p className="text-gray-300 text-sm leading-relaxed">
                 {rootCauseAnalysis.explanation}
@@ -274,62 +272,8 @@ export default function AnomalyDetailPage() {
           ) : (
             <Empty description="暂无改进建议" image={Empty.PRESENTED_IMAGE_SIMPLE} />
           )}
-          
-          {/* 解决方案标签 */}
-          {anomaly.solution_tags && anomaly.solution_tags.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-gray-700/50">
-              <div className="text-gray-500 text-xs mb-2">相关方案标签</div>
-              <div className="flex flex-wrap gap-2">
-                {anomaly.solution_tags.map((tag: string, index: number) => (
-                  <Tag key={index} color="processing">
-                    {getTagLabel(tag)}
-                  </Tag>
-                ))}
-              </div>
-            </div>
-          )}
         </Card>
       </div>
-
-      {/* 详细信息 */}
-      <Card 
-        title={
-          <div className="flex items-center gap-2">
-            <span className="w-6 h-6 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400 text-sm">
-              📋
-            </span>
-            <span>详细信息</span>
-          </div>
-        }
-      >
-        <Descriptions 
-          column={3} 
-          bordered 
-          size="small"
-          labelStyle={{ color: '#9ca3af', backgroundColor: 'transparent' }}
-          contentStyle={{ color: '#fff', backgroundColor: 'transparent' }}
-        >
-          <Descriptions.Item label="异常ID">{anomaly.id}</Descriptions.Item>
-          <Descriptions.Item label="规则ID">{anomaly.rule_id}</Descriptions.Item>
-          <Descriptions.Item label="所属维度">
-            {getDimensionDisplayName(anomaly.dimension)}
-          </Descriptions.Item>
-          <Descriptions.Item label="指标名称">{getMetricDisplayName(anomaly.metric_name)}</Descriptions.Item>
-          <Descriptions.Item label="当前值">{anomaly.current_value.toFixed(2)}{unit}</Descriptions.Item>
-          <Descriptions.Item label="基准值">
-            {anomaly.benchmark_value?.toFixed(2) || '-'}{unit}
-          </Descriptions.Item>
-          <Descriptions.Item label="差距百分比">
-            <span className={anomaly.gap_percentage && anomaly.gap_percentage < 0 ? 'text-rose-400' : 'text-emerald-400'}>
-              {anomaly.gap_percentage?.toFixed(2) || '-'}%
-            </span>
-          </Descriptions.Item>
-          <Descriptions.Item label="严重程度">
-            <Tag color={severity.color}>{severity.text}</Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="诊断ID">{diagnosisId}</Descriptions.Item>
-        </Descriptions>
-      </Card>
     </div>
   );
 }

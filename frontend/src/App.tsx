@@ -13,6 +13,7 @@ const DrillDownPage = lazy(() => import('@/pages/diagnosis/[diagnosisId]/drill-d
 const SolutionsPage = lazy(() => import('@/pages/solutions'));
 const SolutionDiagnosisPage = lazy(() => import('@/pages/solutions/[diagnosisId]'));
 const ExecutionPage = lazy(() => import('@/pages/execution'));
+const ExecutionTaskDetailPage = lazy(() => import('@/pages/execution/task/[taskId]'));
 const ExecutionDetailPage = lazy(() => import('@/pages/execution/[planId]'));
 const TrackingPage = lazy(() => import('@/pages/tracking'));
 const TrackingDetailPage = lazy(() => import('@/pages/tracking/[trackingId]'));
@@ -41,6 +42,7 @@ export default function App() {
           <Route path="/solutions" element={<SolutionsPage />} />
           <Route path="/solutions/:diagnosisId" element={<SolutionDiagnosisPage />} />
           <Route path="/execution" element={<ExecutionPage />} />
+          <Route path="/execution/task/:taskId" element={<ExecutionTaskDetailPage />} />
           <Route path="/execution/:planId" element={<ExecutionDetailPage />} />
           <Route path="/tracking" element={<TrackingPage />} />
           <Route path="/tracking/cases" element={<TrackingCasesPage />} />

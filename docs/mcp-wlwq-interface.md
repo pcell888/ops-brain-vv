@@ -628,7 +628,7 @@ wlwq 端点应返回以下标准格式：
 
 #### POST `/message-remind/batch-create`
 
-批量创建消息提醒。
+创建消息提醒（一条或多条；单条时 `messages` 仅含一项）。
 
 **请求体：**
 
@@ -640,12 +640,27 @@ wlwq 端点应返回以下标准格式：
       "title": "AI诊断报告已生成",
       "content": "共发现 3 项异常指标...",
       "type": "ai_diagnosis_report",
-      "jumpUrl": "/report/xxx",
-      "bizId": "task-001"
+      "jumpUrl": "/diagnosis/report/rpt-abc123"
+    },
+    {
+      "accountId": "admin-001",
+      "title": "任务即将到期",
+      "content": "任务「线索跟进」将在 1 天内截止。",
+      "type": "ai_task_approaching_deadline",
+      "bizId": "exec-task-001"
     }
   ]
 }
 ```
+
+**`jumpUrl` 与 `bizId`（均为可选，按场景填其一或都填）**
+
+| 字段 | 含义 | 业务侧建议用法 |
+|------|------|------------------|
+| `jumpUrl` | **用户点击通知后要打开的前端路由或 H5 路径**（相对路径如 `/report/xxx`，或完整 URL）。 | 落库到「跳转链接」类字段；App/小程序 `onClick` 用该值做路由或 `web-view`。适用于**有固定详情页**的通知（诊断报告、方案会话、复盘页等）。 |
+| `bizId` | **关联的后台业务主键**，字符串，由诊断侧生成或沿用已有 id。 | 落库到「关联业务 ID」类字段，用于列表反查、详情接口入参（如执行任务 id、会话 thread id）。适用于**任务类提醒**（分配/超期/即将到期/受阻），即使暂无独立 H5 页也可先只传 `bizId` 再在后端拼跳转。 |
+
+**合并规则（与参考实现一致）：** 若**同时**提供 `jumpUrl` 与 `bizId`，持久化到单一关联字段时 **优先采用 `jumpUrl`**；若业务表**分列**存储跳转链接与业务 id，则应**两列分别写入**，勿只存其一。仅填 `bizId` 时，业务端可自行拼默认详情路径（如 `/tasks/{bizId}`）。
 
 消息 `type` 枚举：
 
@@ -661,44 +676,72 @@ wlwq 端点应返回以下标准格式：
 | `ai_task_blocked` | 任务受阻提醒 |
 | `ai_targeted` | 定向客户推送 |
 
-#### POST `/message-remind/create`
-
-创建单条消息提醒（字段同上，去掉外层 `messages` 包裹）。
-
-#### POST `/message-record/create`
-
-消息记录留存（用于消息历史查询）。
-
-**请求体：**
-
-```json
-{
-  "storeId": "s001",
-  "type": "ai_diagnosis_report",
-  "title": "...",
-  "content": "...",
-  "bizId": "xxx",
-  "userId": 1
-}
-```
-
 #### POST `/message-remind/targeted`
 
 按人群定向推送消息。
 
-**请求体：**
+**请求体：** 各字段含义见下表；`title` / `content` 为展示在客户端消息列表与详情中的文案。
+
+**`type`：** 与上文「消息 `type` 枚举」一致（`ai_diagnosis_report` … `ai_targeted` 共 9 项）。**本接口为定向运营推送，应使用 `ai_targeted`**；其余类型面向诊断/任务等非「按人群圈选」场景，勿与本接口混用，除非业务统计上需自定义子类型字符串。
+
+**示例 1 — 流失风险（`churn_risk`）**
 
 ```json
 {
   "storeId": "s001",
   "targetSegment": "churn_risk",
-  "title": "专属福利",
-  "content": "...",
+  "title": "好久不见，为您留了一份回归礼",
+  "content": "检测到您已有一段时间未在本店消费。我们为您准备了专属优惠券与会员折扣，点击消息即可查看详情，期待您的再次光临。",
   "type": "ai_targeted"
 }
 ```
 
-`targetSegment` 枚举：`churn_risk` | `no_repurchase_90d` | `coupon_expiring_soon` | `low_conversion`
+**示例 2 — 长期未复购（`no_repurchase_90d`）**
+
+```json
+{
+  "storeId": "s001",
+  "targetSegment": "no_repurchase_90d",
+  "title": "专属老客：满减券已到账",
+  "content": "您已超过 90 天未下单。我们已为您发放一张「满 200 减 30」复购券，仅限本周使用，进店或下单时自动抵扣。",
+  "type": "ai_targeted"
+}
+```
+
+**示例 3 — 持券未用（`coupon_expiring_soon`）**
+
+```json
+{
+  "storeId": "s001",
+  "targetSegment": "coupon_expiring_soon",
+  "title": "您有未使用的优惠券",
+  "content": "检测到您账户仍有未使用的优惠券，建议尽快使用以免过期。打开卡券中心可查看面额与适用商品。",
+  "type": "ai_targeted"
+}
+```
+
+**示例 4 — 曝光未转化（`low_conversion`）**
+
+```json
+{
+  "storeId": "s001",
+  "targetSegment": "low_conversion",
+  "title": "看过还没下单？首单立减",
+  "content": "您近期浏览过本店商品但尚未下单。新客专享首单立减活动进行中，限时有效，欢迎下单体验。",
+  "type": "ai_targeted"
+}
+```
+
+**`targetSegment`（人群标签）**
+
+业务侧按标签解析出目标客户 `account_id` 列表后再发消息；参考实现中的圈选逻辑如下表（实际生产可按门店/行业细化）。
+
+| 取值 | 含义（业务语义） | 参考圈选逻辑 |
+|------|------------------|----------------|
+| `churn_risk` | **流失风险客**：长期未再来店下单的老客 | 曾有已完成订单，但**最近一次完成订单距今超过 60 天** |
+| `no_repurchase_90d` | **长期未复购**：需促活/召回 | 曾有已完成订单，但**最近一次完成订单距今超过 90 天** |
+| `coupon_expiring_soon` | **持券未用**（可配合「即将过期」营销） | 存在**未使用**优惠券的账号（具体「即将过期」条件由业务规则补充） |
+| `low_conversion` | **曝光/进店未转化**：有曝光或进店行为但尚未下单 | 有经营侧曝光/入店数据，且**尚无已完成订单**的账号 |
 
 **响应 data：** `{ "sent_count": 120 }`
 
@@ -931,7 +974,7 @@ wlwq 端点应返回以下标准格式：
 | **售后/评价** | `/store-refund-order/statistics`, `/store-order-evaluate/statistics` |
 | **服务** | `/service-order/completion-stats` |
 | **组织** | `/sys-dept/tree`, `/sys-user/list` |
-| **消息** | `/message-remind/create`, `/message-remind/batch-create`, `/message-remind/targeted`, `/message-record/create` |
+| **消息** | `/message-remind/batch-create`, `/message-remind/targeted` |
 | **AI 任务** | `/ai-diagnosis/exec-task/batch-create`, `/ai-diagnosis/exec-task/{id}/status` |
 | **平台中台** | `/industry-trend-statistics/benchmark`, `/industry-trend-statistics/trend`, `/store-class/list` |
 

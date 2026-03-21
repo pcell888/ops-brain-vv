@@ -18,6 +18,7 @@ from src.core.calculator import (
     DEFAULT_BENCHMARKS,
     calculate_dimension_score,
     build_diagnosis_report,
+    normalize_llm_root_causes,
     resolve_active_indicators,
     rebalance_weights,
 )
@@ -30,6 +31,43 @@ logger = logging.getLogger(__name__)
 
 def _get_admin_accounts(profile: dict) -> list[str]:
     return profile.get("admin_account_ids", [])
+
+
+def _message_text(resp) -> str:
+    c = getattr(resp, "content", "")
+    if isinstance(c, str):
+        return c.strip()
+    if isinstance(c, list):
+        parts: list[str] = []
+        for block in c:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "".join(parts).strip()
+    return str(c).strip()
+
+
+def _coerce_root_cause_list(parsed: object) -> list[dict]:
+    if isinstance(parsed, list):
+        return [x for x in parsed if isinstance(x, dict)]
+    if isinstance(parsed, dict):
+        for key in ("root_causes", "results", "data", "items", "analyses", "anomaly_analyses"):
+            v = parsed.get(key)
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+        if any(k in parsed for k in ("anomaly_indicator", "cause", "indicator_code")):
+            return [parsed]
+    return []
+
+
+def _root_causes_by_code(root_causes: list[dict]) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for rc in root_causes:
+        k = rc.get("anomaly_indicator")
+        if isinstance(k, str) and k.strip():
+            out[k.strip()] = rc
+    return out
 
 
 async def _llm_root_cause_analysis(
@@ -46,10 +84,16 @@ async def _llm_root_cause_analysis(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         temperature=0.3,
+        max_tokens=8192,
     )
 
+    required_codes = json.dumps(
+        [a["indicator_code"] for a in anomalies],
+        ensure_ascii=False,
+    )
     user_msg = ROOT_CAUSE_ANALYSIS_USER.format(
         store_profile=json.dumps(store_profile, ensure_ascii=False, indent=2),
+        required_codes=required_codes,
         anomalies=json.dumps(anomalies, ensure_ascii=False, indent=2),
         all_indicators=json.dumps(all_indicators, ensure_ascii=False, indent=2),
     )
@@ -61,19 +105,18 @@ async def _llm_root_cause_analysis(
 
     text = ""
     try:
-        text = resp.content.strip()
+        text = _message_text(resp)
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
         parsed = json.loads(text)
-        if isinstance(parsed, list):
-            return [item for item in parsed if isinstance(item, dict)]
-        if isinstance(parsed, dict):
-            return [parsed]
-        logger.warning("LLM根因分析输出类型异常: %s", type(parsed).__name__)
+        out = _coerce_root_cause_list(parsed)
+        if out:
+            return out
+        logger.warning("LLM根因分析输出无法解析为根因列表: %s", type(parsed).__name__)
         return []
-    except (json.JSONDecodeError, IndexError):
-        logger.warning("LLM根因分析输出解析失败，返回原始文本")
-        return [{"anomaly_indicator": "unknown", "cause": text, "evidence": "", "confidence": 0.5}]
+    except (json.JSONDecodeError, IndexError) as e:
+        logger.warning("LLM根因分析 JSON 解析失败: %s，前 400 字: %s", e, text[:400] if text else "")
+        return []
 
 
 async def diagnose_node(state: DiagnosisState) -> dict:
@@ -181,11 +224,40 @@ async def diagnose_node(state: DiagnosisState) -> dict:
     root_causes: list[dict] = []
     if anomalies:
         emit_progress(state, "AI正在分析异常根因...", percent=55)
-        root_causes = await _llm_root_cause_analysis(
-            store_profile=state.get("store_profile", {}),
+        store_profile = state.get("store_profile", {})
+        merged: dict[str, dict] = {}
+        batch = await _llm_root_cause_analysis(
+            store_profile=store_profile,
             anomalies=anomalies,
             all_indicators=all_indicators,
         )
+        batch = normalize_llm_root_causes(batch, anomalies)
+        merged.update(_root_causes_by_code(batch))
+        for _round in range(2):
+            missing = [a for a in anomalies if a["indicator_code"] not in merged]
+            if not missing:
+                break
+            emit_progress(
+                state,
+                f"补全遗漏根因 ({len(missing)}/{len(anomalies)})...",
+                percent=56 + _round,
+            )
+            extra = await _llm_root_cause_analysis(
+                store_profile=store_profile,
+                anomalies=missing,
+                all_indicators=all_indicators,
+            )
+            extra = normalize_llm_root_causes(extra, missing)
+            merged.update(_root_causes_by_code(extra))
+        root_causes = list(merged.values())
+        if len(merged) < len(anomalies):
+            still = [a["indicator_code"] for a in anomalies if a["indicator_code"] not in merged]
+            logger.warning(
+                "根因仍未覆盖全部异常: %s/%s，缺: %s",
+                len(merged),
+                len(anomalies),
+                still,
+            )
 
     diagnosis_report = build_diagnosis_report(
         store_profile=state.get("store_profile", {}),

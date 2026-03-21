@@ -16,12 +16,30 @@ _CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "indicator_push_
 DEFAULT_PUSH_RULES: dict[str, dict] = {
     "lead_conversion_rate": {
         "tasks": [
-            {"task_name": "线索跟进优化", "owner_dept": "销售", "timeline": "24小时内首次跟进"},
+            {
+                "task_name": "线索跟进优化",
+                "owner_dept": "销售",
+                "timeline": "24小时内首次跟进",
+                "implementation_steps": [
+                    "导出近7日新线索及负责人清单",
+                    "在 CRM 为每条线索配置首次跟进截止时间提醒",
+                    "抽查当日首次响应达标率并在周会复盘",
+                ],
+            },
         ],
     },
     "coupon_redemption_rate": {
         "tasks": [
-            {"task_name": "优惠券策略调整", "owner_dept": "运营", "timeline": "3天内"},
+            {
+                "task_name": "优惠券策略调整",
+                "owner_dept": "运营",
+                "timeline": "3天内",
+                "implementation_steps": [
+                    "统计近30天券面额、门槛与核销率",
+                    "对比行业/历史最优券组并拟定两套试跑方案",
+                    "小流量 A/B 上线并设定 3 日复盘指标",
+                ],
+            },
         ],
         "message": {
             "type": "coupon_expiring_reminder",
@@ -43,18 +61,54 @@ DEFAULT_PUSH_RULES: dict[str, dict] = {
     },
     "refund_rate": {
         "tasks": [
-            {"task_name": "退款原因分析与商品质量改进", "owner_dept": "运营", "timeline": "5天内"},
+            {
+                "task_name": "退款原因分析与商品质量改进",
+                "owner_dept": "运营",
+                "timeline": "5天内",
+                "implementation_steps": [
+                    "导出近30天退款单及原因标签分布",
+                    "对 TOP SKU 做质量/描述一致性核查",
+                    "形成改进清单并对接采购/质检闭环",
+                ],
+            },
         ],
     },
     "positive_review_rate": {
         "tasks": [
-            {"task_name": "售后服务优化", "owner_dept": "售后", "timeline": "3天内"},
-            {"task_name": "差评客户回访", "owner_dept": "客服", "timeline": "24小时内"},
+            {
+                "task_name": "售后服务优化",
+                "owner_dept": "售后",
+                "timeline": "3天内",
+                "implementation_steps": [
+                    "梳理近14天差评与工单闭环时效",
+                    "补齐标准话术与补偿审批流程",
+                    "设定差评 24h 响应 SLA 并抽查执行",
+                ],
+            },
+            {
+                "task_name": "差评客户回访",
+                "owner_dept": "客服",
+                "timeline": "24小时内",
+                "implementation_steps": [
+                    "导出待回访差评订单与联系方式",
+                    "按话术逐条外呼/在线沟通并记录结果",
+                    "将可整改问题转交责任部门并跟进闭环",
+                ],
+            },
         ],
     },
     "avg_shipping_hours": {
         "tasks": [
-            {"task_name": "仓储发货流程优化", "owner_dept": "仓储", "timeline": "5天内"},
+            {
+                "task_name": "仓储发货流程优化",
+                "owner_dept": "仓储",
+                "timeline": "5天内",
+                "implementation_steps": [
+                    "统计各环节停留时长与瓶颈库位",
+                    "优化拣货路径或增加波次策略试跑",
+                    "设定发货时效 KPI 与每日异常看板",
+                ],
+            },
         ],
     },
     "churn_rate": {
@@ -76,7 +130,16 @@ DEFAULT_PUSH_RULES: dict[str, dict] = {
     },
     "seckill_conversion_rate": {
         "tasks": [
-            {"task_name": "秒杀活动选品与定价优化", "owner_dept": "运营", "timeline": "3天内"},
+            {
+                "task_name": "秒杀活动选品与定价优化",
+                "owner_dept": "运营",
+                "timeline": "3天内",
+                "implementation_steps": [
+                    "复盘近3场秒杀的曝光-加购-转化漏斗",
+                    "圈选高转化 SKU 与目标价带",
+                    "更新排期与库存锁量并小流量试跑",
+                ],
+            },
         ],
         "message": {
             "type": "ai_targeted",
@@ -102,3 +165,28 @@ def load_push_rules() -> dict[str, dict]:
 
 
 INDICATOR_PUSH_RULES: dict[str, dict] = load_push_rules()
+
+
+def format_indicator_rules_for_prompt(anomalies: list[object]) -> str:
+    """将当前异常涉及的 5.2.3 规则片段格式化为方案生成 Prompt（按 indicator_code 去重）。"""
+    if not anomalies:
+        return "（无异常指标。）"
+    seen: set[str] = set()
+    parts: list[str] = []
+    for a in anomalies:
+        if not isinstance(a, dict):
+            continue
+        ind = a.get("indicator_code")
+        if not ind or not isinstance(ind, str) or ind in seen:
+            continue
+        seen.add(ind)
+        rule = INDICATOR_PUSH_RULES.get(ind)
+        if not rule:
+            continue
+        parts.append(json.dumps({ind: rule}, ensure_ascii=False, indent=2))
+    if not parts:
+        return (
+            "（当前异常指标在 5.2.3 规则表中无条目；请依据异常与根因设计可执行步骤，"
+            "必要时在 auto_actions 中配置优惠券等自动化动作。）"
+        )
+    return "\n\n".join(parts)

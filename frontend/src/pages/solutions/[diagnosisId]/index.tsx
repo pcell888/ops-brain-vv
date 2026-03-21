@@ -2,16 +2,17 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Card, Row, Col, Tag, Button, Empty, Spin,
-  Timeline, App, Statistic, Divider, Alert
+  App, Statistic, Divider, Alert, Modal,
 } from 'antd';
 import {
   ArrowLeftOutlined, BulbOutlined, CheckCircleOutlined, ThunderboltOutlined,
-  TrophyOutlined, ClockCircleOutlined, RocketOutlined, CloseCircleOutlined,
-  WarningOutlined, StarOutlined, SwapOutlined, AimOutlined,
+  TrophyOutlined,
+  WarningOutlined, StarOutlined, SwapOutlined, AimOutlined, RocketOutlined,
 } from '@ant-design/icons';
 import {
   useSolutionList, useAdoptSolution, useDiagnosisReport,
 } from '@/lib/hooks';
+import { executionApi } from '@/lib/api';
 import { useAppStore } from '@/stores/app-store';
 import clsx from 'clsx';
 import type { SolutionSummary, SolutionGenerateResponse, DiagnosisReport, AIRecommendation } from '@/lib/types';
@@ -34,6 +35,14 @@ export default function SolutionDetailPage() {
 
   const solutions = typedSolutionData?.solutions || [];
   const aiRecommendation: AIRecommendation | null = typedSolutionData?.ai_recommendation ?? null;
+  const aiRecommendationLine = aiRecommendation
+    ? (() => {
+        const rest = (aiRecommendation.comparison_summary || '').trim();
+        if (!rest) return aiRecommendation.reason;
+        const tail = rest.replace(/^共 \d+ 个方案[，,]/, '');
+        return `${aiRecommendation.reason}，${tail}`;
+      })()
+    : null;
 
   useEffect(() => {
     if (solutions.length > 0 && !selectedSolutionId) {
@@ -57,9 +66,43 @@ export default function SolutionDetailPage() {
     }
   };
 
-  const getScoreColor = (score: number) => {
-    if (score >= 80) return 'text-emerald-400';
-    if (score >= 60) return 'text-amber-400';
+  const waitForExecutionPlanReady = async (planId: string) => {
+    for (let i = 0; i < 40; i++) {
+      try {
+        await executionApi.getPlanSummary(planId);
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+  };
+
+  const handleAdoptDetailWithConfirm = () => {
+    if (!selectedSolution || selectedSolution.status === 'adopted') return;
+    const sid = selectedSolution.solution_id;
+    Modal.confirm({
+      title: '是否执行？',
+      content: '确认后将采纳该方案并进入任务详情中的执行列表。',
+      okText: '执行',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await adoptSolution.mutateAsync(sid);
+          message.success('方案已采纳');
+          await refetch();
+          await waitForExecutionPlanReady(sid);
+          navigate(`/execution/${encodeURIComponent(sid)}#execution-task-list`);
+        } catch {
+          message.error('采纳失败');
+        }
+      },
+    });
+  };
+
+  /** 优先级得分约 0–10（generate 节点公式），非百分制 */
+  const getPriorityScoreColor = (score: number) => {
+    if (score >= 7) return 'text-emerald-400';
+    if (score >= 5) return 'text-amber-400';
     return 'text-rose-400';
   };
 
@@ -91,8 +134,8 @@ export default function SolutionDetailPage() {
             </span>
             方案详情
           </h1>
-          <p className="text-gray-400 mt-1 text-sm">
-            共 {solutions.length} 个方案 · 诊断ID: {diagnosisId.slice(0, 8)}...
+          <p className="text-gray-400 mt-1 text-sm break-all">
+            诊断ID: {diagnosisId}
           </p>
         </div>
       </div>
@@ -108,8 +151,7 @@ export default function SolutionDetailPage() {
                 <span className="text-lg font-bold text-white">AI 智能建议</span>
                 <Tag color="cyan">自动分析</Tag>
               </div>
-              <p className="text-gray-300 mb-3">{aiRecommendation.reason}</p>
-              <p className="text-gray-400 text-sm mb-3">{aiRecommendation.comparison_summary}</p>
+              <p className="text-gray-300 mb-3">{aiRecommendationLine}</p>
               {aiRecommendation.risk_warning && (
                 <Alert type="warning" showIcon icon={<WarningOutlined />} message={aiRecommendation.risk_warning} className="!bg-amber-500/10 !border-amber-500/30" />
               )}
@@ -142,9 +184,9 @@ export default function SolutionDetailPage() {
               <thead>
                 <tr className="border-b border-gray-700">
                   <th className="text-left py-3 px-4 text-gray-400 font-medium">方案</th>
-                  <th className="text-center py-3 px-4 text-gray-400 font-medium">评分</th>
-                  <th className="text-center py-3 px-4 text-gray-400 font-medium">周期</th>
-                  <th className="text-center py-3 px-4 text-gray-400 font-medium">成功率</th>
+                  <th className="text-center py-3 px-4 text-gray-400 font-medium">优先级</th>
+                  <th className="text-center py-3 px-4 text-gray-400 font-medium">步骤</th>
+                  <th className="text-center py-3 px-4 text-gray-400 font-medium">预期ROI</th>
                   <th className="text-center py-3 px-4 text-gray-400 font-medium">操作</th>
                 </tr>
               </thead>
@@ -179,15 +221,15 @@ export default function SolutionDetailPage() {
                         </div>
                       </td>
                       <td className="py-4 px-4 text-center">
-                        <span className={clsx('font-bold text-lg', getScoreColor(solution.score))}>
+                        <span className={clsx('font-bold text-lg', getPriorityScoreColor(solution.score))}>
                           {solution.score.toFixed(1)}
                         </span>
                       </td>
-                      <td className="py-4 px-4 text-center text-gray-300">{solution.estimated_duration}天</td>
+                      <td className="py-4 px-4 text-center text-gray-300">
+                        {solution.step_count} 步
+                      </td>
                       <td className="py-4 px-4 text-center">
-                        <Tag color={solution.success_rate >= 0.8 ? 'green' : solution.success_rate >= 0.6 ? 'gold' : 'red'}>
-                          {(solution.success_rate * 100).toFixed(0)}%
-                        </Tag>
+                        <Tag color="blue">{solution.expected_roi.toFixed(1)}</Tag>
                       </td>
                       <td className="py-4 px-4 text-center">
                         <Button
@@ -225,7 +267,7 @@ export default function SolutionDetailPage() {
                     <Button
                       type="primary"
                       icon={<CheckCircleOutlined />}
-                      onClick={() => handleAdopt(selectedSolution.solution_id)}
+                      onClick={handleAdoptDetailWithConfirm}
                       loading={adoptSolution.isPending}
                       disabled={selectedSolution.status === 'adopted'}
                     >
@@ -239,24 +281,21 @@ export default function SolutionDetailPage() {
                 <Row gutter={16}>
                   <Col span={8}>
                     <Statistic
-                      title="推荐评分"
+                      title="优先级得分"
                       value={selectedSolution.score}
                       suffix="分"
-                      valueStyle={{ color: selectedSolution.score >= 70 ? '#10b981' : '#f59e0b' }}
+                      valueStyle={{ color: selectedSolution.score >= 7 ? '#10b981' : selectedSolution.score >= 5 ? '#f59e0b' : '#ef4444' }}
                     />
                   </Col>
                   <Col span={8}>
-                    <Statistic title="实施周期" value={selectedSolution.estimated_duration} suffix="天" />
+                    <Statistic title="执行步骤" value={selectedSolution.step_count} suffix="步" />
                   </Col>
                   <Col span={8}>
                     <Statistic
-                      title="预估成功率"
-                      value={(selectedSolution.success_rate * 100).toFixed(0)}
-                      suffix="%"
-                      valueStyle={{
-                        color: selectedSolution.success_rate >= 0.8 ? '#10b981' :
-                               selectedSolution.success_rate >= 0.6 ? '#f59e0b' : '#ef4444'
-                      }}
+                      title="预期 ROI"
+                      value={selectedSolution.expected_roi.toFixed(1)}
+                      suffix=""
+                      valueStyle={{ color: '#38bdf8' }}
                     />
                   </Col>
                 </Row>
@@ -271,8 +310,55 @@ export default function SolutionDetailPage() {
                     <div className="bg-gray-800/30 rounded-lg p-4 text-gray-300 leading-relaxed">
                       {selectedSolution.recommendation_reason}
                     </div>
+                    <Divider />
                   </div>
                 )}
+
+                <div>
+                  <h4 className="text-gray-300 font-medium mb-3 flex items-center gap-2">
+                    <RocketOutlined className="text-violet-400" />
+                    执行步骤
+                  </h4>
+                  {selectedSolution.steps && selectedSolution.steps.length > 0 ? (
+                    <div className="space-y-3">
+                      {selectedSolution.steps.map((st) => (
+                        <div
+                          key={`${selectedSolution.solution_id}-step-${st.step}`}
+                          className="bg-gray-800/40 border border-gray-700/80 rounded-lg p-4 text-left"
+                        >
+                          <div className="flex flex-wrap items-center gap-2 mb-2">
+                            <Tag color="geekblue">步骤 {st.step}</Tag>
+                            {st.owner_dept ? <Tag color="blue">{st.owner_dept}</Tag> : null}
+                            {st.timeline ? <Tag>{st.timeline}</Tag> : null}
+                          </div>
+                          <p className="text-gray-200 leading-relaxed text-sm">{st.action}</p>
+                          {st.data_context ? (
+                            <p className="text-gray-500 text-xs mt-2 leading-relaxed">
+                              <span className="text-gray-600">数据依据：</span>
+                              {st.data_context}
+                            </p>
+                          ) : null}
+                          {st.implementation_steps && st.implementation_steps.length > 0 ? (
+                            <div className="mt-3 text-xs text-gray-300">
+                              <div className="text-gray-500 mb-1">实施步骤</div>
+                              <ol className="list-decimal pl-4 space-y-1">
+                                {st.implementation_steps.map((line, i) => (
+                                  <li key={i}>{line}</li>
+                                ))}
+                              </ol>
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Empty
+                      description="暂无步骤明细（请重新诊断生成或检查后端方案数据）"
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      className="!my-2"
+                    />
+                  )}
+                </div>
               </div>
             </Card>
           </Col>

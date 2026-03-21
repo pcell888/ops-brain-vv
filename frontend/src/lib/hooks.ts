@@ -2,7 +2,14 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { diagnosisApi, solutionApi, executionApi, trackingApi, customDimensionApi } from './api';
+import {
+  diagnosisApi,
+  enterpriseApi,
+  solutionApi,
+  executionApi,
+  trackingApi,
+  customDimensionApi,
+} from './api';
 import { wsManager, type TaskStatusMessage, type TaskStatus } from './websocket';
 import type {
   DiagnosisReport,
@@ -11,6 +18,9 @@ import type {
   SolutionGenerateResponse,
   SolutionDetail,
   ExecutionPlanSummary,
+  ExecutionTask,
+  ExecutionTaskDetail,
+  TaskStats,
   GanttData,
   TrackingSummary,
 } from './types';
@@ -71,6 +81,29 @@ export function useDiagnosisList(enterpriseId: string | null, skip = 0, limit = 
       return false;
     },
   });
+}
+
+/** 企业下历史诊断选择：默认最近一次，切换企业时重置 */
+export function useDiagnosisSelection(enterpriseId: string | null) {
+  const { data: diagnosisListData, isLoading: listLoading } = useDiagnosisList(enterpriseId, 0, 100);
+  const diagnosisItems = diagnosisListData?.items ?? [];
+  const [selectedDiagnosisId, setSelectedDiagnosisId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedDiagnosisId(null);
+  }, [enterpriseId]);
+
+  useEffect(() => {
+    if (!diagnosisItems.length) return;
+    setSelectedDiagnosisId((prev) => {
+      if (prev == null || !diagnosisItems.some((i) => i.diagnosis_id === prev)) {
+        return diagnosisItems[0].diagnosis_id;
+      }
+      return prev;
+    });
+  }, [diagnosisItems]);
+
+  return { diagnosisItems, selectedDiagnosisId, setSelectedDiagnosisId, listLoading };
 }
 
 // 获取最新诊断报告
@@ -156,14 +189,15 @@ export interface DrillDownResponse {
   page_size: number;
 }
 
-// 指标钻取数据
+// 指标钻取数据（days 通常取企业配置 analysis_period_days，与系统设置「数据分析周期」一致）
 export function useDrillDownData(
   metricName: string,
   enterpriseId: string | null,
   dimension: string,
-  days: number = 90,
+  days: number = 30,
   page: number = 1,
-  pageSize: number = 10
+  pageSize: number = 10,
+  options?: { enabled?: boolean }
 ) {
   return useQuery<DrillDownResponse>({
     queryKey: ['diagnosis', 'drill-down', metricName, enterpriseId, dimension, days, page, pageSize],
@@ -174,7 +208,16 @@ export function useDrillDownData(
       page,
       page_size: pageSize,
     }),
-    enabled: !!enterpriseId && !!metricName,
+    enabled: (options?.enabled ?? true) && !!enterpriseId && !!metricName,
+  });
+}
+
+/** 拉取企业详情（含 config.analysis_period_days），与 dashboard 共用 queryKey */
+export function useEnterpriseDetail(enterpriseId: string | null) {
+  return useQuery({
+    queryKey: ['enterprise', enterpriseId],
+    queryFn: () => enterpriseApi.get(enterpriseId!),
+    enabled: !!enterpriseId,
   });
 }
 
@@ -441,14 +484,46 @@ export function useExecutionPlanList(
   enterpriseId: string | null,
   status?: string,
   skip: number = 0,
-  limit: number = 10
+  limit: number = 10,
+  diagnosisId?: string | null,
 ) {
   return useQuery({
-    queryKey: ['execution', 'plans', enterpriseId, status, skip, limit],
-    queryFn: () => executionApi.listPlans({ enterprise_id: enterpriseId!, status, skip, limit }),
-    enabled: !!enterpriseId,
+    queryKey: ['execution', 'plans', enterpriseId, status, skip, limit, diagnosisId],
+    queryFn: () =>
+      executionApi.listPlans({
+        enterprise_id: enterpriseId!,
+        status,
+        skip,
+        limit,
+        diagnosis_id: diagnosisId || undefined,
+      }),
+    enabled: !!enterpriseId && !!diagnosisId,
     staleTime: 0,
     refetchOnMount: true,
+  });
+}
+
+/** 任务执行列表页：拉平任务行（非计划聚合） */
+export function useExecutionTaskList(
+  enterpriseId: string | null,
+  diagnosisId?: string | null,
+  limit: number = 500,
+) {
+  return useQuery<{ items: ExecutionTask[]; total: number; stats?: TaskStats }>({
+    queryKey: ['execution', 'task-list', enterpriseId, diagnosisId, limit],
+    queryFn: () =>
+      executionApi.listTasks({
+        enterprise_id: enterpriseId!,
+        thread_id: diagnosisId || undefined,
+        limit,
+      }),
+    enabled: !!enterpriseId && !!diagnosisId,
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchInterval: (query) => {
+      const items = (query.state.data as { items?: ExecutionTask[] } | undefined)?.items || [];
+      return items.some((t) => t.status === 'running') ? 3000 : false;
+    },
   });
 }
 
@@ -509,17 +584,25 @@ export function useStartTracking() {
   });
 }
 
-// 获取追踪列表
+// 获取追踪列表（按诊断 thread_id 筛选）
 export function useTrackingList(
   enterpriseId: string | null,
   status?: string,
   skip: number = 0,
-  limit: number = 10
+  limit: number = 10,
+  diagnosisId?: string | null,
 ) {
   return useQuery({
-    queryKey: ['tracking', 'list', enterpriseId, status, skip, limit],
-    queryFn: () => trackingApi.list({ enterprise_id: enterpriseId!, status, skip, limit }),
-    enabled: !!enterpriseId,
+    queryKey: ['tracking', 'list', enterpriseId, status, skip, limit, diagnosisId],
+    queryFn: () =>
+      trackingApi.list({
+        enterprise_id: enterpriseId!,
+        status,
+        skip,
+        limit,
+        diagnosis_id: diagnosisId || undefined,
+      }),
+    enabled: !!enterpriseId && !!diagnosisId,
     staleTime: 0, // 确保数据总是被认为是过期的，需要重新请求
     refetchOnMount: true, // 组件挂载时重新请求
   });
@@ -601,10 +684,11 @@ export function usePlanTasks(planId: string | null, status?: string, refetchInte
 
 // 获取任务详情
 export function useTaskDetail(taskId: string | null) {
-  return useQuery({
+  return useQuery<ExecutionTaskDetail>({
     queryKey: ['execution', 'task', taskId],
     queryFn: () => executionApi.getTaskDetail(taskId!),
     enabled: !!taskId,
+    staleTime: 0,
   });
 }
 
@@ -1220,4 +1304,3 @@ export function useCRMWebSocket(
 
   return { connected, lastMessage };
 }
-

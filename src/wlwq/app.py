@@ -7,14 +7,12 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.core.logging_setup import setup_logging
 from src.wlwq.database import close_pool, get_pool
 from src.wlwq.db_schema import ensure_wlwq_tables
 from src.wlwq.routes import client_record, coupon, examine_initiate, exec_task, message, mock_stats, sales_contract, store, sys
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+setup_logging("wlwq")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(

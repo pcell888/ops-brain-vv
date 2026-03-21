@@ -20,7 +20,7 @@ def _gen_id(prefix="mr", length=16):
 
 @router.post("/message-remind/batch-create")
 async def message_remind_batch_create(body: dict):
-    """批量创建消息提醒。body: messages: [{accountId, title, content, type?, jumpUrl?}]"""
+    """创建消息提醒（可一条或多条）。body: messages: [{accountId, title, content, type?, jumpUrl?, bizId?}]"""
     messages = body.get("messages", [])
     if not messages:
         return _ok({"count": 0})
@@ -28,6 +28,7 @@ async def message_remind_batch_create(body: dict):
     async with pool.acquire() as conn:
         for m in messages:
             rid = _gen_id("mr")[:20]
+            model_ref = str(m.get("jumpUrl") or m.get("bizId") or "")[:64]
             await conn.execute(
                 """
                 INSERT INTO message_remind
@@ -39,54 +40,9 @@ async def message_remind_batch_create(body: dict):
                 m.get("title", "")[:1000],
                 (m.get("content") or "")[:10000],
                 m.get("type", ""),
-                m.get("jumpUrl", "")[:64],
+                model_ref,
             )
     return _ok({"count": len(messages)})
-
-
-@router.post("/message-remind/create")
-async def message_remind_create(body: dict):
-    """单条创建消息提醒。"""
-    rid = _gen_id("mr")[:20]
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO message_remind
-            (message_remind_id, account_id, message_title, message_content, message_type, model_id, model_status)
-            VALUES ($1, $2, $3, $4, $5, $6, 1)
-            """,
-            rid,
-            str(body.get("accountId", "")),
-            (body.get("title") or "")[:1000],
-            (body.get("content") or "")[:10000],
-            body.get("type", ""),
-            str(body.get("bizId", ""))[:64],
-        )
-    return _ok({"message_remind_id": rid})
-
-
-@router.post("/message-record/create")
-async def message_record_create(body: dict):
-    """创建消息记录。body: storeId?, userId?, type, title, content, bizId?"""
-    rid = _gen_id("rec")[:20]
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO message_record
-            (message_record_id, user_id, store_id, title, brief, message_type, model_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """,
-            rid,
-            body.get("userId") or body.get("user_id"),
-            str(body.get("storeId", ""))[:32],
-            (body.get("title") or "")[:1000],
-            (body.get("content") or "")[:10000],
-            body.get("type", ""),
-            str(body.get("bizId", ""))[:64],
-        )
-    return _ok({"message_record_id": rid})
 
 
 _SEGMENT_QUERIES: dict[str, str] = {

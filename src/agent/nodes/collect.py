@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from src.agent.state import DiagnosisState
 from src.agent.tools import mcp_call, emit_progress
 from src.core.calculator import extract_indicator_codes, resolve_active_indicators, NOT_APPLICABLE_MAP
-from src.core.config import get_settings
+from src.core.config import CN_TZ, get_settings
 from src.core.tenant_config import get_tenant_config
 
 DIMENSION_TOOL_MAP: dict[str, str] = {
@@ -38,8 +38,9 @@ async def collect_data_node(state: DiagnosisState) -> dict:
     settings = get_settings()
     tenant_config = await get_tenant_config(tenant_id)
     lookback_days = tenant_config.get("analysis_period_days") or settings.diagnosis_lookback_days
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=int(lookback_days))).strftime("%Y-%m-%d")
+    _now = datetime.now(CN_TZ)
+    end_date = _now.strftime("%Y-%m-%d")
+    start_date = (_now - timedelta(days=int(lookback_days))).strftime("%Y-%m-%d")
 
     scope_label = "全企业" if not store_id else f"店铺 {store_id}"
     emit_progress(state, f"开始采集{scope_label}运营数据（{len(active_dims)}个维度, {len(active_inds)}项指标）...", percent=10)

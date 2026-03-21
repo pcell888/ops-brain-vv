@@ -196,6 +196,15 @@ def get_running_threads_for_enterprise(enterprise_id: str) -> list[str]:
     return [tid for tid, eid in _thread_to_enterprise.items() if eid == enterprise_id]
 
 
+def get_active_diagnosis_thread_for_tenant(enterprise_id: str) -> str | None:
+    """该企业是否已有未结束的诊断 asyncio.Task（与 deps.running_tasks 一致）。"""
+    for tid in get_running_threads_for_enterprise(enterprise_id):
+        t = running_tasks.get(tid)
+        if t is not None and not t.done():
+            return tid
+    return None
+
+
 def unregister_thread(thread_id: str):
     _thread_to_enterprise.pop(thread_id, None)
 

@@ -28,24 +28,6 @@ CREATE TABLE IF NOT EXISTS message_remind (
 );
 """
 
-MESSAGE_RECORD_SQL = """
-CREATE TABLE IF NOT EXISTS message_record (
-  message_record_id VARCHAR(20) PRIMARY KEY,
-  user_id BIGINT,
-  store_id VARCHAR(32),
-  model_status SMALLINT DEFAULT 1,
-  title VARCHAR(1000),
-  brief TEXT,
-  jump_type SMALLINT DEFAULT 0,
-  model_id VARCHAR(64) DEFAULT '0',
-  read_status SMALLINT DEFAULT 0,
-  create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  del_status SMALLINT DEFAULT 0,
-  message_type VARCHAR(64) DEFAULT ''
-);
-"""
-
 AI_DIAGNOSIS_TASK_SQL = """
 CREATE TABLE IF NOT EXISTS ai_diagnosis_task (
   task_id VARCHAR(32) PRIMARY KEY,
@@ -416,7 +398,6 @@ async def ensure_wlwq_tables():
     pool = await get_pool()
     stmts = [
         ("message_remind", MESSAGE_REMIND_SQL.strip()),
-        ("message_record", MESSAGE_RECORD_SQL.strip()),
         ("ai_diagnosis_task", AI_DIAGNOSIS_TASK_SQL.strip()),
         ("service_order", SERVICE_ORDER_SQL.strip()),
         ("store_order", STORE_ORDER_SQL.strip()),
@@ -449,7 +430,7 @@ async def ensure_wlwq_tables():
                 logger.info("wlwq table %s ensured", name)
             except Exception as e:
                 logger.warning("wlwq ensure table %s: %s", name, e)
-        for table, col in [("message_remind", "model_id"), ("message_record", "model_id")]:
+        for table, col in [("message_remind", "model_id")]:
             try:
                 await conn.execute(f"ALTER TABLE {table} ALTER COLUMN {col} TYPE VARCHAR(64)")
             except Exception:

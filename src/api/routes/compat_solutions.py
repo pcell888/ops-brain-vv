@@ -15,6 +15,122 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/solutions", tags=["方案(兼容层)"])
 
 
+def _parse_impl_steps(raw: dict) -> list[str]:
+    impl = raw.get("implementation_steps") or []
+    if not isinstance(impl, list):
+        return []
+    return [str(x).strip() for x in impl if str(x).strip()][:30]
+
+
+def _normalize_steps(steps: list) -> list[dict]:
+    """与 LLM 约定一致：step / action / owner_dept / timeline / data_context / implementation_steps。"""
+    out: list[dict] = []
+    for i, raw in enumerate(steps or []):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            step_no = int(raw.get("step", i + 1))
+        except (TypeError, ValueError):
+            step_no = i + 1
+        action = raw.get("action") or raw.get("description") or ""
+        out.append({
+            "step": step_no,
+            "action": str(action).strip(),
+            "owner_dept": str(raw.get("owner_dept", "") or "").strip(),
+            "timeline": str(raw.get("timeline", "") or "").strip(),
+            "data_context": str(raw.get("data_context", "") or "").strip(),
+            "implementation_steps": _parse_impl_steps(raw),
+        })
+    return out
+
+
+def _step_timelines(steps: list) -> list[str]:
+    out: list[str] = []
+    for s in steps or []:
+        if not isinstance(s, dict):
+            continue
+        t = str(s.get("timeline") or "").strip()
+        if t:
+            out.append(t)
+    return out[:8]
+
+
+def _plan_to_list_item(
+    plan: dict,
+    rank: int,
+    anomalies: list,
+    adopted_ids: set,
+) -> dict:
+    plan_id = plan.get("plan_id", "")
+    steps = plan.get("steps") or []
+
+    target_anomaly_ids = []
+    for target_code in plan.get("target_indicators", []):
+        for a in anomalies:
+            if a.get("indicator_code") == target_code:
+                target_anomaly_ids.append(a.get("indicator_code"))
+
+    status = "adopted" if plan_id in adopted_ids else "pending"
+    roi = plan.get("expected_roi")
+    try:
+        expected_roi = float(roi) if roi is not None else 0.0
+    except (TypeError, ValueError):
+        expected_roi = 0.0
+
+    return {
+        "rank": rank,
+        "solution_id": plan_id,
+        "name": plan.get("plan_name", f"方案{rank}"),
+        "score": round(float(plan.get("priority_score", 0) or 0), 1),
+        "expected_roi": round(expected_roi, 2),
+        "difficulty_score": int(plan.get("difficulty_score", 5) or 5),
+        "urgency_score": int(plan.get("urgency_score", 5) or 5),
+        "priority_level": plan.get("priority_level", "medium"),
+        "step_count": len(steps),
+        "step_timelines": _step_timelines(steps),
+        "steps": _normalize_steps(steps),
+        "recommendation_reason": plan.get("description", ""),
+        "estimated_cost": 0,
+        "anomaly_ids": target_anomaly_ids,
+        "status": status,
+        "execution_plan": None,
+    }
+
+
+def _steps_to_tasks(solution_id: str, steps: list) -> list[dict]:
+    tasks = []
+    offset = 0
+    for i, raw in enumerate(steps or []):
+        if not isinstance(raw, dict):
+            continue
+        dur = raw.get("duration_days")
+        try:
+            dur_int = int(dur) if dur is not None else 7
+        except (TypeError, ValueError):
+            dur_int = 7
+        if dur_int < 1:
+            dur_int = 7
+        step_no = raw.get("step", i + 1)
+        name = f"步骤{step_no}" if step_no is not None else f"步骤{i + 1}"
+        tasks.append({
+            "id": f"{solution_id}_task_{i}",
+            "task_id": raw.get("task_id", f"step_{i}"),
+            "name": name,
+            "description": raw.get("action", "") or raw.get("description", ""),
+            "owner_dept": raw.get("owner_dept", ""),
+            "timeline": raw.get("timeline", ""),
+            "data_context": raw.get("data_context", ""),
+            "implementation_steps": _parse_impl_steps(raw),
+            "duration_days": dur_int,
+            "execution_type": raw.get("execution_type", "manual"),
+            "dependencies": raw.get("dependencies", []),
+            "start_offset": offset,
+            "end_offset": offset + dur_int,
+        })
+        offset += dur_int
+    return tasks
+
+
 @router.get("/generate/active/{diagnosis_id}", summary="活跃生成任务(兼容)")
 async def compat_active_generation(diagnosis_id: str):
     """兼容前端 GET /solutions/generate/active/{diagnosisId}。
@@ -36,7 +152,7 @@ async def compat_solution_list(diagnosis_id: str):
     values = state.values if state and state.values else {}
 
     plans = values.get("solution_plans") or []
-    adopted_ids = values.get("adopted_plan_ids") or []
+    adopted_ids = (values.get("adopted_plan_ids") or [])[:1]
     anomalies = values.get("anomalies") or []
 
     if not plans:
@@ -48,41 +164,22 @@ async def compat_solution_list(diagnosis_id: str):
             "ai_recommendation": None,
         }
 
-    solutions = []
-    for rank, plan in enumerate(plans, 1):
-        plan_id = plan.get("plan_id", "")
-        improvements = plan.get("expected_improvement", {})
-        steps = plan.get("steps", [])
-
-        target_anomaly_ids = []
-        for target_code in plan.get("target_indicators", []):
-            for a in anomalies:
-                if a.get("indicator_code") == target_code:
-                    target_anomaly_ids.append(a.get("indicator_code"))
-
-        status = "adopted" if plan_id in adopted_ids else "pending"
-
-        solutions.append({
-            "rank": rank,
-            "solution_id": plan_id,
-            "name": plan.get("plan_name", f"方案{rank}"),
-            "score": round(plan.get("priority_score", 0), 1),
-            "recommendation_reason": plan.get("description", ""),
-            "estimated_cost": 0,
-            "estimated_duration": len(steps) * 7,
-            "success_rate": min(0.95, 0.6 + plan.get("expected_roi", 0) * 0.01),
-            "anomaly_ids": target_anomaly_ids,
-            "status": status,
-            "execution_plan": None,
-        })
+    adopted_set = set(adopted_ids)
+    solutions = [
+        _plan_to_list_item(plan, rank, anomalies, adopted_set)
+        for rank, plan in enumerate(plans, 1)
+    ]
 
     ai_recommendation = None
     if len(plans) >= 2:
         best = max(plans, key=lambda p: p.get("priority_score", 0))
+        score = round(best.get("priority_score", 0), 2)
+        roi = best.get("expected_roi", 0)
+        name = best.get("plan_name", "")
         ai_recommendation = {
             "recommended_solution_id": best.get("plan_id", ""),
-            "reason": f"综合优先级得分最高（{round(best.get('priority_score', 0), 2)}）",
-            "comparison_summary": f"共 {len(plans)} 个方案，推荐方案「{best.get('plan_name', '')}」ROI 为 {best.get('expected_roi', 0)}",
+            "reason": f"综合优先级得分最高（{score}），推荐方案「{name}」ROI 为 {roi}",
+            "comparison_summary": "",
             "risk_warning": None,
         }
 
@@ -146,7 +243,7 @@ async def compat_solution_detail(solution_id: str):
             if not state or not state.values:
                 continue
             plans = state.values.get("solution_plans") or []
-            adopted_ids = state.values.get("adopted_plan_ids") or []
+            adopted_ids = (state.values.get("adopted_plan_ids") or [])[:1]
             anomalies = state.values.get("anomalies") or []
 
             for plan in plans:
@@ -155,6 +252,10 @@ async def compat_solution_detail(solution_id: str):
 
                 steps = plan.get("steps", [])
                 improvements = plan.get("expected_improvement", {})
+                try:
+                    er = float(plan.get("expected_roi", 0) or 0)
+                except (TypeError, ValueError):
+                    er = 0.0
 
                 related_anomalies = []
                 for code in plan.get("target_indicators", []):
@@ -169,25 +270,9 @@ async def compat_solution_detail(solution_id: str):
                                 "benchmark_value": a.get("benchmark_avg"),
                                 "gap_percentage": abs(a.get("deviation_pct", 0)),
                                 "severity": a.get("severity", "medium"),
-                                "solution_tags": [],
                             })
 
-                tasks = []
-                offset = 0
-                for i, step in enumerate(steps):
-                    dur = step.get("duration_days", 7)
-                    tasks.append({
-                        "id": f"{solution_id}_task_{i}",
-                        "task_id": step.get("task_id", f"step_{i}"),
-                        "name": step.get("name", f"步骤{i+1}"),
-                        "description": step.get("description", ""),
-                        "duration_days": dur,
-                        "execution_type": step.get("execution_type", "manual"),
-                        "dependencies": step.get("dependencies", []),
-                        "start_offset": offset,
-                        "end_offset": offset + dur,
-                    })
-                    offset += dur
+                tasks = _steps_to_tasks(solution_id, steps)
 
                 return {
                     "id": solution_id,
@@ -203,9 +288,13 @@ async def compat_solution_detail(solution_id: str):
                     "success_criteria": "",
                     "estimated_impact": improvements,
                     "estimated_cost": 0,
-                    "estimated_duration": sum(s.get("duration_days", 7) for s in steps) if steps else 14,
-                    "success_rate": min(0.95, 0.6 + plan.get("expected_roi", 0) * 0.01),
-                    "ranking_score": round(plan.get("priority_score", 0), 1),
+                    "expected_roi": round(er, 2),
+                    "difficulty_score": int(plan.get("difficulty_score", 5) or 5),
+                    "urgency_score": int(plan.get("urgency_score", 5) or 5),
+                    "step_count": len(steps),
+                    "step_timelines": _step_timelines(steps),
+                    "steps": _normalize_steps(steps),
+                    "ranking_score": round(float(plan.get("priority_score", 0) or 0), 1),
                     "ranking_reason": "",
                     "status": "adopted" if solution_id in adopted_ids else "pending",
                     "related_anomalies": related_anomalies,

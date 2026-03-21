@@ -66,10 +66,35 @@ CREATE TABLE IF NOT EXISTS ai_diagnosis_report (
     store_id     VARCHAR(32)  NOT NULL,
     trigger_type VARCHAR(32)  NOT NULL DEFAULT 'manual',
     report       JSONB       NOT NULL,
-    created_at   TIMESTAMP   DEFAULT NOW()
+    created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS ix_ai_diagnosis_report_tenant_store ON ai_diagnosis_report (tenant_id, store_id);
 CREATE INDEX IF NOT EXISTS ix_ai_diagnosis_report_created_at ON ai_diagnosis_report (created_at DESC);
+"""
+
+# 旧库为 timestamp without time zone：按中国墙钟解读后存为 timestamptz（内部 UTC）
+_MIGRATE_AI_DIAGNOSIS_REPORT_CREATED_AT = """
+DO $migrate$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_attribute a
+    JOIN pg_class c ON c.oid = a.attrelid
+    JOIN pg_type t ON t.oid = a.atttypid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = 'ai_diagnosis_report'
+      AND a.attname = 'created_at'
+      AND a.attnum > 0
+      AND NOT a.attisdropped
+      AND t.typname = 'timestamp'
+  ) THEN
+    ALTER TABLE public.ai_diagnosis_report
+      ALTER COLUMN created_at TYPE timestamptz
+      USING (CASE WHEN created_at IS NULL THEN NULL ELSE created_at AT TIME ZONE 'Asia/Shanghai' END);
+  END IF;
+END
+$migrate$;
 """
 
 AI_PUSH_LOG_DDL = """
@@ -202,13 +227,14 @@ async def ensure_tenant_registry():
 
 
 async def ensure_ai_diagnosis_report():
-    """若 ai_diagnosis_report 不存在则建表。"""
+    """若 ai_diagnosis_report 不存在则建表；已存在且 created_at 为无时区 timestamp 时升级为 timestamptz。"""
     settings = get_settings()
     conninfo = _uri_to_conninfo(settings.postgres_uri)
     try:
         async with await AsyncConnection.connect(conninfo) as conn:
             async with conn.cursor() as cur:
                 await cur.execute(AI_DIAGNOSIS_REPORT_DDL)
+                await cur.execute(_MIGRATE_AI_DIAGNOSIS_REPORT_CREATED_AT)
             await conn.commit()
         logger.info("ai_diagnosis_report 表已就绪")
     except Exception as e:

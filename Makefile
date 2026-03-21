@@ -4,7 +4,7 @@ PYTHON := $(VENV_DIR)/bin/python
 PIP := $(VENV_DIR)/bin/pip
 
 # 本地服务占用端口，run-local 启动前会先释放
-LOCAL_PORTS := 8000 8200
+LOCAL_PORTS := 8000 8200 3000
 
 .PHONY: dev dev-infra run-local kill-local-ports dev-up dev-down deps venv create-pg-db init-db
 
@@ -12,9 +12,10 @@ LOCAL_PORTS := 8000 8200
 venv:
 	@test -d $(VENV_DIR) || (python3 -m venv $(VENV_DIR) && echo "已创建 $(VENV_DIR)")
 
-# 安装 Python 依赖（使用 venv）
+# 安装 Python 依赖（venv 已存在则跳过）
+DEPS_MARKER := $(VENV_DIR)/.deps-installed
 deps: venv
-	$(PIP) install -e .
+	@test -f $(DEPS_MARKER) || ($(PIP) install -e . && touch $(DEPS_MARKER))
 
 # 本地开发：仅准备 venv 与依赖（不启动 Docker）
 # 请先确保 postgres:5432、redis:6379 已就绪（本机或 make dev-infra）
@@ -46,13 +47,14 @@ kill-local-ports:
 	done
 	@echo "--- 已释放端口: $(LOCAL_PORTS)"
 
-# 本机启动全部应用（API + wlwq），MCP server 通过 stdio 按需启动
+# 本机启动全部应用（API + wlwq + frontend），MCP server 通过 stdio 按需启动
 run-local: deps kill-local-ports
-	@echo "--- 启动本地服务 (API 8000, wlwq 8200)..."
+	@echo "--- 启动本地服务 (API 8000, wlwq 8200, frontend 3000)..."
 	@echo "--- MCP servers 使用 stdio 传输，由 API 进程按需拉起"
 	@( \
 		$(VENV_DIR)/bin/uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload & \
 		$(VENV_DIR)/bin/uvicorn src.wlwq.app:app --host 0.0.0.0 --port 8200 --reload & \
+		cd frontend && pnpm run dev & \
 		wait \
 	)
 

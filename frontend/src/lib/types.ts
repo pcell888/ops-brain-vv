@@ -50,7 +50,6 @@ export interface Anomaly {
   gap_percentage?: number;
   severity: 'low' | 'medium' | 'high' | 'critical';
   root_cause_chain: string[];
-  solution_tags: string[];
   unit?: string;
 }
 
@@ -95,6 +94,17 @@ export interface DiagnosisListResponse {
 
 // ============ 方案模块类型 ============
 
+/** LLM 输出的单步执行项（与 solution_generation 约定一致） */
+export interface SolutionPlanStep {
+  step: number;
+  action: string;
+  owner_dept: string;
+  timeline: string;
+  data_context: string;
+  /** LLM 输出的可执行子步骤（如何做） */
+  implementation_steps?: string[];
+}
+
 export interface SolutionTask {
   id: string;
   task_id: string;
@@ -105,17 +115,34 @@ export interface SolutionTask {
   dependencies: string[];
   start_offset: number;
   end_offset: number;
+  /** LLM 步骤：负责部门 */
+  owner_dept?: string;
+  /** LLM 步骤：期限文案，如「3天内」 */
+  timeline?: string;
+  /** LLM 步骤：数据依据说明 */
+  data_context?: string;
+  implementation_steps?: string[];
 }
 
 export interface SolutionSummary {
   rank: number;
   solution_id: string;
   name: string;
+  /** 系统计算的优先级得分（约 0–10），非百分制 */
   score: number;
+  /** LLM 输出的预期 ROI（1–10 量纲与 prompt 一致） */
+  expected_roi: number;
+  difficulty_score: number;
+  urgency_score: number;
+  priority_level: 'high' | 'medium' | 'low' | string;
+  /** 执行步骤条数，对应 LLM steps 数组长度 */
+  step_count: number;
+  /** 各步 timeline 文案摘要（如「3天内」） */
+  step_timelines?: string[];
+  /** 执行步骤明细（与列表一并返回，供详情页展示） */
+  steps?: SolutionPlanStep[];
   recommendation_reason: string;
   estimated_cost: number;
-  estimated_duration: number;
-  success_rate: number;
   anomaly_ids?: string[];  // 关联的异常 ID 列表
   status?: string;  // 方案状态：'adopted' | 'rejected' | 'pending' 等
   execution_plan?: ExecutionPlanInfo | null;  // 执行计划信息
@@ -125,7 +152,7 @@ export interface SolutionSummary {
 export interface AIRecommendation {
   recommended_solution_id: string;
   reason: string;
-  comparison_summary: string;
+  comparison_summary?: string;
   risk_warning?: string;
 }
 
@@ -149,7 +176,6 @@ export interface RelatedAnomaly {
   benchmark_value?: number;
   gap_percentage?: number;
   severity: string;
-  solution_tags: string[];
 }
 
 export interface ExecutionPlanInfo {
@@ -173,8 +199,12 @@ export interface SolutionDetail {
   success_criteria: string;
   estimated_impact: Record<string, number>;
   estimated_cost: number;
-  estimated_duration: number;
-  success_rate: number;
+  expected_roi: number;
+  difficulty_score: number;
+  urgency_score: number;
+  step_count: number;
+  step_timelines?: string[];
+  steps?: SolutionPlanStep[];
   ranking_score: number;
   ranking_reason: string;
   status: string;
@@ -244,6 +274,7 @@ export interface TaskStats {
 export interface ExecutionPlanSummary {
   plan_id: string;
   solution_id: string;
+  diagnosis_id?: string;
   template_id?: string;
   name: string;
   status: string;
@@ -259,9 +290,14 @@ export interface ExecutionPlanSummary {
 export interface ExecutionTask {
   id: string;
   task_key?: string;
+  /** 列表接口返回，用于跳转计划详情 */
+  plan_id?: string;
+  thread_id?: string;
   name: string;
   description?: string;
+  /** 后端 ai_exec_task.status */
   status: string;
+  /** 后端 related_resources.execution_type，缺省由接口补 manual */
   execution_type: string;
   dependencies?: string[];
   scheduled_start?: string;
@@ -271,8 +307,25 @@ export interface ExecutionTask {
   retry_count?: number;
   error_message?: string;
   result?: any;
+  /** 后端 related_resources.progress 或按状态推导 */
   progress: number;
   assigned_to?: string;
+  /** 与 assigned_to 一致，列表展示「接收者」 */
+  recipient?: string;
+  /** 派发状态：如 dispatched */
+  dispatch_status?: string;
+  /** 派发时间（与 created_at 一致，ISO） */
+  dispatch_time?: string;
+  /** 落库于 related_resources.implementation_steps */
+  implementation_steps?: string[];
+}
+
+/** GET /execution/tasks/:id 详情 */
+export interface ExecutionTaskDetail extends ExecutionTask {
+  tenant_id?: string;
+  store_id?: string;
+  priority?: string;
+  related_resources?: Record<string, unknown>;
 }
 
 export interface GanttTask {
@@ -300,6 +353,7 @@ export interface GanttData {
 export interface TrackingSummary {
   tracking_id: string;
   plan_id: string;
+  diagnosis_id?: string;
   solution_name: string;
   status: string;
   current_score?: number;

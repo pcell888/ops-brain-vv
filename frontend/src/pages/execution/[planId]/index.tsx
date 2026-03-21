@@ -1,50 +1,37 @@
-import { useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useEffect, useRef } from 'react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Card, Table, Tag, Button, Empty, Spin, Progress,
-  Descriptions, App, Row, Col, Statistic,
+  Card, Table, Button, Empty, Spin,
+  Row, Col, Statistic, App,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   ArrowLeftOutlined, RocketOutlined, PlayCircleOutlined,
-  PauseCircleOutlined, CheckCircleOutlined, ClockCircleOutlined,
-  SyncOutlined, ExclamationCircleOutlined, ReloadOutlined,
-  LoadingOutlined,
+  PauseCircleOutlined, LoadingOutlined, EyeOutlined,
 } from '@ant-design/icons';
 import {
   useExecutionPlanSummary, usePlanTasks,
   useStartPlan, usePausePlan, useResumePlan,
-  useCompleteTask, useFailTask, useRetryTask,
 } from '@/lib/hooks';
-import { useAppStore } from '@/stores/app-store';
 import dayjs from 'dayjs';
 import type { ExecutionTask } from '@/lib/types';
-
-const taskStatusConfig: Record<string, { color: string; icon: React.ReactNode; text: string }> = {
-  pending: { color: 'default', icon: <ClockCircleOutlined />, text: '待执行' },
-  ready: { color: 'blue', icon: <ClockCircleOutlined />, text: '就绪' },
-  running: { color: 'processing', icon: <SyncOutlined spin />, text: '执行中' },
-  completed: { color: 'success', icon: <CheckCircleOutlined />, text: '已完成' },
-  failed: { color: 'error', icon: <ExclamationCircleOutlined />, text: '失败' },
-  cancelled: { color: 'default', icon: <ExclamationCircleOutlined />, text: '已取消' },
-};
+import { DispatchStatusTag } from '@/lib/dispatch-status';
 
 export default function ExecutionDetailPage() {
   const { message } = App.useApp();
   const { planId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const taskListAnchorRef = useRef<HTMLDivElement>(null);
 
   const { data: plan, isLoading: planLoading } = useExecutionPlanSummary(planId || null, true);
   const isActive = plan?.status === 'running' || plan?.status === 'paused';
-  const { data: tasksData, isLoading: tasksLoading, refetch: refetchTasks } = usePlanTasks(planId || null, undefined, isActive ? 3000 : undefined);
-  const tasks = ((tasksData as any)?.items || tasksData || []) as ExecutionTask[];
+  const { data: tasksData, isLoading: tasksLoading } = usePlanTasks(planId || null, undefined, isActive ? 3000 : undefined);
+  const tasks = ((tasksData as { items?: ExecutionTask[] })?.items || tasksData || []) as ExecutionTask[];
 
   const startPlan = useStartPlan();
   const pausePlan = usePausePlan();
   const resumePlan = useResumePlan();
-  const completeTask = useCompleteTask();
-  const failTask = useFailTask();
-  const retryTask = useRetryTask();
 
   const handleStart = async () => {
     try { await startPlan.mutateAsync(planId!); message.success('计划已启动'); } catch { message.error('启动失败'); }
@@ -55,80 +42,72 @@ export default function ExecutionDetailPage() {
   const handleResume = async () => {
     try { await resumePlan.mutateAsync(planId!); message.success('计划已恢复'); } catch { message.error('恢复失败'); }
   };
-  const handleCompleteTask = async (taskId: string) => {
-    try { await completeTask.mutateAsync({ taskId }); message.success('任务已完成'); refetchTasks(); } catch { message.error('操作失败'); }
-  };
-  const handleRetryTask = async (taskId: string) => {
-    try { await retryTask.mutateAsync(taskId); message.success('任务已重试'); refetchTasks(); } catch { message.error('重试失败'); }
-  };
+
+  useEffect(() => {
+    if (location.hash !== '#execution-task-list' || !plan) return;
+    const t = window.setTimeout(() => {
+      taskListAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 100);
+    return () => window.clearTimeout(t);
+  }, [location.hash, plan?.plan_id, tasksLoading]);
 
   const columns: ColumnsType<ExecutionTask> = [
     {
       title: '任务名称',
       dataIndex: 'name',
       key: 'name',
-      render: (name: string) => <span className="font-medium text-white">{name}</span>,
-    },
-    {
-      title: '类型',
-      dataIndex: 'execution_type',
-      key: 'execution_type',
-      width: 100,
-      render: (type: string) => {
-        const map: Record<string, { label: string; color: string }> = {
-          auto: { label: '自动', color: 'green' },
-          semi_auto: { label: '半自动', color: 'blue' },
-          manual: { label: '手动', color: 'orange' },
-        };
-        const cfg = map[type] || { label: type, color: 'default' };
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
-      },
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 100,
-      render: (status: string) => {
-        const cfg = taskStatusConfig[status] || taskStatusConfig.pending;
-        return <Tag icon={cfg.icon} color={cfg.color}>{cfg.text}</Tag>;
-      },
-    },
-    {
-      title: '进度',
-      dataIndex: 'progress',
-      key: 'progress',
-      width: 120,
-      render: (progress: number) => <Progress percent={progress} size="small" />,
-    },
-    {
-      title: '时间',
-      key: 'time',
-      width: 180,
-      render: (_, record) => (
-        <div className="text-xs text-gray-400">
-          {record.scheduled_start && <div>计划: {dayjs(record.scheduled_start).format('MM-DD')} ~ {dayjs(record.scheduled_end).format('MM-DD')}</div>}
-          {record.actual_start && <div>实际: {dayjs(record.actual_start).format('MM-DD HH:mm')}</div>}
-        </div>
+      render: (name: string, record) => (
+        <Button
+          type="link"
+          className="!text-white !font-medium !p-0 h-auto text-left whitespace-normal"
+          onClick={() => navigate(`/execution/task/${encodeURIComponent(record.id)}`)}
+        >
+          {name || '—'}
+        </Button>
       ),
+    },
+    {
+      title: '接收者',
+      dataIndex: 'recipient',
+      key: 'recipient',
+      width: 120,
+      render: (_: string, record) => (
+        <span className="text-gray-300 text-sm">{record.recipient || record.assigned_to || '—'}</span>
+      ),
+    },
+    {
+      title: '派发时间',
+      key: 'dispatch_time',
+      width: 170,
+      render: (_, record) => {
+        const t = record.dispatch_time || record.scheduled_start;
+        return (
+          <span className="text-gray-400 text-sm">
+            {t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '—'}
+          </span>
+        );
+      },
+    },
+    {
+      title: '派发状态',
+      dataIndex: 'dispatch_status',
+      key: 'dispatch_status',
+      width: 110,
+      render: (s: string | undefined) => <DispatchStatusTag status={s} />,
     },
     {
       title: '操作',
       key: 'action',
-      width: 150,
+      width: 100,
       render: (_, record) => (
-        <div className="flex gap-1">
-          {(record.status === 'running' || record.status === 'ready') && record.execution_type === 'manual' && (
-            <Button type="link" size="small" icon={<CheckCircleOutlined />} onClick={() => handleCompleteTask(record.id)}>
-              完成
-            </Button>
-          )}
-          {record.status === 'failed' && (
-            <Button type="link" size="small" icon={<ReloadOutlined />} onClick={() => handleRetryTask(record.id)}>
-              重试
-            </Button>
-          )}
-        </div>
+        <Button
+          type="link"
+          size="small"
+          icon={<EyeOutlined />}
+          onClick={() => navigate(`/execution/task/${encodeURIComponent(record.id)}`)}
+        >
+          详情
+        </Button>
       ),
     },
   ];
@@ -199,19 +178,21 @@ export default function ExecutionDetailPage() {
         </Col>
       </Row>
 
-      <Card title="任务列表">
-        {tasksLoading ? (
-          <div className="flex items-center justify-center py-10"><Spin /></div>
-        ) : (
-          <Table
-            columns={columns}
-            dataSource={tasks}
-            rowKey="id"
-            pagination={false}
-            locale={{ emptyText: <Empty description="暂无任务" /> }}
-          />
-        )}
-      </Card>
+      <div id="execution-task-list" ref={taskListAnchorRef}>
+        <Card title="任务列表">
+          {tasksLoading ? (
+            <div className="flex items-center justify-center py-10"><Spin /></div>
+          ) : (
+            <Table
+              columns={columns}
+              dataSource={tasks}
+              rowKey="id"
+              pagination={false}
+              locale={{ emptyText: <Empty description="暂无任务" /> }}
+            />
+          )}
+        </Card>
+      </div>
     </div>
   );
 }

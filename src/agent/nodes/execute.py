@@ -1,4 +1,4 @@
-"""执行推送节点 — 将采纳的方案转为执行任务，推送至业务系统；并按 5.2.3 规则补全异常指标对应动作。"""
+"""执行推送节点 — 将采纳方案转为执行任务并推送。5.2.3 规范任务默认由方案生成阶段融入，仅当 exec_push_rule_tasks=True 时保留旧版双轨补推。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta
 
 from src.agent.state import DiagnosisState
-from src.core.config import get_settings
+from src.core.config import CN_TZ, get_settings
 from src.core.push_log_repo import save_push_log
 from src.core.exec_task_repo import save_exec_tasks
 from src.core.pending_review_repo import save_pending_review
@@ -16,6 +16,26 @@ from src.core.indicator_push_rules import INDICATOR_PUSH_RULES
 logger = logging.getLogger(__name__)
 
 RULE_PLAN_ID = "rule_5.2.3"
+
+
+def _merge_task_ids(local_tasks: list[dict], created: list[dict] | None) -> list[dict]:
+    """保留本地字段（如 related_resources），合并业务端返回的 task_id。"""
+    if not created or len(created) != len(local_tasks):
+        return [dict(t) for t in local_tasks]
+    out: list[dict] = []
+    for loc, cr in zip(local_tasks, created):
+        m = dict(loc)
+        if isinstance(cr, dict) and cr.get("task_id"):
+            m["task_id"] = cr["task_id"]
+        out.append(m)
+    return out
+
+
+def _step_impl_steps(step: dict) -> list[str]:
+    raw = step.get("implementation_steps") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(x).strip() for x in raw if str(x).strip()][:30]
 
 
 def _dept_resolve(owner_dept: str, dept_info: dict) -> tuple[str | None, str | None]:
@@ -46,6 +66,11 @@ def _build_tasks_from_rule_specs(specs: list[dict], dept_info: dict) -> list[dic
     tasks: list[dict] = []
     for s in specs:
         uid, dept_id = _dept_resolve(s.get("owner_dept", ""), dept_info)
+        impl = s.get("implementation_steps") or []
+        if isinstance(impl, list):
+            impl_list = [str(x).strip() for x in impl if str(x).strip()][:30]
+        else:
+            impl_list = []
         tasks.append({
             "task_name": s.get("task_name", "优化任务"),
             "description": s.get("task_name", ""),
@@ -53,7 +78,11 @@ def _build_tasks_from_rule_specs(specs: list[dict], dept_info: dict) -> list[dic
             "assignee_dept_id": dept_id,
             "deadline": s.get("timeline"),
             "priority": "medium",
-            "related_resources": [],
+            "related_resources": {
+                "implementation_steps": impl_list,
+                "execution_type": "manual",
+                "dispatch_status": "dispatched",
+            },
         })
     return tasks
 
@@ -108,6 +137,7 @@ def _build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
         if data_ctx:
             desc_parts.append(f"【数据依据】{data_ctx}")
         desc_parts.append(action)
+        impl = _step_impl_steps(step)
         tasks.append({
             "task_name": action,
             "description": " ".join(desc_parts),
@@ -115,7 +145,11 @@ def _build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
             "assignee_dept_id": assignee_dept_id,
             "deadline": step.get("timeline"),
             "priority": plan.get("priority_level", "medium"),
-            "related_resources": [],
+            "related_resources": {
+                "implementation_steps": impl,
+                "execution_type": "manual",
+                "dispatch_status": "dispatched",
+            },
         })
 
     if not tasks:
@@ -126,7 +160,11 @@ def _build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
             "assignee_dept_id": None,
             "deadline": None,
             "priority": plan.get("priority_level", "medium"),
-            "related_resources": [],
+            "related_resources": {
+                "implementation_steps": [],
+                "execution_type": "manual",
+                "dispatch_status": "dispatched",
+            },
         })
 
     return tasks
@@ -157,7 +195,7 @@ async def _send_task_notifications(
 
 
 async def execute_plans_node(state: DiagnosisState) -> dict:
-    adopted_ids = state.get("adopted_plan_ids", [])
+    adopted_ids = (state.get("adopted_plan_ids") or [])[:1]
     all_plans = state.get("solution_plans", [])
     adopted_plans = [p for p in all_plans if p.get("plan_id") in adopted_ids]
 
@@ -204,7 +242,8 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
             all_tasks.extend(created)
             emit_progress(state, f"已按规范推送 {len(rule_tasks)} 项指标动作任务")
             await _send_task_notifications(tenant_id, store_id, created)
-            await save_exec_tasks(state.get("thread_id", ""), tenant_id, store_id, RULE_PLAN_ID, created)
+            to_save = _merge_task_ids(rule_tasks, result.get("created_tasks") if isinstance(result, dict) else None)
+            await save_exec_tasks(state.get("thread_id", ""), tenant_id, store_id, RULE_PLAN_ID, to_save)
             await save_push_log(
                 state.get("thread_id", ""), tenant_id, store_id,
                 "task", "exec_task",
@@ -215,49 +254,50 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
         except Exception as e:
             logger.warning("5.2.3 规则任务推送失败: %s", e)
 
-    seen_coupon_ind: set[str] = set()
-    seen_message_key: set[tuple[str, str]] = set()
-    for a in anomalies:
-        ind = a.get("indicator_code")
-        rule = INDICATOR_PUSH_RULES.get(ind) if ind else None
-        if not rule:
-            continue
-        if rule.get("coupon_campaign") and ind not in seen_coupon_ind:
-            seen_coupon_ind.add(ind)
-            cfg = dict(rule["coupon_campaign"])
-            if not cfg.get("start_time"):
-                now = datetime.utcnow()
-                cfg["start_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
-                cfg["end_time"] = (now + timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
-            try:
-                await mcp_call("task-server", "create_coupon_campaign", {
-                    "tenant_id": tenant_id,
-                    "store_id": store_id,
-                    "campaign_config": cfg,
-                })
-                emit_progress(state, f"已创建规则优惠券: {cfg.get('coupon_name', '')}")
-            except Exception as e:
-                logger.warning("5.2.3 规则优惠券创建失败: %s", e)
-        msg_cfg = rule.get("message")
-        if msg_cfg:
-            key = (ind or "", msg_cfg.get("type", ""))
-            if key not in seen_message_key:
-                seen_message_key.add(key)
-                seg = msg_cfg.get("target_segment", "")
-                title = msg_cfg.get("title", "系统通知")
-                content = msg_cfg.get("content_tpl", "")
+    if get_settings().exec_push_rule_tasks:
+        seen_coupon_ind: set[str] = set()
+        seen_message_key: set[tuple[str, str]] = set()
+        for a in anomalies:
+            ind = a.get("indicator_code")
+            rule = INDICATOR_PUSH_RULES.get(ind) if ind else None
+            if not rule:
+                continue
+            if rule.get("coupon_campaign") and ind not in seen_coupon_ind:
+                seen_coupon_ind.add(ind)
+                cfg = dict(rule["coupon_campaign"])
+                if not cfg.get("start_time"):
+                    now = datetime.now(CN_TZ)
+                    cfg["start_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
+                    cfg["end_time"] = (now + timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
                 try:
-                    await mcp_call("notify-server", "send_customer_targeted_message", {
+                    await mcp_call("task-server", "create_coupon_campaign", {
                         "tenant_id": tenant_id,
                         "store_id": store_id,
-                        "target_segment": seg,
-                        "title": title,
-                        "content": content,
-                        "message_type": msg_cfg.get("type", "ai_targeted"),
+                        "campaign_config": cfg,
                     })
-                    emit_progress(state, f"已向目标人群推送: {title}")
+                    emit_progress(state, f"已创建规则优惠券: {cfg.get('coupon_name', '')}")
                 except Exception as e:
-                    logger.warning("5.2.3 规则定向消息推送失败: %s", e)
+                    logger.warning("5.2.3 规则优惠券创建失败: %s", e)
+            msg_cfg = rule.get("message")
+            if msg_cfg:
+                key = (ind or "", msg_cfg.get("type", ""))
+                if key not in seen_message_key:
+                    seen_message_key.add(key)
+                    seg = msg_cfg.get("target_segment", "")
+                    title = msg_cfg.get("title", "系统通知")
+                    content = msg_cfg.get("content_tpl", "")
+                    try:
+                        await mcp_call("notify-server", "send_customer_targeted_message", {
+                            "tenant_id": tenant_id,
+                            "store_id": store_id,
+                            "target_segment": seg,
+                            "title": title,
+                            "content": content,
+                            "message_type": msg_cfg.get("type", "ai_targeted"),
+                        })
+                        emit_progress(state, f"已向目标人群推送: {title}")
+                    except Exception as e:
+                        logger.warning("5.2.3 规则定向消息推送失败: %s", e)
 
     # ── 逐方案执行：审批 / 任务创建 / 自动动作 ──
     admin_accounts = (state.get("store_profile") or {}).get("admin_account_ids", [])
@@ -300,7 +340,8 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
             created = result.get("created_tasks", tasks) if isinstance(result, dict) else tasks
             all_tasks.extend(created)
             await _send_task_notifications(tenant_id, store_id, created)
-            await save_exec_tasks(state.get("thread_id", ""), tenant_id, store_id, plan.get("plan_id", ""), created)
+            to_save = _merge_task_ids(tasks, result.get("created_tasks") if isinstance(result, dict) else None)
+            await save_exec_tasks(state.get("thread_id", ""), tenant_id, store_id, plan.get("plan_id", ""), to_save)
             await save_push_log(
                 state.get("thread_id", ""), tenant_id, store_id,
                 "task", "exec_task",
@@ -339,7 +380,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
     delay_days = settings.effect_track_delay_days
     if delay_days > 0:
         thread_id = state.get("thread_id", "")
-        due_date = (datetime.now() + timedelta(days=delay_days)).date()
+        due_date = (datetime.now(CN_TZ) + timedelta(days=delay_days)).date()
         try:
             await save_pending_review(thread_id, tenant_id, store_id, due_date)
             emit_progress(state, f"效果追踪已调度，将于 {due_date} 自动执行复盘")

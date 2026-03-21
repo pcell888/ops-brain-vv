@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { useMemo, useRef, useState } from 'react';
 import { HealthScoreRing } from '@/components/diagnosis/health-score-ring';
 import { RadarChart } from '@/components/diagnosis/radar-chart';
-import { MetricCard } from '@/components/diagnosis/metric-card';
+import { MetricCard, type MetricDetail } from '@/components/diagnosis/metric-card';
 import { AnomalyList } from '@/components/diagnosis/anomaly-list';
 import { 
   useLatestDiagnosisReport, 
@@ -42,6 +42,75 @@ const dimensionMapping: Record<string, string> = {
   efficiency: 'efficiency',
   operation_efficiency: 'efficiency',
 };
+
+function normalizeDashboardDimension(d: string): string {
+  return dimensionMapping[d] || d;
+}
+
+type DimScoreRow = {
+  dimension: string;
+  score: number;
+  status: string;
+  metrics_detail?: MetricDetail[];
+};
+
+function scoreToStatusFromScore(score: number): 'excellent' | 'good' | 'warning' | 'danger' {
+  if (score >= 80) return 'excellent';
+  if (score >= 60) return 'good';
+  if (score >= 40) return 'warning';
+  return 'danger';
+}
+
+/** 将 crm / crm_sharing 等别名合并为一张卡，避免同一归一化维度重复显示相同异常数 */
+function mergeDimensionScores(rows: DimScoreRow[]): Array<DimScoreRow & { rawDimension: string }> {
+  const byNorm = new Map<string, DimScoreRow & { rawDimension: string }>();
+  for (const d of rows) {
+    const norm = normalizeDashboardDimension(d.dimension);
+    const md = d.metrics_detail || [];
+    const cur = byNorm.get(norm);
+    if (!cur) {
+      byNorm.set(norm, {
+        ...d,
+        dimension: norm,
+        rawDimension: d.dimension,
+        metrics_detail: [...md],
+      });
+    } else {
+      if (!cur.metrics_detail) cur.metrics_detail = [];
+      const seen = new Set(cur.metrics_detail.map((m) => m.name));
+      for (const m of md) {
+        if (!seen.has(m.name)) {
+          cur.metrics_detail.push(m);
+          seen.add(m.name);
+        }
+      }
+      const mergedScore = Math.min(cur.score, d.score);
+      cur.score = mergedScore;
+      cur.status = scoreToStatusFromScore(mergedScore);
+    }
+  }
+  return Array.from(byNorm.values());
+}
+
+type AnomalyForCount = { dimension: string; metric_name?: string; severity?: string };
+
+/** 仅统计属于该卡指标范围内的异常（与下方列表一致）；metrics_detail 为空时按维度汇总 */
+function countAnomaliesForMetricCard(
+  anomalies: AnomalyForCount[] | undefined,
+  normDimension: string,
+  metricsDetail: Array<{ name: string }> | undefined
+): { count: number; hasSevere: boolean } {
+  const names = new Set((metricsDetail || []).map((m) => m.name));
+  let count = 0;
+  let hasSevere = false;
+  for (const a of anomalies || []) {
+    if (normalizeDashboardDimension(a.dimension) !== normDimension) continue;
+    if (names.size > 0 && a.metric_name && !names.has(a.metric_name)) continue;
+    count++;
+    if (a.severity === 'critical' || a.severity === 'high') hasSevere = true;
+  }
+  return { count, hasSevere };
+}
 
 // 诊断阶段配置 - 根据消息关键词匹配
 const diagnosisStagePatterns: Array<{ pattern: RegExp; label: string; icon: string }> = [
@@ -264,6 +333,9 @@ export default function DashboardPage() {
       });
       if (result.status === 'failed') {
         message.error(result.message || '诊断任务提交失败');
+      } else if ((result as { already_running?: boolean }).already_running) {
+        message.info('已有诊断任务在执行，已为您显示进度');
+        await refetchList();
       } else {
         message.success('诊断任务已提交');
       }
@@ -298,50 +370,43 @@ export default function DashboardPage() {
     return dayjs(lastDiagnosisDate).format('M月D日 HH:mm:ss');
   };
 
-  // 从报告中提取维度分数用于雷达图（显示上一次诊断的完整结果）
-  const radarData = report?.health_score?.dimension_scores
-    ?.map(d => ({
-      dimension: d.dimension,
-      score: d.score,
-    })) || [];
+  const mergedDimensionScores = useMemo(() => {
+    const list = report?.health_score?.dimension_scores;
+    if (!list?.length) return [];
+    return mergeDimensionScores(list as DimScoreRow[]);
+  }, [report?.health_score?.dimension_scores]);
+
+  // 从报告中提取维度分数用于雷达图（显示上一次诊断的完整结果；已合并别名维度）
+  const radarData = mergedDimensionScores.map((d) => ({
+    dimension: d.dimension,
+    score: d.score,
+  }));
   const radarBenchmarkData = useMemo(() => {
     const fromReport = (report as { benchmark_dimension_scores?: { dimension: string; score: number }[] } | undefined)?.benchmark_dimension_scores;
     if (fromReport?.length) return fromReport.map((d) => ({ dimension: d.dimension, score: d.score }));
     return (benchmarkDimensionScoresData?.dimension_scores ?? []).map((d) => ({ dimension: d.dimension, score: d.score }));
   }, [report, benchmarkDimensionScoresData?.dimension_scores]);
 
-  // 统计每个维度的异常数量
-  const anomaliesPerDimension = useMemo(() => {
-    const map: Record<string, { count: number; hasSevere: boolean }> = {};
-    report?.anomalies?.forEach(a => {
-      const dim = dimensionMapping[a.dimension] || a.dimension;
-      if (!map[dim]) map[dim] = { count: 0, hasSevere: false };
-      map[dim].count++;
-      if (a.severity === 'critical' || a.severity === 'high') {
-        map[dim].hasSevere = true;
-      }
-    });
-    return map;
-  }, [report?.anomalies]);
-
-  // 从报告中提取指标卡片数据（显示维度得分 + 异常摘要）
-  const metricCards = report?.health_score?.dimension_scores
-    ?.map(d => {
-      const dimension = dimensionMapping[d.dimension] || d.dimension;
-      const dimAnomalies = anomaliesPerDimension[dimension] || { count: 0, hasSevere: false };
-      
-      return {
-        dimension,
-        rawDimension: d.dimension,
-        metricName: getDefaultMetricName(d.dimension),
-        title: getMetricTitle(d.dimension),
-        value: `${Number.isInteger(d.score) ? d.score : d.score.toFixed(1)}分`,
-        status: d.status as 'excellent' | 'good' | 'warning' | 'danger',
-        metricsDetail: d.metrics_detail,
-        anomalyCount: dimAnomalies.count,
-        hasSevereAnomaly: dimAnomalies.hasSevere,
-      };
-    }) || [];
+  // 从报告中提取指标卡片数据（显示维度得分 + 异常摘要；与合并后的维度一致）
+  const metricCards = mergedDimensionScores.map((d) => {
+    const dimension = d.dimension;
+    const dimAnomalies = countAnomaliesForMetricCard(
+      report?.anomalies as AnomalyForCount[] | undefined,
+      dimension,
+      d.metrics_detail
+    );
+    return {
+      dimension,
+      rawDimension: d.rawDimension,
+      metricName: getDefaultMetricName(dimension),
+      title: getMetricTitle(dimension),
+      value: `${Number.isInteger(d.score) ? d.score : d.score.toFixed(1)}分`,
+      status: d.status as 'excellent' | 'good' | 'warning' | 'danger',
+      metricsDetail: d.metrics_detail,
+      anomalyCount: dimAnomalies.count,
+      hasSevereAnomaly: dimAnomalies.hasSevere,
+    };
+  });
 
   // 获取默认指标名称（当没有异常时）
   function getDefaultMetricName(dimension: string): string {
@@ -402,7 +467,7 @@ export default function DashboardPage() {
   const rankingStrategy = (enterpriseDetail as { config?: { solution_sort_strategy?: string } } | undefined)?.config?.solution_sort_strategy || 'balanced';
   
   // 处理生成方案
-  const handleGenerateSolution = async (anomalyId: string, _solutionTags: string[]) => {
+  const handleGenerateSolution = async (anomalyId: string) => {
     if (!enterpriseId || !latestDiagnosisId) {
       message.warning('请先完成诊断');
       return;
@@ -419,7 +484,7 @@ export default function DashboardPage() {
       // 检查是否生成了方案
       const solutionCount = (result as { solution_count?: number })?.solution_count || 0;
       if (solutionCount === 0) {
-        message.error('未能生成任何方案。可能原因：异常指标没有匹配的解决方案标签，或没有找到匹配的方案模板。');
+        message.error('未能生成任何方案。可能没有匹配的方案模板，请稍后重试。');
         return;
       }
       
@@ -454,7 +519,6 @@ export default function DashboardPage() {
       severity: (a.severity === 'critical' || a.severity === 'high' ? 'severe' : 'moderate') as 'severe' | 'moderate',
       metricName: a.metric_name,
       dimension: a.dimension,
-      solutionTags: a.solution_tags || [],
     };
   }) || []) as Array<{
     id: string;
@@ -466,13 +530,14 @@ export default function DashboardPage() {
     severity: 'severe' | 'moderate';
     metricName: string;
     dimension: string;
-    solutionTags: string[];
   }>;
 
   // 获取趋势信息
   const trendInfo = report?.health_score?.trend as { change?: number; direction?: string } | undefined;
   const trendText = trendInfo?.change != null
-    ? `${trendInfo.direction === 'up' ? '📈' : '📉'} ${trendInfo.direction === 'up' ? '良好' : '下降'} · 较上次${trendInfo.direction === 'up' ? '提升' : '下降'}${Math.abs(trendInfo.change).toFixed(1)}分`
+    ? trendInfo.direction === 'stable'
+      ? '📊 与上次持平'
+      : `${trendInfo.direction === 'up' ? '📈' : '📉'} ${trendInfo.direction === 'up' ? '良好' : '下降'} · 较上次${trendInfo.direction === 'up' ? '提升' : '下降'}${Math.abs(trendInfo.change).toFixed(1)}分`
     : '📊 暂无趋势数据（需至少两次诊断）';
 
   // 如果没有选择企业
@@ -820,6 +885,18 @@ export default function DashboardPage() {
               </Tag>
             )}
           </div>
+        }
+        extra={
+          !isDiagnosing && anomalies.length > 0 && latestDiagnosisId ? (
+            <Button
+              type="primary"
+              size="small"
+              icon={<ThunderboltOutlined />}
+              onClick={() => navigate(`/solutions/${latestDiagnosisId}`)}
+            >
+              查看优化方案
+            </Button>
+          ) : null
         }
       >
         {isDiagnosing ? (

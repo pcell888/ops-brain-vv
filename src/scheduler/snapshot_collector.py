@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 from src.api.deps import get_graph_app
 from src.agent.tools import mcp_call
-from src.core.config import get_settings
+from src.core.config import CN_TZ, get_settings
 from src.core.calculator import resolve_active_indicators
 from src.core.pending_review_repo import get_due_reviews
 from src.core.snapshot_repo import save_snapshot, get_last_snapshot_time
@@ -53,8 +53,11 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
         return
 
     last_time = await get_last_snapshot_time(thread_id)
-    if last_time and (datetime.now() - last_time) < timedelta(days=interval):
-        return
+    now_cn = datetime.now(CN_TZ)
+    if last_time:
+        lt = last_time if last_time.tzinfo else last_time.replace(tzinfo=CN_TZ)
+        if (now_cn - lt) < timedelta(days=interval):
+            return
 
     app = await get_graph_app()
     config = {"configurable": {"thread_id": thread_id}}
@@ -67,8 +70,8 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
         state.values.get("selected_indicators"),
     )
 
-    now = datetime.now().strftime("%Y-%m-%d")
-    start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    now = now_cn.strftime("%Y-%m-%d")
+    start = (now_cn - timedelta(days=30)).strftime("%Y-%m-%d")
     common_args = {
         "tenant_id": tenant_id,
         "store_id": store_id,

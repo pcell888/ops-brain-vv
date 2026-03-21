@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import hashlib
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 from psycopg.rows import dict_row
@@ -22,6 +22,7 @@ from src.core.calculator import (
     calculate_dimension_benchmarks_scores,
 )
 from src.api.deps import get_graph_app, running_tasks
+from src.core.config import CN_TZ
 from src.api.routes.compat_ws import get_running_threads_for_enterprise
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,17 @@ def _score_to_status(score: float) -> str:
     if score >= 40:
         return "warning"
     return "danger"
+
+
+def _normalize_recommendations(val: object) -> list[str]:
+    if val is None:
+        return []
+    if isinstance(val, str):
+        s = val.strip()
+        return [s] if s else []
+    if isinstance(val, list):
+        return [x.strip() for x in val if isinstance(x, str) and x.strip()]
+    return []
 
 
 async def _build_running_item(thread_id: str) -> dict | None:
@@ -84,7 +96,7 @@ async def _build_running_item(thread_id: str) -> dict | None:
         "health_score": None,
         "anomaly_count": None,
         "trigger_type": "manual",
-        "created_at": datetime.now().isoformat(),
+        "created_at": datetime.now(CN_TZ).isoformat(),
     }
 
 
@@ -198,7 +210,60 @@ async def compat_diagnosis_list(
 
 # ── /diagnosis/report/{id} ─────────────────────────────────────
 
-def _transform_report(thread_id: str, raw: dict) -> dict:
+def _extract_total_score(raw: dict) -> float:
+    raw_health_score = raw.get("health_score", 0)
+    if isinstance(raw_health_score, dict):
+        return float(raw_health_score.get("total_score", 0))
+    return float(raw_health_score)
+
+
+def _empty_health_trend() -> dict:
+    return {"previous_score": None, "change": None, "direction": None}
+
+
+async def _compute_health_trend(
+    diagnosis_id: str,
+    tenant_id: str | None,
+    current_total_score: float,
+) -> dict:
+    """对比同租户按时间倒序的上一份已落库报告，计算综合健康度变化。"""
+    empty = _empty_health_trend()
+    if not tenant_id:
+        return empty
+    try:
+        items, _ = await list_reports(tenant_id, None, 1, 100)
+    except Exception as e:
+        logger.debug("趋势计算列表失败: %s", e)
+        return empty
+    idx = next((i for i, row in enumerate(items) if row.get("thread_id") == diagnosis_id), None)
+    if idx is None or idx + 1 >= len(items):
+        return empty
+    prev_tid = items[idx + 1].get("thread_id")
+    if not prev_tid:
+        return empty
+    prev_report = await get_report_from_db(prev_tid)
+    if not prev_report:
+        return empty
+    prev_hs = prev_report.get("health_score", 0)
+    if isinstance(prev_hs, dict):
+        prev_score = float(prev_hs.get("total_score", 0))
+    else:
+        prev_score = float(prev_hs)
+    change = round(current_total_score - prev_score, 1)
+    if change > 0:
+        direction = "up"
+    elif change < 0:
+        direction = "down"
+    else:
+        direction = "stable"
+    return {
+        "previous_score": round(prev_score, 1),
+        "change": change,
+        "direction": direction,
+    }
+
+
+def _transform_report(thread_id: str, raw: dict, trend: dict | None = None) -> dict:
     """将后端原始 report dict 转换为前端 DiagnosisReport 结构。"""
 
     raw_health_score = raw.get("health_score", 0)
@@ -244,14 +309,12 @@ def _transform_report(thread_id: str, raw: dict) -> dict:
     for a in raw_anomalies:
         root_cause = a.get("root_cause")
         root_cause_chain = []
-        solution_tags = []
         if root_cause and isinstance(root_cause, dict):
             cause_text = root_cause.get("cause", "")
             if cause_text:
                 root_cause_chain = [s.strip() for s in cause_text.split("→") if s.strip()] or [cause_text]
         code = a.get("indicator_code", "")
         meta = INDICATOR_META.get(code, {})
-        solution_tags = _indicator_to_solution_tags(code)
 
         stable_id = a.get("id") or hashlib.md5(f"{thread_id}:{code}".encode()).hexdigest()[:8]
         anomalies_list.append({
@@ -265,7 +328,6 @@ def _transform_report(thread_id: str, raw: dict) -> dict:
             "gap_percentage": abs(a.get("deviation_pct", 0)),
             "severity": _map_severity(a.get("severity", "low")),
             "root_cause_chain": root_cause_chain,
-            "solution_tags": solution_tags,
             "unit": meta.get("unit", "%"),
         })
 
@@ -278,7 +340,7 @@ def _transform_report(thread_id: str, raw: dict) -> dict:
                 {"step": 1, "description": rc.get("cause", ""), "is_root": True},
             ],
             "explanation": rc.get("evidence", ""),
-            "recommendations": [],
+            "recommendations": _normalize_recommendations(rc.get("recommendations")),
         })
 
     benchmark_dimension_scores = []
@@ -294,7 +356,7 @@ def _transform_report(thread_id: str, raw: dict) -> dict:
         "total_score": round(total_score, 1),
         "status": _score_to_status(total_score),
         "dimension_scores": dimension_scores_list,
-        "trend": _compute_trend_stub(),
+        "trend": trend if trend is not None else _empty_health_trend(),
     }
 
     return {
@@ -316,33 +378,6 @@ def _map_severity(sev: str) -> str:
     return {"high": "critical", "medium": "high", "low": "medium"}.get(sev, sev)
 
 
-def _indicator_to_solution_tags(code: str) -> list[str]:
-    """根据指标代码生成方案标签。"""
-    tag_map = {
-        "lead_conversion_rate": ["crm_optimization", "lead_nurturing"],
-        "response_time_avg": ["process_optimization", "crm_automation"],
-        "follow_up_count": ["crm_engagement", "sales_training"],
-        "coupon_redemption_rate": ["marketing_optimization", "coupon_strategy"],
-        "browse_to_order_rate": ["conversion_optimization", "ux_improvement"],
-        "order_conversion_rate": ["checkout_optimization", "pricing_strategy"],
-        "seckill_conversion_rate": ["promotion_optimization"],
-        "repurchase_rate": ["retention_program", "loyalty_program"],
-        "refund_rate": ["quality_improvement", "service_improvement"],
-        "churn_rate": ["churn_prevention", "customer_engagement"],
-        "positive_review_rate": ["service_quality", "review_management"],
-        "avg_customer_lifetime_value": ["upsell_strategy", "loyalty_program"],
-        "service_completion_rate": ["service_optimization", "process_improvement"],
-        "avg_shipping_hours": ["logistics_optimization", "fulfillment_improvement"],
-        "task_on_time_rate": ["task_management", "process_optimization"],
-    }
-    return tag_map.get(code, [])
-
-
-def _compute_trend_stub() -> dict:
-    """趋势占位 — 后续可对比历史报告实现。"""
-    return {"previous_score": None, "change": None, "direction": None}
-
-
 @router.get("/report/{diagnosis_id}", summary="诊断报告(兼容)")
 async def compat_diagnosis_report(diagnosis_id: str):
     """兼容前端 GET /diagnosis/report/{diagnosisId}。
@@ -359,7 +394,12 @@ async def compat_diagnosis_report(diagnosis_id: str):
     if report is None:
         raise HTTPException(status_code=404, detail="诊断报告不存在或尚未生成")
 
-    return _transform_report(diagnosis_id, report)
+    trend = await _compute_health_trend(
+        diagnosis_id,
+        report.get("tenant_id"),
+        _extract_total_score(report),
+    )
+    return _transform_report(diagnosis_id, report, trend)
 
 
 # ── /diagnosis/benchmarks/dimension-scores ──────────────────────
@@ -460,14 +500,14 @@ async def compat_diagnosis_status(diagnosis_id: str):
 # ── /diagnosis/drill-down/{metricName} ──────────────────────────
 
 def _empty_drill_response(metric_name: str, dimension: str, days: int, page: int, page_size: int) -> dict:
-    from datetime import datetime, timedelta
+    now = datetime.now(CN_TZ)
     return {
         "metric_name": metric_name,
         "dimension": dimension,
         "drill_desc": "",
         "time_range": {
-            "start": (datetime.now() - timedelta(days=days)).isoformat(),
-            "end": datetime.now().isoformat(),
+            "start": (now - timedelta(days=days)).isoformat(),
+            "end": now.isoformat(),
         },
         "data": [],
         "total": 0,
@@ -491,7 +531,6 @@ async def compat_drill_down(
     从 wlwq 模拟业务库中查询指标相关的明细数据。
     仅支持异常指标的钻取。
     """
-    from datetime import datetime, timedelta
     from src.core.calculator import DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS
 
     meta = INDICATOR_META.get(metric_name)
@@ -529,7 +568,10 @@ async def compat_drill_down(
 
     field_labels = {k: DRILL_FIELD_LABELS.get(k, k) for k in drill_fields}
 
-    start_date = datetime.now() - timedelta(days=days)
+    now_cn = datetime.now(CN_TZ)
+    start_cn = now_cn - timedelta(days=days)
+    # wlwq 表字段多为无时区本地时间，按中国墙钟传参
+    start_date = start_cn.replace(tzinfo=None)
 
     try:
         from src.wlwq.database import get_pool
@@ -567,8 +609,8 @@ async def compat_drill_down(
             "dimension": dimension,
             "drill_desc": meta.get("drill_desc", ""),
             "time_range": {
-                "start": start_date.isoformat(),
-                "end": datetime.now().isoformat(),
+                "start": start_cn.isoformat(),
+                "end": now_cn.isoformat(),
             },
             "data": serialized,
             "total": total,
@@ -594,7 +636,12 @@ async def compat_anomaly_detail(diagnosis_id: str, anomaly_id: str):
     if report is None:
         raise HTTPException(status_code=404, detail="诊断报告不存在")
 
-    transformed = _transform_report(diagnosis_id, report)
+    trend = await _compute_health_trend(
+        diagnosis_id,
+        report.get("tenant_id"),
+        _extract_total_score(report),
+    )
+    transformed = _transform_report(diagnosis_id, report, trend)
     for a in transformed.get("anomalies", []):
         if a["id"] == anomaly_id or a["metric_name"] == anomaly_id:
             rc = None

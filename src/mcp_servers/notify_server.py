@@ -55,12 +55,6 @@ async def send_diagnosis_report_notification(
     ]
 
     data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
-    await biz.post(tenant_id, "/message-record/create", {
-        "storeId": store_id,
-        "type": notify_type,
-        "title": title,
-        "content": content,
-    })
 
     return {"sent_count": len(messages), "status": "sent", **data}
 
@@ -85,19 +79,16 @@ async def send_task_reminder(
     }
     title = type_labels.get(reminder_type, "任务提醒")
 
-    data = await biz.post(tenant_id, "/message-remind/create", {
-        "accountId": account_id,
-        "title": title,
-        "content": message,
-        "type": f"ai_task_{reminder_type}",
-        "bizId": task_id,
-    })
-    await biz.post(tenant_id, "/message-record/create", {
-        "userId": user_id,
-        "type": f"ai_task_{reminder_type}",
-        "title": title,
-        "content": message,
-        "bizId": task_id,
+    data = await biz.post(tenant_id, "/message-remind/batch-create", {
+        "messages": [
+            {
+                "accountId": account_id,
+                "title": title,
+                "content": message,
+                "type": f"ai_task_{reminder_type}",
+                "bizId": task_id,
+            }
+        ],
     })
 
     return {"status": "sent", **data}
@@ -128,13 +119,6 @@ async def send_plan_adoption_request(
     ]
 
     data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
-    await biz.post(tenant_id, "/message-record/create", {
-        "storeId": store_id,
-        "type": "ai_plan_adoption",
-        "title": title,
-        "content": content,
-        "bizId": thread_id,
-    })
     return {"sent_count": len(messages), "status": "sent", **data}
 
 
@@ -165,13 +149,6 @@ async def send_review_report_notification(
     ]
 
     data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
-    await biz.post(tenant_id, "/message-record/create", {
-        "storeId": store_id,
-        "type": "ai_review_report",
-        "title": title,
-        "content": content,
-        "bizId": thread_id,
-    })
     return {"sent_count": len(messages), "status": "sent", **data}
 
 
@@ -184,7 +161,6 @@ async def send_task_assignment_notification(
     """
     批量发送任务分配通知给各任务负责人。
     tasks 中每项需包含: task_id, task_name, assignee_user_id, assignee_account_id, deadline
-    同时写 message_record 留存。
     """
     messages = []
     for t in tasks:
@@ -205,14 +181,6 @@ async def send_task_assignment_notification(
         return {"sent_count": 0, "status": "no_assignee"}
 
     data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
-    for m in messages:
-        await biz.post(tenant_id, "/message-record/create", {
-            "storeId": store_id,
-            "type": "ai_task_assignment",
-            "title": m["title"],
-            "content": m["content"],
-            "bizId": m["bizId"],
-        })
 
     return {"sent_count": len(messages), "status": "sent", **data}
 

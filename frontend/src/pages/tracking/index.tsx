@@ -1,6 +1,6 @@
 
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { 
   Card, Table, Tag, Button, Empty, Spin, Progress, Row, Col, 
   Modal, Descriptions, App, Statistic
@@ -22,11 +22,13 @@ import {
   StopOutlined,
 } from '@ant-design/icons';
 import { 
+  useDiagnosisSelection,
   useTrackingList, 
   useTakeSnapshot,
   useCompleteTracking,
   useCancelTracking,
 } from '@/lib/hooks';
+import { DiagnosisHistorySelect } from '@/components/diagnosis-history-select';
 import { useAppStore } from '@/stores/app-store';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -45,6 +47,9 @@ export default function TrackingPage() {
   const navigate = useNavigate();
   const { currentEnterprise } = useAppStore();
   const enterpriseId = currentEnterprise?.id || null;
+
+  const { diagnosisItems, selectedDiagnosisId, setSelectedDiagnosisId, listLoading } =
+    useDiagnosisSelection(enterpriseId);
   
   // 分页状态
   const [currentPage, setCurrentPage] = useState(1);
@@ -52,9 +57,20 @@ export default function TrackingPage() {
   
   // 计算 skip，使用 useMemo 确保依赖正确
   const skip = useMemo(() => (currentPage - 1) * pageSize, [currentPage, pageSize]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [selectedDiagnosisId]);
   
   // 获取追踪列表
-  const { data: trackingsData, isLoading, refetch } = useTrackingList(enterpriseId, undefined, skip, pageSize);
+  const { data: trackingsData, isLoading, refetch } = useTrackingList(
+    enterpriseId,
+    undefined,
+    skip,
+    pageSize,
+    selectedDiagnosisId,
+  );
+  const pageLoading = listLoading || isLoading;
   
   // 操作 hooks
   const takeSnapshot = useTakeSnapshot();
@@ -265,7 +281,7 @@ export default function TrackingPage() {
   return (
     <div className="space-y-6">
       {/* 页面标题 */}
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
             <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-lg shadow-lg shadow-purple-500/20">
@@ -274,16 +290,26 @@ export default function TrackingPage() {
             效果追踪
           </h1>
           <p className="text-gray-400 mt-2 text-sm">
-            追踪方案执行效果，定期采集指标快照，生成复盘报告
-          </p>
+            追踪方案执行效果（按所选诊断筛选）</p>
         </div>
-        <div className="flex gap-3">
-          <Button icon={<BookOutlined />} onClick={handleViewCases}>
-            案例库
-          </Button>
-          <Button icon={<SyncOutlined />} onClick={() => refetch()}>
-            刷新
-          </Button>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:flex-wrap sm:justify-end">
+          {diagnosisItems.length > 0 && (
+            <DiagnosisHistorySelect
+              className="w-full sm:w-[min(100%,320px)]"
+              diagnosisItems={diagnosisItems}
+              value={selectedDiagnosisId}
+              onChange={setSelectedDiagnosisId}
+              loading={listLoading}
+            />
+          )}
+          <div className="flex gap-3 shrink-0">
+            <Button icon={<BookOutlined />} onClick={handleViewCases}>
+              案例库
+            </Button>
+            <Button icon={<SyncOutlined />} onClick={() => refetch()}>
+              刷新
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -319,10 +345,12 @@ export default function TrackingPage() {
 
       {/* 追踪列表 */}
       <Card>
-        {isLoading ? (
+        {pageLoading ? (
           <div className="flex items-center justify-center py-20">
             <Spin indicator={<LoadingOutlined style={{ fontSize: 48 }} spin />} />
           </div>
+        ) : !selectedDiagnosisId ? (
+          <Empty description="请先完成诊断" />
         ) : (
           <Table
             columns={columns}
@@ -348,7 +376,7 @@ export default function TrackingPage() {
               },
             }}
             locale={{
-              emptyText: <Empty description="暂无追踪记录，请先在执行监控页面完成计划后启动追踪" />,
+              emptyText: <Empty description="该次诊断下暂无追踪记录" />,
             }}
           />
         )}
