@@ -1,6 +1,6 @@
 
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   diagnosisApi,
@@ -8,6 +8,7 @@ import {
   solutionApi,
   executionApi,
   trackingApi,
+  reviewApi,
   customDimensionApi,
 } from './api';
 import { wsManager, type TaskStatusMessage, type TaskStatus } from './websocket';
@@ -86,7 +87,15 @@ export function useDiagnosisList(enterpriseId: string | null, skip = 0, limit = 
 /** 企业下历史诊断选择：默认最近一次，切换企业时重置 */
 export function useDiagnosisSelection(enterpriseId: string | null) {
   const { data: diagnosisListData, isLoading: listLoading } = useDiagnosisList(enterpriseId, 0, 100);
-  const diagnosisItems = diagnosisListData?.items ?? [];
+  const diagnosisItems = useMemo(() => {
+    const items = diagnosisListData?.items ?? [];
+    return items
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+  }, [diagnosisListData?.items]);
   const [selectedDiagnosisId, setSelectedDiagnosisId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -112,15 +121,18 @@ export function useLatestDiagnosisReport(enterpriseId: string | null) {
   const listQuery = useDiagnosisList(enterpriseId, 0, 1);
   const latestDiagnosis = listQuery.data?.items?.[0];
   const latestDiagnosisId = latestDiagnosis?.diagnosis_id;
-  
-  // 只有诊断完成时才获取报告
-  const isCompleted = latestDiagnosis?.status === 'completed';
-  const reportQuery = useDiagnosisReport(isCompleted ? latestDiagnosisId || null : null);
-  
+
+  // 报告在 diagnose 落库后即有；整段任务完成前 status 仍为 running（含方案生成中）
+  const reportReady =
+    latestDiagnosis?.status === 'completed' || latestDiagnosis?.report_ready === true;
+  const reportQuery = useDiagnosisReport(
+    reportReady && latestDiagnosisId ? latestDiagnosisId : null
+  );
+
   return {
     ...reportQuery,
     data: reportQuery.data as DiagnosisReport | undefined,
-    isLoading: listQuery.isLoading || (isCompleted && reportQuery.isLoading),
+    isLoading: listQuery.isLoading || (reportReady && reportQuery.isLoading),
     latestDiagnosisId,
     lastDiagnosisDate: latestDiagnosis?.created_at,
     // 返回最新诊断的状态信息（用于进入页面时获取正在执行的任务状态）
@@ -370,6 +382,11 @@ export function useSolutionList(diagnosisId: string | null) {
     queryKey: ['solutions', 'list', diagnosisId],
     queryFn: () => solutionApi.list(diagnosisId!),
     enabled: !!diagnosisId,
+    refetchInterval: (query) => {
+      const d = query.state.data as SolutionGenerateResponse | undefined;
+      if (d?.generating) return 2000;
+      return false;
+    },
   });
 }
 
@@ -527,7 +544,7 @@ export function useExecutionTaskList(
   });
 }
 
-// 获取计划摘要（pollWhenActive 为 true 时在 status 为 running/paused 时每 3 秒轮询）
+// 获取计划摘要（pollWhenActive 为 true 且计划为 running 时每 3 秒轮询，便于跟进未完成项）
 export function useExecutionPlanSummary(planId: string | null, pollWhenActive?: boolean) {
   return useQuery<ExecutionPlanSummary>({
     queryKey: ['execution', 'plan', planId],
@@ -536,7 +553,7 @@ export function useExecutionPlanSummary(planId: string | null, pollWhenActive?: 
     refetchInterval: (query) => {
       if (!pollWhenActive) return false;
       const s = (query.state.data as ExecutionPlanSummary)?.status;
-      return s === 'running' || s === 'paused' ? 3000 : false;
+      return s === 'running' ? 3000 : false;
     },
   });
 }
@@ -547,20 +564,6 @@ export function useGanttData(planId: string | null, enabled: boolean = true) {
     queryKey: ['execution', 'gantt', planId],
     queryFn: () => executionApi.getPlanGantt(planId!),
     enabled: !!planId && enabled,
-  });
-}
-
-// 启动计划
-export function useStartPlan() {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (planId: string) => executionApi.startPlan(planId),
-    onSuccess: (_, planId) => {
-      queryClient.invalidateQueries({ queryKey: ['execution', 'plan', planId] });
-      queryClient.invalidateQueries({ queryKey: ['execution', 'tasks', planId] });
-      queryClient.invalidateQueries({ queryKey: ['execution', 'plans'] });
-    },
   });
 }
 
@@ -618,11 +621,15 @@ export function useTrackingSummary(trackingId: string | null) {
 }
 
 // 获取指标趋势
-export function useMetricTrends(trackingId: string | null) {
+export function useMetricTrends(
+  trackingId: string | null,
+  options?: { enabled?: boolean },
+) {
+  const on = options?.enabled ?? true;
   return useQuery({
     queryKey: ['tracking', 'trends', trackingId],
     queryFn: () => trackingApi.getTrends(trackingId!),
-    enabled: !!trackingId,
+    enabled: !!trackingId && on,
   });
 }
 
@@ -643,34 +650,6 @@ export function useCaseSearch(params: {
 }
 
 // ============ 执行模块补充 Hooks ============
-
-// 暂停计划
-export function usePausePlan() {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (planId: string) => executionApi.pausePlan(planId),
-    onSuccess: (_, planId) => {
-      queryClient.invalidateQueries({ queryKey: ['execution', 'plan', planId] });
-      queryClient.invalidateQueries({ queryKey: ['execution', 'tasks', planId] });
-      queryClient.invalidateQueries({ queryKey: ['execution', 'plans'] });
-    },
-  });
-}
-
-// 恢复计划
-export function useResumePlan() {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (planId: string) => executionApi.resumePlan(planId),
-    onSuccess: (_, planId) => {
-      queryClient.invalidateQueries({ queryKey: ['execution', 'plan', planId] });
-      queryClient.invalidateQueries({ queryKey: ['execution', 'tasks', planId] });
-      queryClient.invalidateQueries({ queryKey: ['execution', 'plans'] });
-    },
-  });
-}
 
 // 获取计划任务列表（refetchIntervalMs 用于执行中计划轮询刷新，如 3000）
 export function usePlanTasks(planId: string | null, status?: string, refetchIntervalMs?: number) {
@@ -732,27 +711,31 @@ export function useRetryTask() {
 
 // ============ 追踪模块补充 Hooks ============
 
-// 采集快照
+// 采集快照（首次需带 enterpriseId 以创建追踪行）
 export function useTakeSnapshot() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: (trackingId: string) => trackingApi.takeSnapshot(trackingId),
-    onSuccess: (_, trackingId) => {
-      queryClient.invalidateQueries({ queryKey: ['tracking', 'summary', trackingId] });
-      queryClient.invalidateQueries({ queryKey: ['tracking', 'snapshots', trackingId] });
-      queryClient.invalidateQueries({ queryKey: ['tracking', 'analyze', trackingId] });
-      queryClient.invalidateQueries({ queryKey: ['tracking', 'trends', trackingId] });
+    mutationFn: (variables: { trackingId: string; enterpriseId?: string | null }) =>
+      trackingApi.takeSnapshot(variables.trackingId, variables.enterpriseId ? { enterprise_id: variables.enterpriseId } : {}),
+    onSuccess: (_, variables) => {
+      const id = variables.trackingId;
+      queryClient.invalidateQueries({ queryKey: ['tracking', 'summary', id] });
+      queryClient.invalidateQueries({ queryKey: ['tracking', 'snapshots', id] });
+      queryClient.invalidateQueries({ queryKey: ['tracking', 'analyze', id] });
+      queryClient.invalidateQueries({ queryKey: ['tracking', 'trends', id] });
+      queryClient.invalidateQueries({ queryKey: ['tracking', 'list'] });
     },
   });
 }
 
 // 分析效果
-export function useAnalyzeEffect(trackingId: string | null) {
+export function useAnalyzeEffect(trackingId: string | null, options?: { enabled?: boolean }) {
+  const on = options?.enabled ?? true;
   return useQuery({
     queryKey: ['tracking', 'analyze', trackingId],
     queryFn: () => trackingApi.analyze(trackingId!),
-    enabled: !!trackingId,
+    enabled: !!trackingId && on,
   });
 }
 
@@ -781,6 +764,17 @@ export function useCancelTracking() {
   });
 }
 
+/** 待自动复盘时：跳过等待，恢复 LangGraph 执行 track_effects（复盘与沉淀） */
+export function useStartReviewNow() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (threadId: string) => reviewApi.start(threadId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tracking', 'list'] });
+    },
+  });
+}
+
 // 获取复盘报告
 export function useTrackingReport(trackingId: string | null) {
   return useQuery({
@@ -791,40 +785,44 @@ export function useTrackingReport(trackingId: string | null) {
 }
 
 // 获取快照列表
-export function useTrackingSnapshots(trackingId: string | null) {
+export function useTrackingSnapshots(trackingId: string | null, options?: { enabled?: boolean }) {
+  const on = options?.enabled ?? true;
   return useQuery({
     queryKey: ['tracking', 'snapshots', trackingId],
     queryFn: () => trackingApi.getSnapshots(trackingId!),
-    enabled: !!trackingId,
+    enabled: !!trackingId && on,
   });
 }
 
 // ============ 看板图表数据 Hooks ============
 
 // 获取转化漏斗数据
-export function useDashboardFunnel(trackingId: string | null) {
+export function useDashboardFunnel(trackingId: string | null, options?: { enabled?: boolean }) {
+  const on = options?.enabled ?? true;
   return useQuery({
     queryKey: ['tracking', 'dashboard', 'funnel', trackingId],
     queryFn: () => trackingApi.getDashboardFunnel(trackingId!),
-    enabled: !!trackingId,
+    enabled: !!trackingId && on,
   });
 }
 
 // 获取团队对比数据
-export function useDashboardTeams(trackingId: string | null) {
+export function useDashboardTeams(trackingId: string | null, options?: { enabled?: boolean }) {
+  const on = options?.enabled ?? true;
   return useQuery({
     queryKey: ['tracking', 'dashboard', 'teams', trackingId],
     queryFn: () => trackingApi.getDashboardTeams(trackingId!),
-    enabled: !!trackingId,
+    enabled: !!trackingId && on,
   });
 }
 
 // 获取销售排名数据
-export function useDashboardRanking(trackingId: string | null, limit = 10) {
+export function useDashboardRanking(trackingId: string | null, limit = 10, options?: { enabled?: boolean }) {
+  const on = options?.enabled ?? true;
   return useQuery({
     queryKey: ['tracking', 'dashboard', 'ranking', trackingId, limit],
     queryFn: () => trackingApi.getDashboardRanking(trackingId!, limit),
-    enabled: !!trackingId,
+    enabled: !!trackingId && on,
   });
 }
 

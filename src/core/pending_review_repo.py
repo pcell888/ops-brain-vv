@@ -75,6 +75,48 @@ async def mark_review_done(thread_id: str) -> None:
         logger.warning("更新复盘状态失败 [%s]: %s", thread_id, e)
 
 
+async def get_pending_review(tenant_id: str, thread_id: str) -> dict | None:
+    """返回 status=pending 的待复盘记录（用于效果追踪列表展示「待到期」行）。"""
+    await ensure_ai_pending_review()
+    try:
+        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+            async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT thread_id, tenant_id, review_due_date, status
+                    FROM ai_pending_review
+                    WHERE tenant_id = %s AND thread_id = %s AND status = 'pending'
+                    """,
+                    (tenant_id[:32], thread_id[:128]),
+                )
+                row = await cur.fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        logger.warning("查询待复盘记录失败: %s", e)
+        return None
+
+
+async def get_pending_review_by_thread(thread_id: str) -> dict | None:
+    """按 thread_id 查 pending（摘要接口无 tenant 上下文）。"""
+    await ensure_ai_pending_review()
+    try:
+        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+            async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT thread_id, tenant_id, review_due_date, status
+                    FROM ai_pending_review
+                    WHERE thread_id = %s AND status = 'pending'
+                    """,
+                    (thread_id[:128],),
+                )
+                row = await cur.fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        logger.warning("查询待复盘记录失败: %s", e)
+        return None
+
+
 async def cancel_pending_review(thread_id: str) -> bool:
     """取消待复盘记录，返回是否实际取消了记录。"""
     try:

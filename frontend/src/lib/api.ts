@@ -438,18 +438,6 @@ export const executionApi = {
   getPlanGantt: (planId: string) =>
     api.get(`/execution/plans/${planId}/gantt`),
   
-  // 启动执行计划
-  startPlan: (planId: string) =>
-    api.post(`/execution/plans/${planId}/start`),
-  
-  // 暂停执行计划
-  pausePlan: (planId: string) =>
-    api.post(`/execution/plans/${planId}/pause`),
-  
-  // 恢复执行计划
-  resumePlan: (planId: string) =>
-    api.post(`/execution/plans/${planId}/resume`),
-  
   // 获取计划下的任务列表
   listPlanTasks: (planId: string, status?: string) =>
     api.get(`/execution/plans/${planId}/tasks`, { params: { status } }),
@@ -490,9 +478,9 @@ export const trackingApi = {
   getSummary: (trackingId: string) =>
     api.get(`/tracking/${trackingId}`),
   
-  // 采集周期性快照
-  takeSnapshot: (trackingId: string) =>
-    api.post(`/tracking/${trackingId}/snapshot`),
+  // 采集快照（首次可传 enterprise_id 自动创建追踪行）
+  takeSnapshot: (trackingId: string, body?: { enterprise_id?: string }) =>
+    api.post(`/tracking/${trackingId}/snapshot`, body ?? {}),
   
   // 分析效果
   analyze: (trackingId: string) =>
@@ -559,6 +547,11 @@ export const trackingApi = {
   // 获取快照的历史看板数据
   getSnapshotDashboard: (snapshotId: string) =>
     api.get(`/tracking/snapshots/${snapshotId}/dashboard`),
+};
+
+/** 立即复盘（恢复 LangGraph track_effects） */
+export const reviewApi = {
+  start: (threadId: string) => api.post(`/review/${threadId}/start`),
 };
 
 // ============ CRM 模块 API ============

@@ -36,7 +36,7 @@ async def save_effect_tracking(
                     ON CONFLICT (thread_id) DO UPDATE SET
                         tenant_id = EXCLUDED.tenant_id,
                         store_id = EXCLUDED.store_id,
-                        tracking_data = EXCLUDED.tracking_data,
+                        tracking_data = ai_effect_tracking.tracking_data || EXCLUDED.tracking_data,
                         created_at = NOW()
                     """,
                     (thread_id[:128], tenant_id[:32], store_id[:32], data_json),

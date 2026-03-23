@@ -8,18 +8,26 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
+from src.agent.prompts.review_analysis import REVIEW_ANALYSIS_SYSTEM, REVIEW_ANALYSIS_USER
 from src.core.config import CN_TZ, get_settings
-from src.core.db_init import _uri_to_conninfo
+from src.core.db_init import _uri_to_conninfo, ensure_ai_effect_tracking, ensure_ai_pending_review
+from src.core.pending_review_repo import cancel_pending_review, get_pending_review, get_pending_review_by_thread
+from src.core.solution_knowledge_repo import save_effective_plan
+from src.core.tracking_report_enrichment import needs_llm_enrichment
+from src.core.tracking_names import resolve_solution_name
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/tracking", tags=["效果追踪(兼容层)"])
+router = APIRouter(prefix="/tracking", tags=["效果追踪"])
 
 
 def _conninfo() -> str:
@@ -30,6 +38,483 @@ def _ser(v):
     if hasattr(v, "isoformat"):
         return v.isoformat()
     return v
+
+
+def _to_float(v) -> float | None:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(v) -> int | None:
+    try:
+        if v is None:
+            return None
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_dt(v) -> datetime | None:
+    if not v:
+        return None
+    if isinstance(v, datetime):
+        return v
+    text = str(v).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _is_generic_solution_name(v: object) -> bool:
+    name = str(v or "").strip()
+    return (not name) or name.startswith("效果追踪")
+
+
+def _extract_plan_name_from_desc(desc: object) -> str | None:
+    text = str(desc or "").strip()
+    if not text:
+        return None
+    m = re.match(r"^\[(.+?)\]", text)
+    if not m:
+        return None
+    name = m.group(1).strip()
+    return name or None
+
+
+def _safe_json_dict(text: str) -> dict | None:
+    body = text.strip()
+    if body.startswith("```"):
+        body = body.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+async def _llm_review_report(
+    tracking_data: dict,
+    snapshots: list[dict],
+    exec_tasks: list[dict],
+) -> dict | None:
+    settings = get_settings()
+    if not settings.llm_enabled or not settings.llm_api_key:
+        return None
+
+    llm = ChatOpenAI(
+        model=settings.llm_model,
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+        temperature=0.3,
+    )
+    user_msg = REVIEW_ANALYSIS_USER.format(
+        tracking_data=json.dumps(tracking_data, ensure_ascii=False, indent=2),
+        plans="[]",
+        exec_tasks=json.dumps(exec_tasks, ensure_ascii=False, indent=2),
+        snapshots=json.dumps(snapshots, ensure_ascii=False, indent=2),
+    )
+    try:
+        resp = await llm.ainvoke([
+            {"role": "system", "content": REVIEW_ANALYSIS_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ])
+    except Exception as e:
+        logger.warning("LLM 复盘生成失败，回退规则模板: %s", e)
+        return None
+
+    content = resp.content if isinstance(resp.content, str) else str(resp.content)
+    parsed = _safe_json_dict(content)
+    if not parsed:
+        logger.warning("LLM 复盘生成解析失败，回退规则模板")
+        return None
+    return parsed
+
+
+def _derive_tracking_status(tracking_data: dict) -> str:
+    """统一追踪状态推断：仅接受显式状态，禁止用达成率隐式判定完成。"""
+    raw = str(tracking_data.get("status") or "").strip().lower()
+    if raw in {"active", "completed", "cancelled", "scheduled"}:
+        return raw
+    return "active"
+
+
+def _is_tracking_completed(tracking_data: dict) -> bool:
+    return _derive_tracking_status(tracking_data) == "completed"
+
+
+def _metric_status_by_change(change_pct: float) -> str:
+    if change_pct >= 10:
+        return "exceeds_expectation"
+    if change_pct >= 0:
+        return "meets_expectation"
+    if change_pct <= -10:
+        return "negative"
+    return "below_expectation"
+
+
+def _build_metric_effects(snapshot_rows: list[dict]) -> list[dict]:
+    if len(snapshot_rows) < 2:
+        return []
+
+    first_sd = snapshot_rows[0].get("snapshot_data") or {}
+    last_sd = snapshot_rows[-1].get("snapshot_data") or {}
+    if isinstance(first_sd, str):
+        first_sd = json.loads(first_sd)
+    if isinstance(last_sd, str):
+        last_sd = json.loads(last_sd)
+
+    first_ind = (first_sd.get("indicators") or {}) if isinstance(first_sd, dict) else {}
+    last_ind = (last_sd.get("indicators") or {}) if isinstance(last_sd, dict) else {}
+    effects: list[dict] = []
+    for code, raw_cur in last_ind.items():
+        raw_base = first_ind.get(code)
+        if raw_base is None:
+            continue
+        cur_val = raw_cur.get("value") if isinstance(raw_cur, dict) else raw_cur
+        base_val = raw_base.get("value") if isinstance(raw_base, dict) else raw_base
+        cur_num = _to_float(cur_val)
+        base_num = _to_float(base_val)
+        if cur_num is None or base_num is None:
+            continue
+
+        actual_change = round(cur_num - base_num, 2)
+        change_pct = 0.0 if base_num == 0 else round((actual_change / abs(base_num)) * 100.0, 2)
+        effects.append({
+            "metric_name": code,
+            "baseline_value": round(base_num, 2),
+            "current_value": round(cur_num, 2),
+            "expected_change": 0,
+            "actual_change": actual_change,
+            "change_percentage": change_pct,
+            "status": _metric_status_by_change(change_pct),
+        })
+    return effects
+
+
+def _build_sections(report: dict) -> list[dict]:
+    sections = report.get("sections")
+    if isinstance(sections, list) and sections:
+        return sections
+
+    built: list[dict] = []
+    summary = str(report.get("summary") or "").strip()
+    if summary:
+        built.append({"title": "复盘总结", "content": summary})
+
+    indicator_analysis = report.get("indicator_analysis")
+    if isinstance(indicator_analysis, list) and indicator_analysis:
+        lines: list[str] = []
+        for item in indicator_analysis:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("indicator_code") or item.get("metric_name") or "未知指标")
+            trend = str(item.get("trend") or "无变化")
+            analysis = str(item.get("analysis") or "").strip()
+            lines.append(f"- **{code}**：趋势 `{trend}`。{analysis}".strip())
+        if lines:
+            built.append({"title": "指标分析", "content": "\n".join(lines)})
+    return built
+
+
+def _normalize_report_payload(
+    tracking_id: str,
+    report: dict,
+    tracking_data: dict,
+    report_created_at,
+    snapshot_rows: list[dict],
+    preferred_solution_name: str | None = None,
+) -> dict:
+    out = dict(report)
+    out["tracking_id"] = tracking_id
+
+    preferred = str(preferred_solution_name or "").strip()
+    report_name = str(out.get("solution_name") or "").strip()
+    solution_name = report_name
+    if preferred and (_is_generic_solution_name(report_name) or not report_name):
+        solution_name = preferred
+    if not solution_name:
+        solution_name = resolve_solution_name(tracking_data, preferred)
+    out["solution_name"] = solution_name
+    out["title"] = out.get("title") or f"{solution_name}复盘报告"
+    out["created_at"] = out.get("created_at") or _ser(report_created_at) or datetime.now(CN_TZ).isoformat()
+
+    first_snapshot_at = _ser(snapshot_rows[0].get("snapshot_at")) if snapshot_rows else None
+    last_snapshot_at = _ser(snapshot_rows[-1].get("snapshot_at")) if snapshot_rows else None
+    started_at = out.get("started_at") or tracking_data.get("started_at") or first_snapshot_at
+    completed_at = (
+        out.get("completed_at")
+        or tracking_data.get("completed_at")
+        or last_snapshot_at
+        or _ser(report_created_at)
+    )
+    out["started_at"] = started_at
+    out["completed_at"] = completed_at
+
+    snap_count = out.get("snapshot_count")
+    if snap_count is None:
+        snap_count = out.get("total_snapshots")
+    if snap_count is None:
+        snap_count = tracking_data.get("snapshot_count")
+    if snap_count is None:
+        snap_count = len(snapshot_rows)
+    out["snapshot_count"] = int(snap_count or 0)
+
+    duration_days = out.get("tracking_duration_days")
+    if duration_days is None and started_at and completed_at:
+        try:
+            st = _parse_dt(started_at)
+            ed = _parse_dt(completed_at)
+            if st and ed:
+                duration_days = max(1, (ed.date() - st.date()).days + 1)
+            else:
+                duration_days = None
+        except (TypeError, ValueError):
+            duration_days = None
+    if duration_days is None:
+        duration_days = 0
+    out["tracking_duration_days"] = int(duration_days)
+
+    if out.get("overall_score") is None:
+        score = (
+            out.get("final_score")
+            if out.get("final_score") is not None
+            else out.get("overall_achievement_rate")
+        )
+        score_num = _to_float(score)
+        out["overall_score"] = round(score_num, 2) if score_num is not None else 0
+
+    if not isinstance(out.get("recommendations"), list) or not out.get("recommendations"):
+        lessons = out.get("lessons_learned")
+        if isinstance(lessons, list) and lessons:
+            out["recommendations"] = [str(x) for x in lessons if str(x).strip()]
+        else:
+            out["recommendations"] = ["继续保持当前优化策略", "关注核心指标变化趋势"]
+
+    if not isinstance(out.get("metric_effects"), list) or not out.get("metric_effects"):
+        out["metric_effects"] = _build_metric_effects(snapshot_rows)
+
+    out["sections"] = _build_sections(out)
+    return out
+
+
+async def _derive_execution_summary(
+    cur,
+    tracking_id: str,
+    current_summary: dict,
+    started_at,
+    completed_at,
+) -> dict:
+    summary = dict(current_summary) if isinstance(current_summary, dict) else {}
+
+    await cur.execute(
+        """
+        SELECT COALESCE(status, 'pending') AS st, COUNT(*)::int AS cnt
+        FROM ai_exec_task
+        WHERE thread_id = %s
+        GROUP BY COALESCE(status, 'pending')
+        """,
+        (tracking_id,),
+    )
+    stat_rows = await cur.fetchall()
+    task_stats: dict[str, int] = {
+        "pending": 0,
+        "ready": 0,
+        "running": 0,
+        "paused": 0,
+        "completed": 0,
+        "failed": 0,
+        "cancelled": 0,
+    }
+    for sr in stat_rows or []:
+        key = str(sr.get("st") or "").lower()
+        if key in task_stats:
+            task_stats[key] = int(sr.get("cnt") or 0)
+
+    total_tasks = sum(task_stats.values())
+    completed_tasks = task_stats["completed"]
+
+    await cur.execute(
+        """
+        SELECT COUNT(DISTINCT assignee_user_id)::int AS team_size
+        FROM ai_exec_task
+        WHERE thread_id = %s
+          AND assignee_user_id IS NOT NULL
+        """,
+        (tracking_id,),
+    )
+    team_row = await cur.fetchone()
+    team_size_db = int((team_row or {}).get("team_size") or 0)
+
+    planned_duration = _to_int(summary.get("planned_duration"))
+    if planned_duration is None and total_tasks > 0:
+        # 与 execution 兼容层保持一致：默认计划工期 30 天
+        planned_duration = 30
+
+    actual_duration = _to_int(summary.get("actual_duration"))
+    if actual_duration is None:
+        st = _parse_dt(started_at)
+        ed = _parse_dt(completed_at)
+        if st and ed:
+            actual_duration = max(1, (ed.date() - st.date()).days + 1)
+
+    completion_rate = _to_float(summary.get("completion_rate"))
+    if completion_rate is None:
+        completion_rate = round((completed_tasks / total_tasks) * 100.0, 2) if total_tasks > 0 else 0.0
+
+    team_size = _to_int(summary.get("team_size"))
+    if team_size is None:
+        team_size = team_size_db if team_size_db > 0 else 0
+
+    summary["task_stats"] = task_stats
+    summary["completion_rate"] = completion_rate
+    summary["planned_duration"] = planned_duration
+    summary["actual_duration"] = actual_duration
+    summary["team_size"] = team_size
+    return summary
+
+
+async def _derive_adopted_plan_name(cur, tracking_id: str, tracking_data: dict) -> str | None:
+    await cur.execute(
+        """SELECT plan_name FROM ai_solution_knowledge
+           WHERE thread_id = %s
+           ORDER BY created_at DESC LIMIT 1""",
+        (tracking_id,),
+    )
+    sk = await cur.fetchone()
+    plan_name = str((sk or {}).get("plan_name") or "").strip()
+    if plan_name:
+        return plan_name
+
+    plan_id = str((tracking_data or {}).get("plan_id") or "").strip()
+    if plan_id:
+        await cur.execute(
+            """SELECT description, task_name FROM ai_exec_task
+               WHERE thread_id = %s AND plan_id = %s
+               ORDER BY created_at ASC LIMIT 1""",
+            (tracking_id, plan_id),
+        )
+    else:
+        await cur.execute(
+            """SELECT description, task_name FROM ai_exec_task
+               WHERE thread_id = %s
+               ORDER BY created_at ASC LIMIT 1""",
+            (tracking_id,),
+        )
+    task_row = await cur.fetchone()
+    if task_row:
+        from_desc = _extract_plan_name_from_desc(task_row.get("description"))
+        if from_desc:
+            return from_desc
+        from_task = str(task_row.get("task_name") or "").strip()
+        if from_task and not from_task.startswith("执行计划 -"):
+            return from_task
+    return None
+
+
+def _build_base_report(tracking_id: str, td: dict, now_iso: str, scores: list[float]) -> dict:
+    return {
+        "tracking_id": tracking_id,
+        "plan_id": td.get("plan_id", ""),
+        "solution_name": resolve_solution_name(td),
+        "total_snapshots": len(scores),
+        "started_at": td.get("started_at"),
+        "completed_at": now_iso,
+        "initial_score": scores[0] if scores else None,
+        "final_score": scores[-1] if scores else None,
+        "score_change": round(scores[-1] - scores[0], 1) if len(scores) >= 2 else 0,
+        "trend": "improving" if len(scores) >= 2 and scores[-1] > scores[0] else "stable",
+        "summary": f"追踪期间共采集 {len(scores)} 次快照",
+        "recommendations": ["继续保持当前优化策略", "关注核心指标变化趋势"],
+    }
+
+
+def _merge_llm_report(base_report: dict, llm_report: dict | None) -> dict:
+    if not isinstance(llm_report, dict):
+        return base_report
+
+    merged = dict(base_report)
+    for key in ("summary", "indicator_analysis", "sections"):
+        val = llm_report.get(key)
+        if val:
+            merged[key] = val
+
+    lessons = llm_report.get("lessons_learned")
+    recs = llm_report.get("recommendations")
+    if isinstance(recs, list) and recs:
+        merged["recommendations"] = [str(x) for x in recs if str(x).strip()]
+    elif isinstance(lessons, list) and lessons:
+        merged["recommendations"] = [str(x) for x in lessons if str(x).strip()]
+
+    for key in ("overall_achievement_rate", "improved_indicator_count", "total_tracked_indicators"):
+        val = llm_report.get(key)
+        if val is not None:
+            merged[key] = val
+    return merged
+
+
+class SnapshotBody(BaseModel):
+    """首次采集快照时若尚无追踪行，需传 enterprise_id（即 tenant_id）以创建。"""
+
+    enterprise_id: str | None = Field(default=None, description="租户/企业 ID，与所选诊断一致")
+
+
+async def _ensure_effect_tracking_row(
+    cur,
+    thread_id: str,
+    tenant_id: str,
+) -> tuple[str, str, dict]:
+    """若不存在则插入一条效果追踪（主键为诊断 thread_id）。返回 (store_id, tenant_id, tracking_data)。"""
+    await cur.execute(
+        "SELECT tenant_id, store_id, tracking_data FROM ai_effect_tracking WHERE thread_id = %s",
+        (thread_id,),
+    )
+    row = await cur.fetchone()
+    if row:
+        if row["tenant_id"] != tenant_id:
+            raise HTTPException(status_code=403, detail="追踪记录与当前企业不匹配")
+        td = row["tracking_data"] or {}
+        if isinstance(td, str):
+            td = json.loads(td)
+        return row["store_id"], row["tenant_id"], td
+
+    await cur.execute(
+        """SELECT plan_id, store_id FROM ai_exec_task
+           WHERE thread_id = %s AND tenant_id = %s ORDER BY created_at ASC LIMIT 1""",
+        (thread_id, tenant_id),
+    )
+    et = await cur.fetchone()
+    plan_id = (et["plan_id"] or "") if et else ""
+    store_id = (et["store_id"] or "st_001") if et else "st_001"
+    now = datetime.now(CN_TZ)
+    now_iso = now.isoformat()
+    td = {
+        "plan_id": plan_id,
+        "status": "active",
+        "solution_name": (f"方案 {plan_id[:8]}" if plan_id else "效果追踪"),
+        "current_score": None,
+        "snapshot_count": 0,
+        "started_at": now_iso,
+        "last_snapshot_at": None,
+        "completed_at": None,
+        "source": "bootstrap_snapshot",
+    }
+    await cur.execute(
+        """INSERT INTO ai_effect_tracking (thread_id, tenant_id, store_id, tracking_data, created_at)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (thread_id, tenant_id, store_id, json.dumps(td), now),
+    )
+    try:
+        await cancel_pending_review(thread_id)
+    except Exception as e:
+        logger.warning("取消待复盘记录（bootstrap）: %s", e)
+    return store_id, tenant_id, td
 
 
 # ── 启动追踪 ──────────────────────────────────────────────────────
@@ -79,6 +564,28 @@ async def start_tracking(data: dict):
 
 # ── 追踪列表 ─────────────────────────────────────────────────────
 
+def _pending_list_item(
+    thread_id: str,
+    diagnosis_id: str,
+    review_due_date,
+) -> dict:
+    due = _ser(review_due_date)
+    return {
+        "tracking_id": thread_id,
+        "plan_id": "",
+        "diagnosis_id": diagnosis_id,
+        "solution_name": "效果追踪（待自动复盘）",
+        "status": "scheduled",
+        "current_score": None,
+        "snapshot_count": 0,
+        "started_at": due,
+        "last_snapshot_at": None,
+        "completed_at": None,
+        "review_due_date": due,
+        "scheduled": True,
+    }
+
+
 @router.get("/list", summary="追踪列表")
 async def list_trackings(
     enterprise_id: str | None = Query(default=None),
@@ -88,6 +595,17 @@ async def list_trackings(
     limit: int = Query(default=20, ge=1, le=100),
 ):
     try:
+        await ensure_ai_pending_review()
+
+        # effect_track_delay_days>0 时图在 track_effects 前中断，复盘未跑则无 ai_effect_tracking 行；
+        # 从 ai_pending_review 补一行「待自动复盘」，避免列表空白。
+        pending_row = None
+        pending_bonus = 0
+        if enterprise_id and diagnosis_id:
+            pending_row = await get_pending_review(enterprise_id, diagnosis_id)
+            if pending_row and (not status or status == "scheduled"):
+                pending_bonus = 1
+
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 where_parts = []
@@ -96,50 +614,79 @@ async def list_trackings(
                     where_parts.append("t.tenant_id = %s")
                     params.append(enterprise_id)
                 if diagnosis_id:
+                    # LangGraph 落库：thread_id = 诊断 thread_id，tracking_data 无 plan_id；
+                    # 兼容层 POST /tracking/start：thread_id = trk_*，需用 exec_task 关联诊断。
                     where_parts.append(
-                        """EXISTS (
-                        SELECT 1 FROM ai_exec_task e
-                        WHERE e.plan_id = (t.tracking_data->>'plan_id')
-                          AND e.thread_id = %s
-                          AND e.tenant_id = t.tenant_id
+                        """(
+                        t.thread_id = %s
+                        OR EXISTS (
+                            SELECT 1 FROM ai_exec_task e
+                            WHERE (t.tracking_data->>'plan_id') IS NOT NULL
+                              AND (t.tracking_data->>'plan_id') <> ''
+                              AND e.plan_id = (t.tracking_data->>'plan_id')
+                              AND e.thread_id = %s
+                              AND e.tenant_id = t.tenant_id
+                        )
                     )"""
                     )
+                    params.append(diagnosis_id)
                     params.append(diagnosis_id)
                 where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
                 await cur.execute(
                     f"SELECT COUNT(*) FROM ai_effect_tracking t {where_sql}", params
                 )
-                total = (await cur.fetchone() or {}).get("count", 0)
+                total_db = (await cur.fetchone() or {}).get("count", 0)
+                total = int(total_db) + pending_bonus
+
+                db_skip = max(0, skip - pending_bonus)
+                db_limit = limit
+                if pending_bonus and skip == 0:
+                    db_limit = max(0, limit - 1)
 
                 await cur.execute(
                     f"""SELECT t.thread_id, t.tenant_id, t.tracking_data, t.created_at,
                         (SELECT MIN(e.thread_id) FROM ai_exec_task e
                          WHERE e.plan_id = (t.tracking_data->>'plan_id')
                            AND e.tenant_id = t.tenant_id) AS diagnosis_id
+                        ,(SELECT sk.plan_name FROM ai_solution_knowledge sk
+                          WHERE sk.thread_id = t.thread_id
+                          ORDER BY sk.created_at DESC LIMIT 1) AS adopted_plan_name
                         FROM ai_effect_tracking t
                         {where_sql}
                         ORDER BY t.created_at DESC OFFSET %s LIMIT %s""",
-                    params + [skip, limit],
+                    params + [db_skip, db_limit],
                 )
                 rows = await cur.fetchall()
 
         items = []
+        if pending_bonus and pending_row and skip == 0:
+            items.append(
+                _pending_list_item(
+                    pending_row["thread_id"],
+                    diagnosis_id or pending_row["thread_id"],
+                    pending_row["review_due_date"],
+                )
+            )
+
         for row in rows:
             td = row["tracking_data"] or {}
             if isinstance(td, str):
                 td = json.loads(td)
 
-            if status and td.get("status") != status:
+            eff_status = _derive_tracking_status(td)
+            if status and eff_status != status:
                 continue
 
             items.append({
                 "tracking_id": row["thread_id"],
                 "plan_id": td.get("plan_id", ""),
-                "diagnosis_id": row.get("diagnosis_id"),
-                "solution_name": td.get("solution_name", ""),
-                "status": td.get("status", "active"),
-                "current_score": td.get("current_score"),
+                "diagnosis_id": row.get("diagnosis_id") or row["thread_id"],
+                "solution_name": resolve_solution_name(td, row.get("adopted_plan_name")),
+                "status": eff_status,
+                "current_score": td.get("current_score")
+                if td.get("current_score") is not None
+                else td.get("overall_achievement_rate"),
                 "snapshot_count": td.get("snapshot_count", 0),
                 "started_at": td.get("started_at", _ser(row["created_at"])),
                 "last_snapshot_at": td.get("last_snapshot_at"),
@@ -333,6 +880,7 @@ async def get_snapshot_dashboard(snapshot_id: str):
 @router.get("/{tracking_id}", summary="追踪摘要")
 async def get_tracking_summary(tracking_id: str):
     try:
+        await ensure_ai_pending_review()
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -340,24 +888,55 @@ async def get_tracking_summary(tracking_id: str):
                     (tracking_id,),
                 )
                 row = await cur.fetchone()
+                adopted_plan_name = None
+                if row:
+                    await cur.execute(
+                        """SELECT plan_name FROM ai_solution_knowledge
+                           WHERE thread_id = %s
+                           ORDER BY created_at DESC LIMIT 1""",
+                        (tracking_id,),
+                    )
+                    sk = await cur.fetchone()
+                    adopted_plan_name = (sk or {}).get("plan_name")
 
         if not row:
+            pr = await get_pending_review_by_thread(tracking_id)
+            if pr:
+                due = pr["review_due_date"]
+                return {
+                    "tracking_id": tracking_id,
+                    "plan_id": "",
+                    "solution_name": "效果追踪（待自动复盘）",
+                    "status": "scheduled",
+                    "current_score": None,
+                    "snapshot_count": 0,
+                    "started_at": _ser(due),
+                    "last_snapshot_at": None,
+                    "completed_at": None,
+                    "review_due_date": _ser(due),
+                    "scheduled": True,
+                }
             raise HTTPException(status_code=404, detail="追踪不存在")
 
         td = row["tracking_data"] or {}
         if isinstance(td, str):
             td = json.loads(td)
 
+        # 仅使用方案计划总天数字段，不做兜底
+        total_duration_days = td.get("total_duration_days")
         return {
             "tracking_id": row["thread_id"],
             "plan_id": td.get("plan_id", ""),
-            "solution_name": td.get("solution_name", ""),
-            "status": td.get("status", "active"),
-            "current_score": td.get("current_score"),
+            "solution_name": resolve_solution_name(td, adopted_plan_name),
+            "status": _derive_tracking_status(td),
+            "current_score": td.get("current_score")
+            if td.get("current_score") is not None
+            else td.get("overall_achievement_rate"),
             "snapshot_count": td.get("snapshot_count", 0),
             "started_at": td.get("started_at", _ser(row["created_at"])),
             "last_snapshot_at": td.get("last_snapshot_at"),
             "completed_at": td.get("completed_at"),
+            "total_duration_days": total_duration_days,
         }
     except HTTPException:
         raise
@@ -369,15 +948,17 @@ async def get_tracking_summary(tracking_id: str):
 # ── 采集快照 ─────────────────────────────────────────────────────
 
 @router.post("/{tracking_id}/snapshot", summary="采集快照")
-async def take_snapshot(tracking_id: str):
-    """采集当前指标快照并存入 ai_effect_snapshot。"""
+async def take_snapshot(tracking_id: str, body: SnapshotBody | None = None):
+    """采集指标快照。若尚无 ai_effect_tracking 行，请求体传 enterprise_id 则自动创建（诊断 thread_id = 追踪主键）。"""
     import random
 
+    b = body or SnapshotBody()
     now = datetime.now(CN_TZ)
     snapshot_data = {
         "snapshot_at": now.isoformat(),
         "health_score": round(random.uniform(55, 95), 1),
         "indicators": {},
+        "snapshot_type": "periodic",
     }
 
     try:
@@ -394,6 +975,7 @@ async def take_snapshot(tracking_id: str):
         pass
 
     try:
+        await ensure_ai_effect_tracking()
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -402,11 +984,23 @@ async def take_snapshot(tracking_id: str):
                 )
                 row = await cur.fetchone()
                 if not row:
-                    raise HTTPException(status_code=404, detail="追踪不存在")
+                    if not b.enterprise_id:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="尚无效果追踪记录，请在请求体中传入 enterprise_id 以首次创建并采集快照",
+                        )
+                    store_id, tenant_id, td = await _ensure_effect_tracking_row(
+                        cur, tracking_id, b.enterprise_id.strip()
+                    )
+                    row = {"tenant_id": tenant_id, "store_id": store_id, "tracking_data": td}
+                else:
+                    td = row["tracking_data"] or {}
+                    if isinstance(td, str):
+                        td = json.loads(td)
 
-                td = row["tracking_data"] or {}
-                if isinstance(td, str):
-                    td = json.loads(td)
+                # 首次采集标记为基线快照
+                if (td.get("snapshot_count") or 0) <= 0:
+                    snapshot_data["snapshot_type"] = "baseline"
 
                 td["snapshot_count"] = td.get("snapshot_count", 0) + 1
                 td["last_snapshot_at"] = now.isoformat()
@@ -448,32 +1042,144 @@ async def analyze_tracking(tracking_id: str):
                 snapshots = await cur.fetchall()
 
         if not snapshots:
-            return {"tracking_id": tracking_id, "trend": "no_data", "snapshots": 0, "analysis": "暂无快照数据"}
+            recommendations = [
+                "建议先完成基线快照采集，再进行趋势分析",
+                "建议提高采集频次，至少形成 2-3 个时间点的数据",
+            ]
+            return {
+                "tracking_id": tracking_id,
+                "trend": "no_data",
+                "snapshots": 0,
+                "analysis": "暂无快照数据",
+                "score_change": 0,
+                "recommendations": recommendations,
+                "risk_hint": "⚠ 数据采集不足，无法准确评估风险",
+            }
 
-        scores = []
+        scores: list[float] = []
         for s in snapshots:
             sd = s["snapshot_data"] or {}
             if isinstance(sd, str):
                 sd = json.loads(sd)
-            scores.append(sd.get("health_score", 0))
+            val = sd.get("health_score", 0)
+            try:
+                scores.append(float(val))
+            except (TypeError, ValueError):
+                scores.append(0.0)
 
         if len(scores) >= 2:
             trend = "improving" if scores[-1] > scores[0] else "declining" if scores[-1] < scores[0] else "stable"
         else:
             trend = "insufficient_data"
+        score_change = round(scores[-1] - scores[0], 1) if len(scores) >= 2 else 0.0
+        latest_score = round(scores[-1], 1) if scores else None
+        first_score = round(scores[0], 1) if scores else None
+        snapshot_count = len(snapshots)
+
+        recent_change = round(scores[-1] - scores[-2], 1) if len(scores) >= 2 else 0.0
+        recent3 = scores[-3:] if len(scores) >= 3 else scores
+        recent_diffs = [recent3[i] - recent3[i - 1] for i in range(1, len(recent3))]
+        rising_steps = sum(1 for d in recent_diffs if d > 0)
+        falling_steps = sum(1 for d in recent_diffs if d < 0)
+
+        avg_score = (sum(scores) / len(scores)) if scores else 0.0
+        volatility = (
+            (sum((x - avg_score) ** 2 for x in scores) / len(scores)) ** 0.5
+            if len(scores) >= 2
+            else 0.0
+        )
+
+        recommendations: list[str] = []
+
+        # 阶段建议：每增加快照阶段都会变化
+        if snapshot_count <= 1:
+            recommendations.append("当前为基线阶段，建议尽快补充第 2-3 次快照，形成可比趋势")
+        elif snapshot_count == 2:
+            recommendations.append("已形成初步对比，建议保持固定周期采集，避免判断受偶然波动影响")
+        elif 3 <= snapshot_count <= 4:
+            recommendations.append("趋势进入成形期，建议按周复盘关键动作并记录干预前后变化")
+        else:
+            recommendations.append("样本已较充分，建议按月沉淀有效策略并复用到相似场景")
+
+        # 总体变化分档建议
+        if score_change <= -15:
+            recommendations.append("整体评分显著下滑（>=15分），建议立即排查执行偏差并启动纠偏")
+        elif score_change <= -5:
+            recommendations.append("整体评分持续回落，建议优先处理负向变化最大的核心指标")
+        elif score_change < 5:
+            recommendations.append("总体变化不明显，建议聚焦 1-2 个高价值指标做针对性优化")
+        elif score_change < 15:
+            recommendations.append("整体评分稳步提升，建议固化当前有效动作并扩大覆盖范围")
+        else:
+            recommendations.append("整体评分显著提升（>=15分），建议沉淀为标准化执行模板")
+
+        # 短期动量建议：解决“刚采集完不变”
+        if snapshot_count >= 3:
+            if rising_steps >= 2:
+                recommendations.append("近 3 次快照连续向好，可适度提高目标阈值以释放增长空间")
+            elif falling_steps >= 2:
+                recommendations.append("近 3 次快照连续下行，建议缩小优化面并优先止损关键环节")
+            elif recent_change > 0:
+                recommendations.append("最近一次快照出现回升，建议继续观察 1-2 个周期确认趋势反转")
+            elif recent_change < 0:
+                recommendations.append("最近一次快照出现回落，建议复查近期新增动作对结果的影响")
+
+        # 波动强度建议
+        if snapshot_count >= 3:
+            if volatility >= 8:
+                recommendations.append("评分波动较大，建议统一采集口径并拆分活动/非活动时段观察")
+            elif volatility <= 3:
+                recommendations.append("评分波动较小，建议逐步提高优化目标，避免进入平台期")
+
+        # 去重并截断
+        deduped: list[str] = []
+        for item in recommendations:
+            if item not in deduped:
+                deduped.append(item)
+        recommendations = deduped[:4] if deduped else ["继续保持当前优化策略", "关注核心指标变化趋势"]
+
+        # 风险提示分级
+        if snapshot_count < 2:
+            risk_level = "low_confidence"
+            risk_hint = "⚠ 数据采集不足，分析置信度低，请先补齐快照样本"
+        elif score_change <= -15 or (snapshot_count >= 3 and falling_steps >= 2):
+            risk_level = "high"
+            risk_hint = "⚠ 高风险：评分持续下行，建议立即进行专项排查与纠偏"
+        elif score_change < -5 or recent_change < 0:
+            risk_level = "medium"
+            risk_hint = "⚠ 中风险：近期存在下行信号，建议优先处理负向指标"
+        elif volatility >= 8:
+            risk_level = "medium"
+            risk_hint = "⚠ 中风险：结果波动较大，建议稳定采集口径并分场景复盘"
+        else:
+            risk_level = "low"
+            risk_hint = "✅ 当前风险整体可控，请继续保持稳定采集与复盘"
 
         return {
             "tracking_id": tracking_id,
             "trend": trend,
-            "snapshots": len(snapshots),
-            "first_score": scores[0] if scores else None,
-            "latest_score": scores[-1] if scores else None,
-            "score_change": round(scores[-1] - scores[0], 1) if len(scores) >= 2 else 0,
-            "analysis": f"共采集 {len(snapshots)} 次快照，评分趋势: {trend}",
+            "snapshots": snapshot_count,
+            "first_score": first_score,
+            "latest_score": latest_score,
+            "score_change": score_change,
+            "recent_change": recent_change,
+            "volatility": round(volatility, 2),
+            "risk_level": risk_level,
+            "analysis": f"共采集 {snapshot_count} 次快照，评分趋势: {trend}",
+            "recommendations": recommendations[:4],
+            "risk_hint": risk_hint,
         }
     except Exception as e:
         logger.error("效果分析失败: %s", e)
-        return {"tracking_id": tracking_id, "trend": "error", "snapshots": 0, "analysis": "分析失败"}
+        return {
+            "tracking_id": tracking_id,
+            "trend": "error",
+            "snapshots": 0,
+            "score_change": 0,
+            "analysis": "分析失败",
+            "recommendations": ["分析服务暂不可用，请稍后重试", "建议先检查快照采集是否正常"],
+            "risk_hint": "⚠ 分析服务异常，当前结果仅供参考",
+        }
 
 
 # ── 完成追踪 ─────────────────────────────────────────────────────
@@ -500,6 +1206,45 @@ async def complete_tracking(tracking_id: str):
                 td["completed_at"] = now.isoformat()
 
                 await cur.execute(
+                    """SELECT id, snapshot_data FROM ai_effect_snapshot
+                       WHERE thread_id = %s ORDER BY snapshot_at DESC LIMIT 1""",
+                    (tracking_id,),
+                )
+                latest_snapshot = await cur.fetchone()
+
+                should_create_closing_snapshot = True
+                if latest_snapshot:
+                    latest_sd = latest_snapshot["snapshot_data"] or {}
+                    if isinstance(latest_sd, str):
+                        latest_sd = json.loads(latest_sd)
+                    if latest_sd.get("snapshot_type") == "closing":
+                        should_create_closing_snapshot = False
+
+                if should_create_closing_snapshot:
+                    closing_data = {
+                        "snapshot_at": now.isoformat(),
+                        "health_score": td.get("current_score"),
+                        "indicators": {},
+                        "snapshot_type": "closing",
+                    }
+                    if latest_snapshot:
+                        latest_sd = latest_snapshot["snapshot_data"] or {}
+                        if isinstance(latest_sd, str):
+                            latest_sd = json.loads(latest_sd)
+                        closing_data["indicators"] = latest_sd.get("indicators", {}) or {}
+                        if latest_sd.get("health_score") is not None:
+                            closing_data["health_score"] = latest_sd.get("health_score")
+
+                    await cur.execute(
+                        """INSERT INTO ai_effect_snapshot (thread_id, tenant_id, store_id, snapshot_data, snapshot_at)
+                           VALUES (%s, %s, %s, %s, %s)""",
+                        (tracking_id, row["tenant_id"], row["store_id"], json.dumps(closing_data), now),
+                    )
+                    td["snapshot_count"] = (td.get("snapshot_count") or 0) + 1
+                    td["last_snapshot_at"] = now.isoformat()
+                    td["current_score"] = closing_data.get("health_score")
+
+                await cur.execute(
                     "UPDATE ai_effect_tracking SET tracking_data = %s WHERE thread_id = %s",
                     (json.dumps(td), tracking_id),
                 )
@@ -512,26 +1257,43 @@ async def complete_tracking(tracking_id: str):
                 snap_rows = await cur.fetchall()
 
                 scores = []
+                snapshot_payload: list[dict] = []
                 for sr in snap_rows:
                     sd = sr["snapshot_data"] or {}
                     if isinstance(sd, str):
                         sd = json.loads(sd)
-                    scores.append(sd.get("health_score", 0))
+                    score = _to_float(sd.get("health_score"))
+                    scores.append(score if score is not None else 0.0)
+                    snapshot_payload.append({
+                        "snapshot_at": sd.get("snapshot_at"),
+                        "health_score": sd.get("health_score"),
+                        "snapshot_type": sd.get("snapshot_type"),
+                        "indicators": sd.get("indicators", {}),
+                    })
 
-                report = {
+                base_report = _build_base_report(tracking_id, td, now.isoformat(), scores)
+                await cur.execute(
+                    """SELECT task_name, status, description, deadline
+                       FROM ai_exec_task
+                       WHERE thread_id = %s
+                       ORDER BY created_at ASC""",
+                    (tracking_id,),
+                )
+                exec_tasks = await cur.fetchall()
+                llm_tracking_data = {
+                    **td,
                     "tracking_id": tracking_id,
-                    "plan_id": td.get("plan_id", ""),
-                    "solution_name": td.get("solution_name", ""),
+                    "score_change": base_report.get("score_change"),
                     "total_snapshots": len(scores),
-                    "started_at": td.get("started_at"),
-                    "completed_at": now.isoformat(),
-                    "initial_score": scores[0] if scores else None,
-                    "final_score": scores[-1] if scores else None,
-                    "score_change": round(scores[-1] - scores[0], 1) if len(scores) >= 2 else 0,
-                    "trend": "improving" if len(scores) >= 2 and scores[-1] > scores[0] else "stable",
-                    "summary": f"追踪期间共采集 {len(scores)} 次快照",
-                    "recommendations": ["继续保持当前优化策略", "关注核心指标变化趋势"],
+                    "started_at": base_report.get("started_at"),
+                    "completed_at": base_report.get("completed_at"),
                 }
+                llm_report = await _llm_review_report(
+                    tracking_data=llm_tracking_data,
+                    snapshots=snapshot_payload,
+                    exec_tasks=exec_tasks or [],
+                )
+                report = _merge_llm_report(base_report, llm_report)
 
                 await cur.execute(
                     """INSERT INTO ai_review_report (thread_id, tenant_id, store_id, report, created_at)
@@ -541,7 +1303,38 @@ async def complete_tracking(tracking_id: str):
                 )
             await conn.commit()
 
-        return {"status": "ok", "message": "追踪已完成，复盘报告已生成"}
+        try:
+            achievement = 0.0
+            if len(scores) >= 2:
+                achievement = min(
+                    100.0,
+                    max(50.0, 50.0 + (float(scores[-1]) - float(scores[0])) * 2.0),
+                )
+            elif len(scores) == 1:
+                achievement = 60.0
+            if achievement >= 50.0:
+                lessons = report.get("recommendations", [])
+                if not isinstance(lessons, list):
+                    lessons = []
+                lessons_str = [str(x) for x in lessons[:5]]
+                await save_effective_plan(
+                    row["tenant_id"],
+                    row["store_id"],
+                    tracking_id,
+                    {
+                        "plan_id": td.get("plan_id", ""),
+                        "plan_name": td.get("solution_name", "效果追踪"),
+                        "target_indicators": [],
+                    },
+                    achievement,
+                    [],
+                    lessons_str,
+                    industry_code=None,
+                )
+        except Exception as e:
+            logger.warning("完成追踪后方案沉淀失败: %s", e)
+
+        return {"status": "ok", "message": "追踪已完成，复盘报告已生成，有效方案已尝试沉淀"}
     except HTTPException:
         raise
     except Exception as e:
@@ -629,19 +1422,112 @@ async def get_report(tracking_id: str):
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    "SELECT report FROM ai_review_report WHERE thread_id = %s",
+                    "SELECT report, created_at FROM ai_review_report WHERE thread_id = %s",
                     (tracking_id,),
                 )
                 row = await cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="复盘报告不存在，请先完成追踪")
 
-        if not row:
-            raise HTTPException(status_code=404, detail="复盘报告不存在，请先完成追踪")
+                report = row["report"] or {}
+                if isinstance(report, str):
+                    report = json.loads(report)
+                if not isinstance(report, dict):
+                    report = {}
 
-        report = row["report"] or {}
-        if isinstance(report, str):
-            report = json.loads(report)
+                await cur.execute(
+                    "SELECT tracking_data FROM ai_effect_tracking WHERE thread_id = %s",
+                    (tracking_id,),
+                )
+                track_row = await cur.fetchone()
+                tracking_data = (track_row or {}).get("tracking_data") or {}
+                if isinstance(tracking_data, str):
+                    tracking_data = json.loads(tracking_data)
+                if not isinstance(tracking_data, dict):
+                    tracking_data = {}
+                if not _is_tracking_completed(tracking_data):
+                    raise HTTPException(status_code=400, detail="追踪未完成，暂不可查看复盘报告")
 
-        return report
+                adopted_plan_name = await _derive_adopted_plan_name(
+                    cur=cur,
+                    tracking_id=tracking_id,
+                    tracking_data=tracking_data,
+                )
+
+                await cur.execute(
+                    """SELECT snapshot_data, snapshot_at FROM ai_effect_snapshot
+                       WHERE thread_id = %s ORDER BY snapshot_at ASC""",
+                    (tracking_id,),
+                )
+                snapshot_rows = await cur.fetchall()
+
+                if needs_llm_enrichment(report):
+                    snapshot_payload: list[dict] = []
+                    scores: list[float] = []
+                    for sr in snapshot_rows:
+                        sd = sr["snapshot_data"] or {}
+                        if isinstance(sd, str):
+                            sd = json.loads(sd)
+                        score = _to_float(sd.get("health_score"))
+                        scores.append(score if score is not None else 0.0)
+                        snapshot_payload.append({
+                            "snapshot_at": sd.get("snapshot_at") or _ser(sr.get("snapshot_at")),
+                            "health_score": sd.get("health_score"),
+                            "snapshot_type": sd.get("snapshot_type"),
+                            "indicators": sd.get("indicators", {}),
+                        })
+                    await cur.execute(
+                        """SELECT task_name, status, description, deadline
+                           FROM ai_exec_task
+                           WHERE thread_id = %s
+                           ORDER BY created_at ASC""",
+                        (tracking_id,),
+                    )
+                    exec_tasks = await cur.fetchall()
+                    base_report = _build_base_report(
+                        tracking_id=tracking_id,
+                        td=tracking_data,
+                        now_iso=_ser(row.get("created_at")) or datetime.now(CN_TZ).isoformat(),
+                        scores=scores,
+                    )
+                    llm_report = await _llm_review_report(
+                        tracking_data={
+                            **tracking_data,
+                            "tracking_id": tracking_id,
+                            "score_change": base_report.get("score_change"),
+                            "total_snapshots": len(scores),
+                        },
+                        snapshots=snapshot_payload,
+                        exec_tasks=exec_tasks or [],
+                    )
+                    if llm_report:
+                        report = _merge_llm_report(base_report, llm_report)
+
+                normalized = _normalize_report_payload(
+                    tracking_id=tracking_id,
+                    report=report,
+                    tracking_data=tracking_data,
+                    report_created_at=row.get("created_at"),
+                    snapshot_rows=snapshot_rows,
+                    preferred_solution_name=adopted_plan_name,
+                )
+                normalized["execution_summary"] = await _derive_execution_summary(
+                    cur=cur,
+                    tracking_id=tracking_id,
+                    current_summary=normalized.get("execution_summary") or {},
+                    started_at=normalized.get("started_at"),
+                    completed_at=normalized.get("completed_at"),
+                )
+
+                # 补齐后的结构回写，后续读取稳定一致（不含执行摘要/任务执行字段）。
+                if json.dumps(normalized, sort_keys=True, ensure_ascii=False) != json.dumps(report, sort_keys=True, ensure_ascii=False):
+                    await cur.execute(
+                        "UPDATE ai_review_report SET report = %s WHERE thread_id = %s",
+                        (json.dumps(normalized, ensure_ascii=False), tracking_id),
+                    )
+                    await conn.commit()
+
+        return normalized
     except HTTPException:
         raise
     except Exception as e:
@@ -658,23 +1544,61 @@ async def get_snapshots(tracking_id: str):
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """SELECT id, snapshot_data, snapshot_at FROM ai_effect_snapshot
-                       WHERE thread_id = %s ORDER BY snapshot_at DESC""",
+                       WHERE thread_id = %s ORDER BY snapshot_at ASC""",
                     (tracking_id,),
                 )
                 rows = await cur.fetchall()
 
         items = []
+        prev_indicators: dict[str, float] = {}
         for row in rows:
             sd = row["snapshot_data"] or {}
             if isinstance(sd, str):
                 sd = json.loads(sd)
+            indicators = sd.get("indicators", {}) or {}
+            indicator_changes: list[dict] = []
+            current_indicators: dict[str, float] = {}
+            for code, raw in indicators.items():
+                if isinstance(raw, dict):
+                    name = raw.get("name", code)
+                    value = raw.get("value")
+                    unit = raw.get("unit", "")
+                else:
+                    name = code
+                    value = raw
+                    unit = ""
+                if value is None:
+                    continue
+                try:
+                    num = float(value)
+                except (TypeError, ValueError):
+                    continue
+                last_val = prev_indicators.get(code)
+                delta = None if last_val is None else round(num - last_val, 2)
+                current_indicators[code] = num
+                indicator_changes.append({
+                    "indicator_code": code,
+                    "name": name,
+                    "value": round(num, 2),
+                    "unit": unit,
+                    "delta_vs_prev": delta,
+                })
+            # 变化幅度大的排前面，便于详情页直接展示关键差异
+            indicator_changes.sort(
+                key=lambda x: abs(x["delta_vs_prev"]) if x["delta_vs_prev"] is not None else -1,
+                reverse=True,
+            )
             items.append({
                 "snapshot_id": str(row["id"]),
                 "snapshot_at": _ser(row["snapshot_at"]),
                 "health_score": sd.get("health_score"),
-                "indicator_count": len(sd.get("indicators", {})),
+                "snapshot_type": sd.get("snapshot_type", "periodic"),
+                "indicator_count": len(indicator_changes),
+                "indicator_changes": indicator_changes,
             })
-
+            prev_indicators = current_indicators
+        # 前端时间线习惯按最近在前
+        items.reverse()
         return {"items": items, "total": len(items)}
     except Exception as e:
         logger.error("查询快照列表失败: %s", e)

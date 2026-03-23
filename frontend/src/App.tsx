@@ -15,8 +15,7 @@ const SolutionDiagnosisPage = lazy(() => import('@/pages/solutions/[diagnosisId]
 const ExecutionPage = lazy(() => import('@/pages/execution'));
 const ExecutionTaskDetailPage = lazy(() => import('@/pages/execution/task/[taskId]'));
 const ExecutionDetailPage = lazy(() => import('@/pages/execution/[planId]'));
-const TrackingPage = lazy(() => import('@/pages/tracking'));
-const TrackingDetailPage = lazy(() => import('@/pages/tracking/[trackingId]'));
+const TrackingOverviewPage = lazy(() => import('@/pages/tracking/[trackingId]'));
 const TrackingReportPage = lazy(() => import('@/pages/tracking/[trackingId]/report'));
 const TrackingCasesPage = lazy(() => import('@/pages/tracking/cases'));
 const TrackingCaseDetailPage = lazy(() => import('@/pages/tracking/cases/[caseId]'));
@@ -44,10 +43,9 @@ export default function App() {
           <Route path="/execution" element={<ExecutionPage />} />
           <Route path="/execution/task/:taskId" element={<ExecutionTaskDetailPage />} />
           <Route path="/execution/:planId" element={<ExecutionDetailPage />} />
-          <Route path="/tracking" element={<TrackingPage />} />
+          <Route path="/tracking" element={<TrackingOverviewPage />} />
           <Route path="/tracking/cases" element={<TrackingCasesPage />} />
           <Route path="/tracking/cases/:caseId" element={<TrackingCaseDetailPage />} />
-          <Route path="/tracking/:trackingId" element={<TrackingDetailPage />} />
           <Route path="/tracking/:trackingId/report" element={<TrackingReportPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>

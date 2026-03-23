@@ -2,46 +2,27 @@ import { useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   Card, Table, Button, Empty, Spin,
-  Row, Col, Statistic, App,
+  Row, Col, Statistic, Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  ArrowLeftOutlined, RocketOutlined, PlayCircleOutlined,
-  PauseCircleOutlined, LoadingOutlined, EyeOutlined,
+  ArrowLeftOutlined, RocketOutlined, LoadingOutlined, EyeOutlined,
 } from '@ant-design/icons';
-import {
-  useExecutionPlanSummary, usePlanTasks,
-  useStartPlan, usePausePlan, useResumePlan,
-} from '@/lib/hooks';
+import { useExecutionPlanSummary, usePlanTasks } from '@/lib/hooks';
 import dayjs from 'dayjs';
 import type { ExecutionTask } from '@/lib/types';
 import { DispatchStatusTag } from '@/lib/dispatch-status';
 
 export default function ExecutionDetailPage() {
-  const { message } = App.useApp();
   const { planId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
   const taskListAnchorRef = useRef<HTMLDivElement>(null);
 
   const { data: plan, isLoading: planLoading } = useExecutionPlanSummary(planId || null, true);
-  const isActive = plan?.status === 'running' || plan?.status === 'paused';
+  const isActive = plan?.status === 'running';
   const { data: tasksData, isLoading: tasksLoading } = usePlanTasks(planId || null, undefined, isActive ? 3000 : undefined);
   const tasks = ((tasksData as { items?: ExecutionTask[] })?.items || tasksData || []) as ExecutionTask[];
-
-  const startPlan = useStartPlan();
-  const pausePlan = usePausePlan();
-  const resumePlan = useResumePlan();
-
-  const handleStart = async () => {
-    try { await startPlan.mutateAsync(planId!); message.success('计划已启动'); } catch { message.error('启动失败'); }
-  };
-  const handlePause = async () => {
-    try { await pausePlan.mutateAsync(planId!); message.success('计划已暂停'); } catch { message.error('暂停失败'); }
-  };
-  const handleResume = async () => {
-    try { await resumePlan.mutateAsync(planId!); message.success('计划已恢复'); } catch { message.error('恢复失败'); }
-  };
 
   useEffect(() => {
     if (location.hash !== '#execution-task-list' || !plan) return;
@@ -130,7 +111,7 @@ export default function ExecutionDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-start">
         <div className="flex items-center gap-4">
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
           <div>
@@ -140,18 +121,10 @@ export default function ExecutionDetailPage() {
               </span>
               {plan.name || '执行计划详情'}
             </h1>
+            <Typography.Text type="secondary" className="!text-gray-400 text-sm mt-1 block">
+              方案采纳后任务已自动创建并派发，进度以下方任务状态为准。
+            </Typography.Text>
           </div>
-        </div>
-        <div className="flex gap-2">
-          {plan.status === 'pending' && (
-            <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleStart} loading={startPlan.isPending}>启动</Button>
-          )}
-          {plan.status === 'running' && (
-            <Button icon={<PauseCircleOutlined />} onClick={handlePause} loading={pausePlan.isPending}>暂停</Button>
-          )}
-          {plan.status === 'paused' && (
-            <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleResume} loading={resumePlan.isPending}>恢复</Button>
-          )}
         </div>
       </div>
 

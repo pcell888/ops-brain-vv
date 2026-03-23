@@ -74,29 +74,6 @@ const GeneralTab = forwardRef<unknown, GeneralTabProps>(
             </Row>
           </Card>
 
-          <Card title="方案配置" size="small" className="mt-6">
-            <Row gutter={16}>
-              <Col span={12}>
-                <Form.Item name="solution_sort_strategy" label="方案排序策略">
-                  <Select>
-                    <Select.Option value="balanced">综合评分</Select.Option>
-                    <Select.Option value="roi_first">投资回报率优先</Select.Option>
-                    <Select.Option value="quick_win">快速见效优先</Select.Option>
-                    <Select.Option value="risk_averse">风险规避</Select.Option>
-                  </Select>
-                </Form.Item>
-              </Col>
-              <Col span={12}>
-                <Form.Item name="max_solutions" label="最大方案数">
-                  <Select>
-                    <Select.Option value={3}>3个</Select.Option>
-                    <Select.Option value={5}>5个</Select.Option>
-                    <Select.Option value={10}>10个</Select.Option>
-                  </Select>
-                </Form.Item>
-              </Col>
-            </Row>
-          </Card>
         </Form>
       </div>
     );

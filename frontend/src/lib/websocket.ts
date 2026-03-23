@@ -48,6 +48,12 @@ class WebSocketManager {
         this.ws.readyState === WebSocket.OPEN) {
       return; // 已连接到相同的企业
     }
+    // 开发环境（如 React StrictMode）下 effect 可能触发重复 connect；
+    // 若同企业连接正在建立，跳过本次，避免 "closed before established" 抖动。
+    if (this.ws && this.enterpriseId === enterpriseId &&
+        this.ws.readyState === WebSocket.CONNECTING) {
+      return;
+    }
 
     this.disconnect(); // 先断开之前的连接
     this.enterpriseId = enterpriseId;

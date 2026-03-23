@@ -1,45 +1,62 @@
-
-
-import { useState, useMemo, useEffect } from 'react';
-import { 
-  Card, Table, Tag, Button, Empty, Spin, Progress, Row, Col, 
-  Modal, Descriptions, App, Statistic
+import { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useQueries } from '@tanstack/react-query';
+import {
+  App,
+  Button,
+  Card,
+  Col,
+  Empty,
+  Modal,
+  Row,
+  Spin,
+  Table,
+  Tag,
+  Tooltip,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { 
-  LineChartOutlined,
+import {
   CameraOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
-  SyncOutlined,
-  LoadingOutlined,
   EyeOutlined,
-  FileTextOutlined,
+  LineChartOutlined,
   RiseOutlined,
-  FallOutlined,
-  BookOutlined,
-  BarChartOutlined,
   StopOutlined,
+  SyncOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
-import { 
-  useDiagnosisSelection,
-  useTrackingList, 
-  useTakeSnapshot,
-  useCompleteTracking,
-  useCancelTracking,
-} from '@/lib/hooks';
+import dayjs from 'dayjs';
 import { DiagnosisHistorySelect } from '@/components/diagnosis-history-select';
 import { useAppStore } from '@/stores/app-store';
-import { useNavigate } from 'react-router-dom';
-import dayjs from 'dayjs';
+import {
+  useCancelTracking,
+  useCompleteTracking,
+  useDiagnosisSelection,
+  useStartReviewNow,
+  useTakeSnapshot,
+  useTrackingList,
+} from '@/lib/hooks';
 import type { TrackingSummary } from '@/lib/types';
+import { trackingApi } from '@/lib/api';
 
-// 状态配置
+interface SnapshotItem {
+  snapshot_id: string;
+  snapshot_at: string;
+  health_score?: number;
+  indicator_count: number;
+}
+
+interface SnapshotRow extends SnapshotItem {
+  tracking_id: string;
+}
+
 const statusConfig: Record<string, { color: string; icon: React.ReactNode; text: string }> = {
   active: { color: 'processing', icon: <SyncOutlined spin />, text: '追踪中' },
   completed: { color: 'success', icon: <CheckCircleOutlined />, text: '已完成' },
   cancelled: { color: 'default', icon: <StopOutlined />, text: '已取消' },
   paused: { color: 'warning', icon: <ClockCircleOutlined />, text: '已暂停' },
+  scheduled: { color: 'warning', icon: <ClockCircleOutlined />, text: '待自动复盘' },
 };
 
 export default function TrackingPage() {
@@ -50,57 +67,94 @@ export default function TrackingPage() {
 
   const { diagnosisItems, selectedDiagnosisId, setSelectedDiagnosisId, listLoading } =
     useDiagnosisSelection(enterpriseId);
-  
-  // 分页状态
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
-  
-  // 计算 skip，使用 useMemo 确保依赖正确
-  const skip = useMemo(() => (currentPage - 1) * pageSize, [currentPage, pageSize]);
 
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [selectedDiagnosisId]);
-  
-  // 获取追踪列表
   const { data: trackingsData, isLoading, refetch } = useTrackingList(
     enterpriseId,
     undefined,
-    skip,
-    pageSize,
+    0,
+    100,
     selectedDiagnosisId,
   );
-  const pageLoading = listLoading || isLoading;
-  
-  // 操作 hooks
+
+  const items = trackingsData?.items ?? [];
   const takeSnapshot = useTakeSnapshot();
   const completeTracking = useCompleteTracking();
   const cancelTracking = useCancelTracking();
+  const startReviewNow = useStartReviewNow();
 
-  // 处理取消追踪
-  const handleCancelTracking = async (trackingId: string) => {
-    Modal.confirm({
-      title: '确认停止追踪',
-      content: '停止后将无法继续采集数据，是否确认？',
-      okText: '确认停止',
-      cancelText: '取消',
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        try {
-          await cancelTracking.mutateAsync(trackingId);
-          message.success('追踪已停止');
-          refetch();
-        } catch {
-          message.error('停止追踪失败');
-        }
-      },
+  const activeRow = useMemo(() => items.find((t) => t.status === 'active') ?? null, [items]);
+  const scheduledRow = useMemo(() => items.find((t) => t.status === 'scheduled') ?? null, [items]);
+
+  const snapshotQueries = useQueries({
+    queries: items.map((t) => ({
+      queryKey: ['tracking', 'snapshots', t.tracking_id],
+      queryFn: () => trackingApi.getSnapshots(t.tracking_id),
+      enabled: t.status !== 'scheduled',
+      staleTime: 30_000,
+    })),
+  });
+
+  const snapshotRows = useMemo<SnapshotRow[]>(() => {
+    const rows: SnapshotRow[] = [];
+    items.forEach((tracking, idx) => {
+      const data = snapshotQueries[idx]?.data as { items?: SnapshotItem[] } | undefined;
+      const snaps = data?.items ?? [];
+      snaps.forEach((s) => {
+        rows.push({
+          ...s,
+          tracking_id: tracking.tracking_id,
+        });
+      });
     });
-  };
+    return rows.sort((a, b) => dayjs(b.snapshot_at).valueOf() - dayjs(a.snapshot_at).valueOf());
+  }, [items, snapshotQueries]);
 
-  // 处理采集快照
-  const handleTakeSnapshot = async (trackingId: string) => {
+  const trendDelta = useMemo(() => {
+    const valid = snapshotRows.filter((r) => r.health_score != null);
+    if (valid.length < 2) return null;
+    const latest = Number(valid[0].health_score);
+    const earliest = Number(valid[valid.length - 1].health_score);
+    return latest - earliest;
+  }, [snapshotRows]);
+
+  const stats = useMemo(() => {
+    const scored = items.filter((t) => t.current_score != null);
+    const avg = scored.length
+      ? Math.round(scored.reduce((sum, t) => sum + Number(t.current_score || 0), 0) / scored.length)
+      : 0;
+    return {
+      totalTracking: items.length,
+      active: items.filter((t) => t.status === 'active').length,
+      completed: items.filter((t) => t.status === 'completed').length,
+      snapshotTotal: snapshotRows.length,
+      avgScore: avg,
+    };
+  }, [items, snapshotRows.length]);
+
+  const trackingStatusText = useMemo(() => {
+    if (activeRow) return '追踪中';
+    if (scheduledRow) return '待复盘';
+    if (stats.completed > 0) return '已完成';
+    if (stats.totalTracking > 0) return '已停止';
+    return '-';
+  }, [activeRow, scheduledRow, stats.completed, stats.totalTracking]);
+
+  const trackingStatusIcon = useMemo(() => {
+    if (activeRow) return <SyncOutlined spin className="text-3xl text-amber-400" />;
+    if (scheduledRow) return <ClockCircleOutlined className="text-3xl text-blue-400 animate-pulse" />;
+    if (stats.completed > 0) return <CheckCircleOutlined className="text-3xl text-emerald-400 animate-pulse" />;
+    if (stats.totalTracking > 0) return <StopOutlined className="text-3xl text-gray-400 animate-pulse" />;
+    return <ClockCircleOutlined className="text-3xl text-gray-500" />;
+  }, [activeRow, scheduledRow, stats.completed, stats.totalTracking]);
+
+  const handleSnapshot = async () => {
+    if (!enterpriseId || !selectedDiagnosisId) {
+      message.warning('请先选择诊断');
+      return;
+    }
+    const targetId = activeRow?.tracking_id || scheduledRow?.tracking_id || selectedDiagnosisId;
     try {
-      await takeSnapshot.mutateAsync(trackingId);
+      await takeSnapshot.mutateAsync({ trackingId: targetId, enterpriseId });
       message.success('快照已采集');
       refetch();
     } catch {
@@ -108,168 +162,95 @@ export default function TrackingPage() {
     }
   };
 
-  // 处理完成追踪
-  const handleCompleteTracking = async (trackingId: string) => {
-    try {
-      await completeTracking.mutateAsync(trackingId);
-      message.success('追踪已完成，复盘报告已生成');
-      refetch();
-    } catch {
-      message.error('完成追踪失败');
+  const handleReviewNow = () => {
+    if (!selectedDiagnosisId) return;
+    if (scheduledRow) {
+      Modal.confirm({
+        title: '立即复盘',
+        content: '将跳过等待期并执行复盘，是否继续？',
+        okText: '开始',
+        cancelText: '取消',
+        onOk: async () => {
+          await startReviewNow.mutateAsync(scheduledRow.tracking_id);
+          message.success('已触发立即复盘');
+          refetch();
+        },
+      });
+      return;
     }
-  };
-
-  // 查看详情 - 跳转到详情页
-  const handleViewDetail = (trackingId: string) => {
-    navigate(`/tracking/${trackingId}`);
-  };
-
-  // 跳转案例库
-  const handleViewCases = () => {
-    navigate('/tracking/cases');
-  };
-
-  const columns: ColumnsType<TrackingSummary> = [
-    {
-      title: '方案名称',
-      dataIndex: 'solution_name',
-      key: 'solution_name',
-      render: (name: string, record) => (
-        <a 
-          className="font-medium text-white hover:text-blue-400 cursor-pointer"
-          onClick={() => handleViewDetail(record.tracking_id)}
-        >
-          {name}
-        </a>
-      ),
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 120,
-      render: (status: string) => {
-        const config = statusConfig[status] || statusConfig.active;
-        return (
-          <Tag icon={config.icon} color={config.color}>
-            {config.text}
-          </Tag>
-        );
+    if (activeRow) {
+      Modal.confirm({
+        title: '立即复盘',
+        content: '将结束追踪并生成复盘报告，是否继续？',
+        okText: '确认',
+        cancelText: '取消',
+        onOk: async () => {
+          await completeTracking.mutateAsync(activeRow.tracking_id);
+          message.success('追踪已完成，复盘报告已生成');
+          refetch();
+        },
+      });
+      return;
+    }
+    Modal.confirm({
+      title: '立即复盘',
+      content: '将使用当前诊断会话尝试触发复盘，是否继续？',
+      onOk: async () => {
+        await startReviewNow.mutateAsync(selectedDiagnosisId);
+        message.success('已触发立即复盘');
+        refetch();
       },
-    },
-    {
-      title: '当前评分',
-      dataIndex: 'current_score',
-      key: 'current_score',
-      width: 120,
-      render: (score: number | null) => {
-        if (score === null || score === undefined) {
-          return <span className="text-gray-500">-</span>;
-        }
-        const color = score >= 80 ? 'text-emerald-400' : score >= 60 ? 'text-amber-400' : 'text-rose-400';
-        return (
-          <span className={`font-bold text-lg ${color}`}>
-            {score.toFixed(0)}
-            <span className="text-xs text-gray-500 ml-1">分</span>
-          </span>
-        );
+    });
+  };
+
+  const handleStop = () => {
+    if (!activeRow?.tracking_id) return;
+    Modal.confirm({
+      title: '确认停止追踪',
+      content: '停止后将无法继续采集数据，是否确认？',
+      okText: '确认停止',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await cancelTracking.mutateAsync(activeRow.tracking_id);
+        message.success('追踪已停止');
+        refetch();
       },
+    });
+  };
+
+  const columns: ColumnsType<SnapshotRow> = [
+    {
+      title: '追踪时间',
+      dataIndex: 'snapshot_at',
+      key: 'snapshot_at',
+      width: 180,
+      render: (v: string) => <span className="text-gray-300">{dayjs(v).format('YYYY-MM-DD HH:mm')}</span>,
     },
     {
-      title: '快照数',
-      dataIndex: 'snapshot_count',
-      key: 'snapshot_count',
-      width: 100,
-      render: (count: number) => (
-        <Tag color="blue">{count}个</Tag>
-      ),
-    },
-    {
-      title: '开始时间',
-      dataIndex: 'started_at',
-      key: 'started_at',
-      width: 140,
-      render: (date: string) => (
-        <span className="text-gray-400 text-sm">
-          {dayjs(date).format('MM-DD HH:mm')}
-        </span>
-      ),
-    },
-    {
-      title: '最近快照',
-      dataIndex: 'last_snapshot_at',
-      key: 'last_snapshot_at',
-      width: 140,
-      render: (date: string | null) => (
-        <span className="text-gray-400 text-sm">
-          {date ? dayjs(date).format('MM-DD HH:mm') : '-'}
-        </span>
-      ),
+      title: '得分',
+      dataIndex: 'health_score',
+      key: 'health_score',
+      width: 120,
+      render: (v?: number) => (v == null ? '-' : Number(v).toFixed(1)),
     },
     {
       title: '操作',
       key: 'action',
-      width: 320,
-      render: (_, record) => (
-        <div className="flex gap-1">
-          <Button 
-            type="link" 
-            size="small"
-            icon={<EyeOutlined />}
-            onClick={() => handleViewDetail(record.tracking_id)}
-          >
-            详情
-          </Button>
-          {record.status === 'active' && (
-            <>
-              <Button 
-                type="link" 
-                size="small"
-                icon={<CameraOutlined />}
-                onClick={() => handleTakeSnapshot(record.tracking_id)}
-                loading={takeSnapshot.isPending}
-              >
-                快照
-              </Button>
-              <Button 
-                type="link" 
-                size="small"
-                icon={<CheckCircleOutlined />}
-                onClick={() => handleCompleteTracking(record.tracking_id)}
-              >
-                完成
-              </Button>
-              <Button 
-                type="link" 
-                size="small"
-                danger
-                icon={<StopOutlined />}
-                onClick={() => handleCancelTracking(record.tracking_id)}
-                loading={cancelTracking.isPending}
-              >
-                停止
-              </Button>
-            </>
-          )}
-        </div>
+      width: 120,
+      render: (_, row) => (
+        <Button
+          type="link"
+          size="small"
+          icon={<EyeOutlined />}
+          onClick={() => navigate('/tracking')}
+        >
+          详情
+        </Button>
       ),
     },
   ];
 
-  // 统计数据
-  const stats = trackingsData?.items ? {
-    total: trackingsData.total,
-    active: trackingsData.items.filter((t: TrackingSummary) => t.status === 'active').length,
-    completed: trackingsData.items.filter((t: TrackingSummary) => t.status === 'completed').length,
-    avgScore: Math.round(
-      trackingsData.items
-        .filter((t: TrackingSummary) => t.current_score !== null)
-        .reduce((sum: number, t: TrackingSummary) => sum + (t.current_score || 0), 0) / 
-      trackingsData.items.filter((t: TrackingSummary) => t.current_score !== null).length
-    ) || 0,
-  } : null;
-
-  // 未选择企业
   if (!enterpriseId) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
@@ -280,7 +261,6 @@ export default function TrackingPage() {
 
   return (
     <div className="space-y-6">
-      {/* 页面标题 */}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
@@ -289,8 +269,7 @@ export default function TrackingPage() {
             </span>
             效果追踪
           </h1>
-          <p className="text-gray-400 mt-2 text-sm">
-            追踪方案执行效果（按所选诊断筛选）</p>
+          <p className="text-gray-400 mt-2 text-sm">本次诊断全部追踪概况与采集明细</p>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:flex-wrap sm:justify-end">
           {diagnosisItems.length > 0 && (
@@ -302,85 +281,75 @@ export default function TrackingPage() {
               loading={listLoading}
             />
           )}
-          <div className="flex gap-3 shrink-0">
-            <Button icon={<BookOutlined />} onClick={handleViewCases}>
-              案例库
+          <div className="flex flex-wrap gap-2 shrink-0 items-center">
+            <Tooltip title={selectedDiagnosisId ? '采集一次快照' : '请先选择历史诊断'}>
+              <span>
+                <Button
+                  icon={<CameraOutlined />}
+                  disabled={!selectedDiagnosisId}
+                  loading={takeSnapshot.isPending}
+                  onClick={handleSnapshot}
+                >
+                  快照
+                </Button>
+              </span>
+            </Tooltip>
+            <Button
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              disabled={!selectedDiagnosisId}
+              loading={startReviewNow.isPending || completeTracking.isPending}
+              onClick={handleReviewNow}
+            >
+              立即复盘
             </Button>
-            <Button icon={<SyncOutlined />} onClick={() => refetch()}>
-              刷新
-            </Button>
+            {activeRow && (
+              <Button danger icon={<StopOutlined />} loading={cancelTracking.isPending} onClick={handleStop}>
+                停止追踪
+              </Button>
+            )}
           </div>
         </div>
       </div>
 
-      {/* 统计卡片 */}
-      {stats && (
-        <Row gutter={16}>
-          <Col span={6}>
-            <Card className="text-center">
-              <div className="text-3xl font-bold text-blue-400">{stats.total}</div>
-              <div className="text-gray-400 text-sm mt-1">追踪总数</div>
-            </Card>
-          </Col>
-          <Col span={6}>
-            <Card className="text-center">
-              <div className="text-3xl font-bold text-amber-400">{stats.active}</div>
-              <div className="text-gray-400 text-sm mt-1">追踪中</div>
-            </Card>
-          </Col>
-          <Col span={6}>
-            <Card className="text-center">
-              <div className="text-3xl font-bold text-emerald-400">{stats.completed}</div>
-              <div className="text-gray-400 text-sm mt-1">已完成</div>
-            </Card>
-          </Col>
-          <Col span={6}>
-            <Card className="text-center">
-              <div className="text-3xl font-bold text-purple-400">{stats.avgScore}</div>
-              <div className="text-gray-400 text-sm mt-1">平均评分</div>
-            </Card>
-          </Col>
-        </Row>
-      )}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16">
+          <Spin size="large" />
+        </div>
+      ) : !selectedDiagnosisId ? (
+        <Empty description="请先选择诊断" />
+      ) : (
+        <>
+          <Row gutter={16}>
+            <Col span={8}>
+              <Card className="text-center"><div className="text-3xl font-bold text-blue-400">{stats.totalTracking}</div><div className="text-gray-400 text-sm mt-1">追踪总数</div></Card>
+            </Col>
+            <Col span={8}>
+              <Card className="text-center">
+                <div className="flex flex-col items-center gap-2">
+                  {trackingStatusIcon}
+                  <div className="text-xl font-bold text-amber-300">{trackingStatusText}</div>
+                </div>
+                <div className="text-gray-400 text-sm mt-1">追踪状态</div>
+              </Card>
+            </Col>
+            <Col span={8}>
+              <Card className="text-center"><div className="text-3xl font-bold text-purple-400">{stats.avgScore}</div><div className="text-gray-400 text-sm mt-1">评价评分</div></Card>
+            </Col>
+          </Row>
 
-      {/* 追踪列表 */}
-      <Card>
-        {pageLoading ? (
-          <div className="flex items-center justify-center py-20">
-            <Spin indicator={<LoadingOutlined style={{ fontSize: 48 }} spin />} />
-          </div>
-        ) : !selectedDiagnosisId ? (
-          <Empty description="请先完成诊断" />
-        ) : (
-          <Table
-            columns={columns}
-            dataSource={trackingsData?.items || []}
-            rowKey="tracking_id"
-            pagination={{
-              current: currentPage,
-              pageSize: pageSize,
-              total: trackingsData?.total || 0,
-              showTotal: (total) => `共 ${total} 条记录`,
-              showSizeChanger: true,
-              pageSizeOptions: ['10', '20', '50', '100'],
-              onChange: (page, size) => {
-                setCurrentPage(page);
-                if (size !== pageSize) {
-                  setPageSize(size);
-                  setCurrentPage(1); // 改变每页条数时重置到第一页
-                }
-              },
-              onShowSizeChange: (current, size) => {
-                setPageSize(size);
-                setCurrentPage(1); // 改变每页条数时重置到第一页
-              },
-            }}
-            locale={{
-              emptyText: <Empty description="该次诊断下暂无追踪记录" />,
-            }}
-          />
-        )}
-      </Card>
+          <Card title="追踪记录">
+            <Table
+              rowKey={(r) => `${r.tracking_id}-${r.snapshot_id}`}
+              columns={columns}
+              dataSource={snapshotRows}
+              loading={snapshotQueries.some((q) => q.isLoading)}
+              pagination={{ pageSize: 10, showSizeChanger: false }}
+              locale={{ emptyText: <Empty description="暂无采集记录" /> }}
+            />
+          </Card>
+        </>
+      )}
     </div>
   );
 }

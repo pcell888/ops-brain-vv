@@ -95,19 +95,19 @@ def start_scheduler():
         replace_existing=True,
     )
     scheduler.add_job(
-        check_pending_reviews,
-        trigger=CronTrigger(hour=3, minute=0),
-        id="effect_review_checker",
-        name="每日效果追踪复盘检查",
-        replace_existing=True,
-    )
-    scheduler.add_job(
         collect_effect_snapshots,
-        trigger=CronTrigger(hour=4, minute=0),
+        trigger=CronTrigger(hour=3, minute=0),
         id="snapshot_collector",
         name="每日效果追踪快照采集",
         replace_existing=True,
     )
+    scheduler.add_job(
+        check_pending_reviews,
+        trigger=CronTrigger(hour=4, minute=0),
+        id="effect_review_checker",
+        name="每日效果追踪复盘检查",
+        replace_existing=True,
+    )
     scheduler.start()
-    logger.info("定时任务调度器已启动 (周度诊断: 每周一2:00, 任务检查: 每日9:00, 复盘检查: 每日3:00, 快照采集: 每日4:00)")
+    logger.info("定时任务调度器已启动 (周度诊断: 每周一2:00, 任务检查: 每日9:00, 快照采集: 每日3:00, 复盘检查: 每日4:00)")
     return scheduler

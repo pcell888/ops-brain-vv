@@ -66,6 +66,14 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
                         })
                         continue
 
+                    existing = (state.values.get("adopted_plan_ids") or [])[:1]
+                    if existing and existing[0] != pid:
+                        await manager.send_progress(thread_id, {
+                            "type": "error",
+                            "message": "已有方案被采纳，不可再采纳其他方案",
+                        })
+                        continue
+
                     await app.aupdate_state(config, {"adopted_plan_ids": [pid]})
                     await manager.send_progress(thread_id, {
                         "type": "adoption_received",

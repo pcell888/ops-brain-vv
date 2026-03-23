@@ -256,6 +256,15 @@ class BizAPIClient:
         params: dict | None = None,
         json_data: dict | None = None,
     ) -> dict[str, Any]:
+        if method in ("POST", "PUT") and json_data is not None:
+            logger.info(
+                "mcp_servers push tenant=%s %s %s json=%s",
+                tenant_id,
+                method,
+                path,
+                json.dumps(json_data, ensure_ascii=False),
+            )
+
         async def _do():
             client = await self.router.get_client(tenant_id)
             return await self._request(client, method, path, params=params, json_data=json_data)
@@ -275,8 +284,6 @@ class BizAPIClient:
         json_data: dict | None = None,
     ) -> dict[str, Any]:
         url = path
-        if method in ("POST", "PUT") and json_data is not None:
-            logger.info("wlwq %s %s body: %s", method, path, json.dumps(json_data, ensure_ascii=False))
         try:
             resp = await client.request(method, url, params=params, json=json_data)
             resp.raise_for_status()

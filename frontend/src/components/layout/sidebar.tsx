@@ -8,6 +8,7 @@ import {
   BulbOutlined,
   RocketOutlined,
   LineChartOutlined,
+  BookOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
 
@@ -62,6 +63,11 @@ const menuItems = [
         key: '/tracking',
         icon: <LineChartOutlined />,
         label: '效果追踪',
+      },
+      {
+        key: '/tracking/cases',
+        icon: <BookOutlined />,
+        label: '案例库',
       },
     ],
   },

@@ -124,6 +124,17 @@ async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) 
     """通过 stdio 调用 MCP Server 的 Tool。"""
     session = await _get_session(server_name)
 
+    # 业务 HTTP 实际在 MCP 子进程内发起，子进程 logger 不会进主服务日志；此处主进程打一条便于排查
+    try:
+        logger.info(
+            "mcp_call %s.%s json=%s",
+            server_name,
+            tool_name,
+            json.dumps(arguments, ensure_ascii=False),
+        )
+    except (TypeError, ValueError):
+        logger.info("mcp_call %s.%s args=%r", server_name, tool_name, arguments)
+
     try:
         result = await asyncio.wait_for(
             session.call_tool(tool_name, arguments),

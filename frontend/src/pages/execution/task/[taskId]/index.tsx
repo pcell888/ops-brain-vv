@@ -3,7 +3,7 @@ import {
   Card, Button, Empty, Spin, Descriptions, Tag, App,
 } from 'antd';
 import {
-  ArrowLeftOutlined, LoadingOutlined, LinkOutlined, RocketOutlined,
+  ArrowLeftOutlined, LoadingOutlined, RocketOutlined,
 } from '@ant-design/icons';
 import { useTaskDetail } from '@/lib/hooks';
 import dayjs from 'dayjs';
@@ -56,15 +56,6 @@ export default function ExecutionTaskDetailPage() {
             任务详情
           </h1>
         </div>
-        {data.plan_id && (
-          <Button
-            type="link"
-            icon={<LinkOutlined />}
-            onClick={() => navigate(`/execution/${encodeURIComponent(data.plan_id!)}#execution-task-list`)}
-          >
-            所属计划
-          </Button>
-        )}
       </div>
 
       <Card title="派发信息" className="border-gray-700">

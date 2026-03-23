@@ -330,7 +330,10 @@ async def get_task_detail(task_id: str):
 
 @router.get("/plans/{plan_id}", summary="执行计划摘要(兼容)")
 async def get_plan_summary(plan_id: str):
-    """兼容前端 GET /execution/plans/{planId}。"""
+    """兼容前端 GET /execution/plans/{planId}。
+
+    计划状态由 ai_exec_task 行聚合得到；采纳方案后任务由 execute 节点自动创建/派发，无单独「启动计划」步骤。
+    """
     try:
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -427,53 +430,6 @@ async def list_plan_tasks(plan_id: str, status: str | None = Query(default=None)
     except Exception as e:
         logger.error("查询任务列表失败: %s", e)
         return {"items": [], "total": 0}
-
-
-@router.post("/plans/{plan_id}/start", summary="启动执行计划(兼容)")
-async def start_plan(plan_id: str):
-    """将计划下所有 pending 任务标记为 running。"""
-    try:
-        async with await AsyncConnection.connect(_conninfo()) as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "UPDATE ai_exec_task SET status = 'running' WHERE plan_id = %s AND status = 'pending'",
-                    (plan_id,),
-                )
-            await conn.commit()
-        return {"status": "ok", "message": "计划已启动"}
-    except Exception as e:
-        logger.error("启动计划失败: %s", e)
-        raise HTTPException(status_code=500, detail="启动失败") from e
-
-
-@router.post("/plans/{plan_id}/pause", summary="暂停执行计划(兼容)")
-async def pause_plan(plan_id: str):
-    try:
-        async with await AsyncConnection.connect(_conninfo()) as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "UPDATE ai_exec_task SET status = 'pending' WHERE plan_id = %s AND status = 'running'",
-                    (plan_id,),
-                )
-            await conn.commit()
-        return {"status": "ok", "message": "计划已暂停"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="暂停失败") from e
-
-
-@router.post("/plans/{plan_id}/resume", summary="恢复执行计划(兼容)")
-async def resume_plan(plan_id: str):
-    try:
-        async with await AsyncConnection.connect(_conninfo()) as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "UPDATE ai_exec_task SET status = 'running' WHERE plan_id = %s AND status = 'pending'",
-                    (plan_id,),
-                )
-            await conn.commit()
-        return {"status": "ok", "message": "计划已恢复"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="恢复失败") from e
 
 
 @router.post("/tasks/{task_id}/complete", summary="完成任务(兼容)")

@@ -1,7 +1,12 @@
 from functools import lru_cache
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 与 CWD 无关：始终尝试加载仓库根目录 .env（避免从子目录启动时仍用默认 effect_track_delay_days=7）
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_ENV_FILE = _REPO_ROOT / ".env"
 
 # 诊断等业务时间统一按中国时区落库（ISO 8601 带 +08:00），前端可直接展示无需换算
 CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -35,7 +40,11 @@ class Settings(BaseSettings):
     log_dir: str = "logs"
     log_level: str = "DEBUG"  # DEBUG / INFO / WARNING / ERROR
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE if _ENV_FILE.is_file() else Path(".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 @lru_cache

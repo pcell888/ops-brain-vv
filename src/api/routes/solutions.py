@@ -148,6 +148,10 @@ async def adopt_plan(thread_id: str, request: AdoptPlanRequest):
     if request.plan_id not in all_plan_ids:
         raise HTTPException(status_code=400, detail=f"无效的 plan_id: {request.plan_id}")
 
+    existing = (state.values.get("adopted_plan_ids") or [])[:1]
+    if existing and existing[0] != request.plan_id:
+        raise HTTPException(400, detail="已有方案被采纳，不可再采纳其他方案")
+
     await app.aupdate_state(config, {"adopted_plan_ids": [request.plan_id]})
 
     task = asyncio.create_task(_resume_after_adoption(thread_id, config))

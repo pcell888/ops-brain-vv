@@ -144,11 +144,34 @@ async def compat_diagnosis_list(
         error_message = None
         health_score_val = None
         anomaly_count = None
+        report_ready = False
 
         if report:
             health_score_val = report.get("health_score")
             anomalies = report.get("anomalies") or []
             anomaly_count = len(anomalies)
+            report_ready = True
+            # 报告在 diagnose 节点已落库，但 LangGraph 任务可能仍在执行 generate_solutions
+            task = running_tasks.get(thread_id)
+            if task and not task.done():
+                status = "running"
+                progress = 0
+                message = "诊断执行中..."
+                try:
+                    app = await get_graph_app()
+                    config = {"configurable": {"thread_id": thread_id}}
+                    state = await app.aget_state(config)
+                    values = state.values if state and state.values else {}
+                    msgs = values.get("progress_messages") or []
+                    if msgs:
+                        last = msgs[-1] if isinstance(msgs[-1], dict) else {}
+                        message = str(last.get("content", "")) or message
+                        try:
+                            progress = int(float(last.get("percent", 0)))
+                        except (TypeError, ValueError):
+                            pass
+                except Exception:
+                    pass
         else:
             task = running_tasks.get(thread_id)
             is_task_running = task and not task.done()
@@ -160,6 +183,7 @@ async def compat_diagnosis_list(
                 values = state.values if state and state.values else {}
                 if values.get("diagnosis_report"):
                     report = values["diagnosis_report"]
+                    report_ready = True
                     health_score_val = report.get("health_score")
                     anomaly_count = len(report.get("anomalies") or [])
                 elif is_task_running or state.next:
@@ -200,6 +224,7 @@ async def compat_diagnosis_list(
             "error_message": error_message,
             "health_score": health_score_val,
             "anomaly_count": anomaly_count,
+            "report_ready": report_ready,
             "trigger_type": row.get("trigger_type", "manual"),
             "created_at": row["created_at"].isoformat() if hasattr(row.get("created_at"), "isoformat") else row.get("created_at"),
         })
@@ -444,6 +469,33 @@ async def compat_diagnosis_status(diagnosis_id: str):
     """兼容前端 GET /diagnosis/status/{diagnosisId}。"""
     report = await get_report_from_db(diagnosis_id)
     if report:
+        task = running_tasks.get(diagnosis_id)
+        if task and not task.done():
+            progress = 0
+            msg = "诊断执行中..."
+            try:
+                app = await get_graph_app()
+                config = {"configurable": {"thread_id": diagnosis_id}}
+                state = await app.aget_state(config)
+                values = state.values if state and state.values else {}
+                msgs = values.get("progress_messages") or []
+                if msgs:
+                    last = msgs[-1] if isinstance(msgs[-1], dict) else {}
+                    msg = str(last.get("content", "")) or msg
+                    try:
+                        progress = int(float(last.get("percent", 0)))
+                    except (TypeError, ValueError):
+                        pass
+            except Exception:
+                pass
+            hs = report.get("health_score", 0)
+            return {
+                "diagnosis_id": diagnosis_id,
+                "status": "running",
+                "progress": progress,
+                "message": msg,
+                "health_score": hs if not isinstance(hs, dict) else hs.get("total_score", 0),
+            }
         hs = report.get("health_score", 0)
         return {
             "diagnosis_id": diagnosis_id,

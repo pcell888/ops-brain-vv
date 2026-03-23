@@ -167,6 +167,45 @@ def load_push_rules() -> dict[str, dict]:
 INDICATOR_PUSH_RULES: dict[str, dict] = load_push_rules()
 
 
+def enrich_task_spec_with_default_steps(spec: dict) -> dict:
+    """JSON 规则可能省略 implementation_steps，用代码默认表补齐。"""
+    ind = spec.get("indicator_code")
+    if not ind:
+        return spec
+    impl = spec.get("implementation_steps")
+    if isinstance(impl, list) and len(impl) >= 2:
+        return spec
+    default = DEFAULT_PUSH_RULES.get(ind) or {}
+    for dt in default.get("tasks") or []:
+        if dt.get("task_name") == spec.get("task_name"):
+            merged = dict(dt)
+            merged.update(spec)
+            return merged
+    return spec
+
+
+def collect_mandatory_task_specs(anomalies: list[object]) -> list[dict]:
+    """按异常指标去重后，收集 5.2.3 规则中 tasks[] 条目（含 indicator_code），供方案生成保底。"""
+    seen_ind: set[str] = set()
+    out: list[dict] = []
+    for a in anomalies:
+        if not isinstance(a, dict):
+            continue
+        ind = a.get("indicator_code")
+        if not ind or not isinstance(ind, str) or ind in seen_ind:
+            continue
+        seen_ind.add(ind)
+        rule = INDICATOR_PUSH_RULES.get(ind)
+        if not rule:
+            continue
+        for t in rule.get("tasks") or []:
+            if not isinstance(t, dict):
+                continue
+            item = {"indicator_code": ind, **t}
+            out.append(enrich_task_spec_with_default_steps(item))
+    return out
+
+
 def format_indicator_rules_for_prompt(anomalies: list[object]) -> str:
     """将当前异常涉及的 5.2.3 规则片段格式化为方案生成 Prompt（按 indicator_code 去重）。"""
     if not anomalies:

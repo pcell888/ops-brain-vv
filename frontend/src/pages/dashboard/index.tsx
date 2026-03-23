@@ -8,7 +8,7 @@ import {
   SyncOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { HealthScoreRing } from '@/components/diagnosis/health-score-ring';
 import { RadarChart } from '@/components/diagnosis/radar-chart';
 import { MetricCard, type MetricDetail } from '@/components/diagnosis/metric-card';
@@ -161,6 +161,8 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
   const { currentEnterprise } = useAppStore();
   const enterpriseId = currentEnterprise?.id || null;
+  const { connected: wsConnected } = useWebSocket(enterpriseId);
+  const { tasks: diagnosisTasks } = useDiagnosisTaskStatus(enterpriseId);
 
   const { data: enterpriseDetail } = useQuery({
     queryKey: ['enterprise', enterpriseId],
@@ -244,45 +246,77 @@ export default function DashboardPage() {
   // 判断是否所有维度都被禁用（维度已加载但无启用的维度）
   const allDimensionsDisabled = !isDimensionsLoading && allDimensions.length > 0 && enabledDimensionNames.size === 0;
 
-  // WebSocket 连接
-  useWebSocket(enterpriseId);
-  
   const [isCancelling, setCancelling] = useState(false);
-  const lastFailedRef = useRef<{ taskId: string; t: number }>({ taskId: '', t: 0 });
-  const { tasks } = useDiagnosisTaskStatus(enterpriseId, {
-    onCompleted: () => {
-      queryClient.invalidateQueries({ queryKey: ['diagnosis', 'list', enterpriseId] });
-      queryClient.invalidateQueries({ queryKey: ['diagnosis', 'report'] });
-      message.success('诊断完成！数据已更新');
-    },
-    onFailed: (taskId, error) => {
-      if (error === '已取消') return;
-      const now = Date.now();
-      if (lastFailedRef.current.taskId === taskId && now - lastFailedRef.current.t < 3000) return;
-      lastFailedRef.current = { taskId, t: now };
-      refetchList().then(() => {
-        const data = queryClient.getQueryData<{ items?: Array<{ message?: string }> }>(['diagnosis', 'list', enterpriseId, 0, 1]);
-        const latestMessage = data?.items?.[0]?.message ?? '';
-        if (latestMessage.includes('已取消')) return;
-        message.error(`诊断失败: ${error || '未知错误'}`);
-      });
-    },
-    onCancelled: () => {
-      setCancelling(false);
-      queryClient.refetchQueries({ queryKey: ['diagnosis', 'list', enterpriseId, 0, 1] });
-      message.success('已取消诊断');
-    },
+  const prevStatusRef = useRef<{ diagnosisId: string | null; status?: string | null }>({
+    diagnosisId: null,
+    status: null,
   });
 
-  // 获取当前正在执行的诊断任务（优先使用 WebSocket 实时数据，否则使用列表中的初始状态）
+  // 改为轮询驱动：基于 latestDiagnosisStatus 的状态流转做提示
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    const currId = latestDiagnosisId ?? null;
+    const currStatus = latestDiagnosisStatus ?? null;
+    const currMsg = latestDiagnosisMessage || '';
+
+    if (
+      prev.diagnosisId &&
+      prev.diagnosisId === currId &&
+      (prev.status === 'running' || prev.status === 'pending') &&
+      currStatus &&
+      currStatus !== prev.status
+    ) {
+      if (currStatus === 'completed') {
+        setCancelling(false);
+        queryClient.invalidateQueries({ queryKey: ['diagnosis', 'list', enterpriseId] });
+        queryClient.invalidateQueries({ queryKey: ['diagnosis', 'report'] });
+        message.success('诊断完成！数据已更新');
+      } else if (currStatus === 'failed') {
+        setCancelling(false);
+        if (currMsg.includes('已取消')) {
+          message.success('已取消诊断');
+        } else {
+          message.error(`诊断失败: ${currMsg || '未知错误'}`);
+        }
+      }
+    }
+
+    prevStatusRef.current = { diagnosisId: currId, status: currStatus };
+  }, [
+    latestDiagnosisId,
+    latestDiagnosisStatus,
+    latestDiagnosisMessage,
+    enterpriseId,
+    queryClient,
+    message,
+  ]);
+
+  // 获取当前正在执行的诊断任务（优先 WebSocket 实时状态，轮询结果兜底）
   const runningTask = useMemo(() => {
-    // 先从 WebSocket 任务中查找（仅当前企业）
-    const wsTask = Object.values(tasks).find(
-      t => (t.status === 'running' || t.status === 'pending') && t.enterprise_id === enterpriseId
+    const wsTaskForLatest = latestDiagnosisId ? diagnosisTasks[latestDiagnosisId] : undefined;
+    if (wsTaskForLatest && (wsTaskForLatest.status === 'running' || wsTaskForLatest.status === 'pending')) {
+      return {
+        task_id: wsTaskForLatest.task_id,
+        status: wsTaskForLatest.status,
+        progress: wsTaskForLatest.progress || 0,
+        message: wsTaskForLatest.message || '处理中...',
+      };
+    }
+
+    const wsRunningTasks = Object.values(diagnosisTasks).filter(
+      (t) => t.status === 'running' || t.status === 'pending'
     );
-    if (wsTask) return wsTask;
-    
-    // 如果没有 WebSocket 数据，使用列表中的状态（进入页面时）
+    if (wsRunningTasks.length > 0) {
+      const wsNewest = wsRunningTasks.sort((a, b) => (b.progress || 0) - (a.progress || 0))[0];
+      return {
+        task_id: wsNewest.task_id,
+        status: wsNewest.status,
+        progress: wsNewest.progress || 0,
+        message: wsNewest.message || '处理中...',
+      };
+    }
+
+    // 兜底：使用轮询得到的最新状态
     if (latestDiagnosisStatus === 'running' || latestDiagnosisStatus === 'pending') {
       return {
         task_id: latestDiagnosisId || '',
@@ -293,7 +327,7 @@ export default function DashboardPage() {
     }
     
     return null;
-  }, [tasks, enterpriseId, latestDiagnosisStatus, latestDiagnosisProgress, latestDiagnosisMessage, latestDiagnosisId]);
+  }, [diagnosisTasks, latestDiagnosisStatus, latestDiagnosisProgress, latestDiagnosisMessage, latestDiagnosisId]);
 
   const isDiagnosing = !!runningTask;
   
@@ -577,6 +611,11 @@ export default function DashboardPage() {
               <p className="text-gray-400 text-sm mt-0.5 max-w-md truncate">
                 {isCancelling ? '后台正在停止任务，请稍候' : (runningTask?.message || '处理中...')}
               </p>
+              {!isCancelling && (
+                <p className="text-gray-500 text-xs mt-1">
+                  {wsConnected ? '实时通道已连接' : '实时通道未连接，使用轮询兜底'}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">

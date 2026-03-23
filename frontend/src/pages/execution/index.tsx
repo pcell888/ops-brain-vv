@@ -1,10 +1,10 @@
 import { useNavigate } from 'react-router-dom';
 import {
-  Card, Table, Button, Empty, Spin, Row, Col, Alert,
+  Card, Table, Button, Empty, Spin,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  RocketOutlined, LoadingOutlined, LinkOutlined, EyeOutlined,
+  RocketOutlined, LoadingOutlined, EyeOutlined,
 } from '@ant-design/icons';
 import {
   useDiagnosisSelection,
@@ -26,7 +26,6 @@ export default function ExecutionPage() {
   const { data, isLoading } = useExecutionTaskList(enterpriseId, selectedDiagnosisId);
   const tasks = data?.items || [];
   const pageLoading = listLoading || isLoading;
-  const totalDispatched = data?.total ?? tasks.length;
 
   const columns: ColumnsType<ExecutionTask> = [
     {
@@ -77,34 +76,18 @@ export default function ExecutionPage() {
     {
       title: '操作',
       key: 'action',
-      width: 160,
-      render: (_, record) => {
-        const pid = record.plan_id;
-        return (
-          <div className="flex flex-wrap gap-1 items-center">
-            <Button
-              type="link"
-              size="small"
-              icon={<EyeOutlined />}
-              className="!px-1"
-              onClick={() => navigate(`/execution/task/${encodeURIComponent(record.id)}`)}
-            >
-              详情
-            </Button>
-            {pid && (
-              <Button
-                type="link"
-                size="small"
-                icon={<LinkOutlined />}
-                className="!px-1"
-                onClick={() => navigate(`/execution/${encodeURIComponent(pid)}#execution-task-list`)}
-              >
-                计划
-              </Button>
-            )}
-          </div>
-        );
-      },
+      width: 100,
+      render: (_, record) => (
+        <Button
+          type="link"
+          size="small"
+          icon={<EyeOutlined />}
+          className="!px-1"
+          onClick={() => navigate(`/execution/task/${encodeURIComponent(record.id)}`)}
+        >
+          详情
+        </Button>
+      ),
     },
   ];
 
@@ -136,22 +119,6 @@ export default function ExecutionPage() {
           />
         )}
       </div>
-
-      <Alert
-        type="info"
-        showIcon
-        className="!bg-gray-800/80 !border-gray-600"
-        message="派发状态表示诊断侧已落库并发起推送；业务系统内办理进度请在业务端查看。"
-      />
-
-      <Row gutter={16}>
-        <Col xs={24} sm={12} lg={8}>
-          <Card className="text-center">
-            <div className="text-3xl font-bold text-blue-400">{totalDispatched}</div>
-            <div className="text-gray-400 text-sm mt-1">已推送任务条数</div>
-          </Card>
-        </Col>
-      </Row>
 
       <Card title="任务列表">
         {pageLoading ? (

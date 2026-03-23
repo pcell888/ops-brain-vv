@@ -1,13 +1,12 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Tag, Button, Empty, Spin, Progress, Row, Col,
-  Descriptions, Statistic, Divider, Timeline,
+  Descriptions, Timeline, Table,
 } from 'antd';
 import {
   ArrowLeftOutlined,
   FileTextOutlined,
   TrophyOutlined,
-  ThunderboltOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
   ExperimentOutlined,
@@ -18,14 +17,14 @@ import {
   BulbOutlined,
   WarningOutlined,
   StarOutlined,
-  RiseOutlined,
-  FallOutlined,
   MinusOutlined,
   RocketOutlined,
   DashboardOutlined,
 } from '@ant-design/icons';
 import { useTrackingReport, useDimensionConfig } from '@/lib/hooks';
 import { useAppStore } from '@/stores/app-store';
+import type { ColumnsType } from 'antd/es/table';
+import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import dayjs from 'dayjs';
@@ -58,6 +57,17 @@ interface MetricEffect {
   status: string;
 }
 
+interface MetricRow {
+  key: string;
+  metricName: string;
+  baselineValue: number;
+  currentValue: number;
+  changePct: number;
+  statusText: string;
+  statusColor: string;
+  status: string;
+}
+
 interface ExecutionSummary {
   completion_rate?: number;
   planned_duration?: number;
@@ -75,7 +85,8 @@ interface ReportData {
   title: string;
   executive_summary: string;
   summary?: string;
-  overall_score: number;
+  overall_score?: number;
+  final_score?: number;
   sections: Array<{ title: string; content: string; charts?: Array<Record<string, unknown>> }>;
   recommendations: string[];
   created_at: string;
@@ -100,9 +111,51 @@ export default function TrackingReportPage() {
     data: ReportData | undefined;
     isLoading: boolean;
   };
-  
+
   // 获取指标显示名称映射
   const { getMetricDisplayName } = useDimensionConfig(enterpriseId);
+  const [showAbnormalOnly, setShowAbnormalOnly] = React.useState(false);
+
+  const score = Number(reportData?.overall_score ?? reportData?.final_score ?? 0);
+  const scoreLevel = getScoreLevel(score);
+  const execSummary = reportData?.execution_summary || {};
+
+  // 指标效果统计
+  const metrics = reportData?.metric_effects || [];
+  const improvedCount = metrics.filter(
+    (m) => m.status === 'exceeds_expectation' || m.status === 'meets_expectation'
+  ).length;
+  const belowCount = metrics.filter(
+    (m) => m.status === 'below_expectation' || m.status === 'negative'
+  ).length;
+  const unchangedCount = Math.max(0, metrics.length - improvedCount - belowCount);
+  const avgChangePct = metrics.length > 0
+    ? metrics.reduce((sum, m) => sum + Number(m.change_percentage ?? 0), 0) / metrics.length
+    : 0;
+
+  const metricRows = React.useMemo<MetricRow[]>(
+    () => metrics.map((m, idx) => {
+      const cfg = effectStatusConfig[m.status] || effectStatusConfig.no_change;
+      return {
+        key: `${m.metric_name}-${idx}`,
+        metricName: getMetricDisplayName(m.metric_name),
+        baselineValue: Number(m.baseline_value ?? 0),
+        currentValue: Number(m.current_value ?? 0),
+        changePct: Number(m.change_percentage ?? 0),
+        statusText: cfg.text,
+        statusColor: cfg.color,
+        status: m.status,
+      };
+    }),
+    [metrics, getMetricDisplayName]
+  );
+
+  const tableData = React.useMemo(
+    () => (showAbnormalOnly
+      ? metricRows.filter((row) => row.status === 'below_expectation' || row.status === 'negative')
+      : metricRows),
+    [metricRows, showAbnormalOnly]
+  );
 
   if (isLoading) {
     return (
@@ -125,21 +178,64 @@ export default function TrackingReportPage() {
     );
   }
 
-  const score = reportData.overall_score;
-  const scoreLevel = getScoreLevel(score);
-  const execSummary = reportData.execution_summary || {};
-  const taskStats = execSummary.task_stats || {};
-  const totalTasks = Object.values(taskStats).reduce((a, b) => a + b, 0);
-  const completedTasks = taskStats.completed || 0;
-
-  // 指标效果统计
-  const metrics = reportData.metric_effects || [];
-  const improvedCount = metrics.filter(
-    (m) => m.status === 'exceeds_expectation' || m.status === 'meets_expectation'
-  ).length;
-  const belowCount = metrics.filter(
-    (m) => m.status === 'below_expectation' || m.status === 'negative'
-  ).length;
+  const metricColumns: ColumnsType<MetricRow> = [
+    {
+      title: '指标',
+      dataIndex: 'metricName',
+      key: 'metricName',
+      ellipsis: true,
+      render: (value: string) => <span className="text-gray-100 font-medium">{value}</span>,
+    },
+    {
+      title: '基线值',
+      dataIndex: 'baselineValue',
+      key: 'baselineValue',
+      align: 'right',
+      render: (value: number) => <span className="text-gray-300">{value.toFixed(1)}</span>,
+    },
+    {
+      title: '当前值',
+      dataIndex: 'currentValue',
+      key: 'currentValue',
+      align: 'right',
+      render: (value: number) => <span className="text-white font-semibold">{value.toFixed(1)}</span>,
+    },
+    {
+      title: '变化率',
+      dataIndex: 'changePct',
+      key: 'changePct',
+      align: 'right',
+      defaultSortOrder: 'descend',
+      sorter: (a, b) => b.changePct - a.changePct,
+      render: (value: number) => {
+        const isUp = value > 0;
+        const isDown = value < 0;
+        return (
+          <span className={`font-semibold ${isUp ? 'text-emerald-400' : isDown ? 'text-rose-400' : 'text-gray-400'}`}>
+            {isUp ? '+' : ''}{value.toFixed(1)}%
+          </span>
+        );
+      },
+    },
+    {
+      title: '状态',
+      dataIndex: 'statusText',
+      key: 'statusText',
+      align: 'center',
+      render: (_: string, row: MetricRow) => (
+        <Tag
+          style={{
+            color: row.statusColor,
+            borderColor: `${row.statusColor}66`,
+            background: `${row.statusColor}22`,
+          }}
+          className="!border !font-medium"
+        >
+          {row.statusText}
+        </Tag>
+      ),
+    },
+  ];
 
   return (
     <div className="space-y-6 max-w-[1400px] mx-auto px-4 pb-8">
@@ -148,7 +244,7 @@ export default function TrackingReportPage() {
         <div className="flex items-center gap-4">
           <Button 
             icon={<ArrowLeftOutlined />} 
-            onClick={() => navigate(`/tracking/${trackingId}`)}
+            onClick={() => navigate('/tracking')}
             className="!border-gray-600 hover:!border-gray-500"
           >
             返回追踪
@@ -220,7 +316,7 @@ export default function TrackingReportPage() {
               </p>
             </div>
             <Row gutter={20}>
-              <Col span={6}>
+              <Col span={8}>
                 <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl p-5 border border-gray-700/40 hover:border-blue-500/50 transition-all duration-300 hover:shadow-lg hover:shadow-blue-500/10 backdrop-blur-sm">
                   <div className="flex items-center gap-2 text-gray-400 text-xs mb-3 font-medium">
                     <ClockCircleOutlined className="text-blue-400" /> 追踪时长
@@ -230,7 +326,7 @@ export default function TrackingReportPage() {
                   </div>
                 </div>
               </Col>
-              <Col span={6}>
+              <Col span={8}>
                 <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl p-5 border border-gray-700/40 hover:border-amber-500/50 transition-all duration-300 hover:shadow-lg hover:shadow-amber-500/10 backdrop-blur-sm">
                   <div className="flex items-center gap-2 text-gray-400 text-xs mb-3 font-medium">
                     <CameraOutlined className="text-amber-400" /> 快照数量
@@ -240,17 +336,7 @@ export default function TrackingReportPage() {
                   </div>
                 </div>
               </Col>
-              <Col span={6}>
-                <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl p-5 border border-gray-700/40 hover:border-emerald-500/50 transition-all duration-300 hover:shadow-lg hover:shadow-emerald-500/10 backdrop-blur-sm">
-                  <div className="flex items-center gap-2 text-gray-400 text-xs mb-3 font-medium">
-                    <CheckCircleOutlined className="text-emerald-400" /> 任务完成
-                  </div>
-                  <div className="text-2xl font-bold text-emerald-400">
-                    {execSummary.completion_rate?.toFixed(0) || 0}<span className="text-sm text-gray-500 ml-1 font-normal">%</span>
-                  </div>
-                </div>
-              </Col>
-              <Col span={6}>
+              <Col span={8}>
                 <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl p-5 border border-gray-700/40 hover:border-cyan-500/50 transition-all duration-300 hover:shadow-lg hover:shadow-cyan-500/10 backdrop-blur-sm">
                   <div className="flex items-center gap-2 text-gray-400 text-xs mb-3 font-medium">
                     <BarChartOutlined className="text-cyan-400" /> 指标达标
@@ -263,23 +349,6 @@ export default function TrackingReportPage() {
             </Row>
           </Col>
         </Row>
-      </Card>
-
-      {/* ========== 执行摘要 ========== */}
-      <Card
-        className="!bg-gray-800/50 !border-gray-700/50 shadow-lg"
-        title={
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500/20 to-orange-500/20 flex items-center justify-center">
-              <ThunderboltOutlined className="text-amber-400 text-lg" />
-            </div>
-            <span className="text-lg font-semibold">执行摘要</span>
-          </div>
-        }
-      >
-        <div className="text-gray-300 text-base whitespace-pre-line leading-relaxed bg-gradient-to-br from-gray-800/40 to-gray-900/40 rounded-xl p-6 border border-gray-700/30 backdrop-blur-sm">
-          {reportData.executive_summary || '暂无摘要'}
-        </div>
       </Card>
 
       {/* ========== 项目基本信息 ========== */}
@@ -335,221 +404,72 @@ export default function TrackingReportPage() {
         </Descriptions>
       </Card>
 
-      {/* ========== 指标效果分析 + 任务执行 ========== */}
-      <Row gutter={16}>
-        {/* 指标对比 */}
-        <Col span={14}>
-          <Card
-            className="!bg-gray-800/50 !border-gray-700/50 shadow-lg h-full"
-            title={
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-500/20 flex items-center justify-center">
-                  <ExperimentOutlined className="text-cyan-400 text-lg" />
-                </div>
-                <span className="text-lg font-semibold">指标效果对比</span>
-                <Tag className="ml-2 !bg-cyan-500/10 !border-cyan-500/30 !text-cyan-400">{metrics.length} 项指标</Tag>
-              </div>
-            }
-          >
-            {metrics.length > 0 ? (
-              <div className="space-y-3">
-                {metrics.map((m, idx) => {
-                  const cfg = effectStatusConfig[m.status] || effectStatusConfig.no_change;
-                  const isUp = m.actual_change > 0;
-                  const isDown = m.actual_change < 0;
-                  return (
-                    <div
-                      key={idx}
-                      className="p-5 bg-gradient-to-br from-gray-800/60 to-gray-900/60 rounded-xl border border-gray-700/40 hover:border-gray-600/60 transition-all duration-300 hover:shadow-lg hover:shadow-cyan-500/5 backdrop-blur-sm"
-                    >
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-3">
-                          <div 
-                            className="w-10 h-10 rounded-lg flex items-center justify-center"
-                            style={{ 
-                              background: cfg.color + '15',
-                              border: `1px solid ${cfg.color}30`
-                            }}
-                          >
-                            <span style={{ color: cfg.color, fontSize: '18px' }}>{cfg.icon}</span>
-                          </div>
-                          <div>
-                            <span className="text-white font-semibold text-base block">{getMetricDisplayName(m.metric_name)}</span>
-                            <Tag
-                              style={{
-                                color: cfg.color,
-                                borderColor: cfg.color + '40',
-                                background: cfg.color + '15',
-                              }}
-                              className="text-xs mt-1 !border !font-medium"
-                            >
-                              {cfg.text}
-                            </Tag>
-                          </div>
-                        </div>
-                        <div
-                          className={`font-bold text-base flex items-center gap-1.5 px-3 py-1.5 rounded-lg ${
-                            isUp ? 'text-emerald-400 bg-emerald-500/10' : isDown ? 'text-rose-400 bg-rose-500/10' : 'text-gray-400 bg-gray-500/10'
-                          }`}
-                        >
-                          {isUp ? <RiseOutlined /> : isDown ? <FallOutlined /> : <MinusOutlined />}
-                          {isUp ? '+' : ''}{m.change_percentage.toFixed(1)}%
-                        </div>
-                      </div>
-                      {/* 数值条 */}
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-3">
-                          <div className="text-xs text-gray-400 w-16 text-right font-medium">基线</div>
-                          <div className="flex-1 relative h-8 bg-gray-700/50 rounded-lg overflow-hidden border border-gray-600/30">
-                            <div
-                              className="absolute top-0 left-0 h-full rounded-lg bg-gradient-to-r from-gray-600/80 to-gray-500/80 transition-all duration-500"
-                              style={{
-                                width: `${Math.min(100, (m.baseline_value / Math.max(m.baseline_value, m.current_value) * 100))}%`,
-                              }}
-                            />
-                            <span className="absolute inset-0 flex items-center justify-center text-sm text-gray-200 font-semibold">
-                              {m.baseline_value.toFixed(1)}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className="text-xs text-gray-400 w-16 text-right font-medium">当前</div>
-                          <div className="flex-1 relative h-8 bg-gray-700/50 rounded-lg overflow-hidden border border-gray-600/30">
-                            <div
-                              className="absolute top-0 left-0 h-full rounded-lg transition-all duration-500 shadow-lg"
-                              style={{
-                                width: `${Math.min(100, (m.current_value / Math.max(m.baseline_value, m.current_value) * 100))}%`,
-                                background: `linear-gradient(to right, ${cfg.color}aa, ${cfg.color})`,
-                                boxShadow: `0 0 10px ${cfg.color}40`,
-                              }}
-                            />
-                            <span className="absolute inset-0 flex items-center justify-center text-sm text-white font-bold">
-                              {m.current_value.toFixed(1)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <Empty description="暂无指标数据" className="py-8" />
-            )}
-          </Card>
-        </Col>
-
-        {/* 任务执行情况 */}
-        <Col span={10}>
-          <div className="space-y-4 h-full flex flex-col">
-            {/* 任务统计 */}
-            <Card
-              className="!bg-gray-800/50 !border-gray-700/50 shadow-lg flex-1"
-              title={
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-green-500/20 to-emerald-500/20 flex items-center justify-center">
-                    <TeamOutlined className="text-green-400 text-lg" />
-                  </div>
-                  <span className="text-lg font-semibold">任务执行</span>
-                </div>
-              }
-            >
-              <div className="text-center mb-4">
-                <Progress
-                  type="circle"
-                  percent={execSummary.completion_rate || 0}
-                  size={100}
-                  strokeColor="#10b981"
-                  trailColor="rgba(255,255,255,0.06)"
-                  format={(pct) => (
-                    <div>
-                      <div className="text-xl font-bold text-emerald-400">{pct?.toFixed(0)}%</div>
-                      <div className="text-[10px] text-gray-500">完成率</div>
-                    </div>
-                  )}
-                />
-              </div>
-              <Row gutter={[12, 12]}>
-                <Col span={12}>
-                  <div className="bg-emerald-500/10 rounded-lg p-3 text-center border border-emerald-500/20">
-                    <div className="text-lg font-bold text-emerald-400">{completedTasks}</div>
-                    <div className="text-xs text-gray-400">已完成</div>
-                  </div>
-                </Col>
-                <Col span={12}>
-                  <div className="bg-rose-500/10 rounded-lg p-3 text-center border border-rose-500/20">
-                    <div className="text-lg font-bold text-rose-400">{taskStats.failed || 0}</div>
-                    <div className="text-xs text-gray-400">失败</div>
-                  </div>
-                </Col>
-                <Col span={12}>
-                  <div className="bg-blue-500/10 rounded-lg p-3 text-center border border-blue-500/20">
-                    <div className="text-lg font-bold text-blue-400">{taskStats.running || 0}</div>
-                    <div className="text-xs text-gray-400">进行中</div>
-                  </div>
-                </Col>
-                <Col span={12}>
-                  <div className="bg-gray-500/10 rounded-lg p-3 text-center border border-gray-500/20">
-                    <div className="text-lg font-bold text-gray-400">{taskStats.pending || 0}</div>
-                    <div className="text-xs text-gray-400">未开始</div>
-                  </div>
-                </Col>
-              </Row>
-              <Divider className="!my-4 !border-gray-700/50" />
-              <Row gutter={16}>
-                <Col span={12}>
-                  <Statistic
-                    title={<span className="text-gray-400 text-xs">按时完成率</span>}
-                    value={execSummary.on_time_rate || 0}
-                    suffix="%"
-                    valueStyle={{ color: '#10b981', fontSize: 20 }}
-                  />
-                </Col>
-                <Col span={12}>
-                  <Statistic
-                    title={<span className="text-gray-400 text-xs">自动化比例</span>}
-                    value={execSummary.automation_rate || 0}
-                    suffix="%"
-                    valueStyle={{ color: '#3b82f6', fontSize: 20 }}
-                  />
-                </Col>
-              </Row>
-            </Card>
-
-            {/* 效果统计 */}
-            <Card className="!bg-gradient-to-br from-gray-800/60 to-gray-900/60 !border-gray-700/50 shadow-lg">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500/20 to-yellow-500/20 flex items-center justify-center">
-                  <TrophyOutlined className="text-amber-400 text-lg" />
-                </div>
-                <span className="text-white font-semibold text-base">效果统计</span>
-              </div>
-              <Row gutter={12}>
-                <Col span={8}>
-                  <div className="text-center p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/20 hover:border-emerald-500/40 transition-colors">
-                    <div className="text-3xl font-bold text-emerald-400 mb-1">{improvedCount}</div>
-                    <div className="text-xs text-gray-400 font-medium">达标</div>
-                  </div>
-                </Col>
-                <Col span={8}>
-                  <div className="text-center p-3 bg-amber-500/10 rounded-lg border border-amber-500/20 hover:border-amber-500/40 transition-colors">
-                    <div className="text-3xl font-bold text-amber-400 mb-1">{belowCount}</div>
-                    <div className="text-xs text-gray-400 font-medium">未达标</div>
-                  </div>
-                </Col>
-                <Col span={8}>
-                  <div className="text-center p-3 bg-gray-500/10 rounded-lg border border-gray-500/20 hover:border-gray-500/40 transition-colors">
-                    <div className="text-3xl font-bold text-gray-400 mb-1">
-                      {metrics.length - improvedCount - belowCount}
-                    </div>
-                    <div className="text-xs text-gray-400 font-medium">无变化</div>
-                  </div>
-                </Col>
-              </Row>
-            </Card>
+      {/* ========== 指标效果分析 ========== */}
+      <Card
+        className="!bg-gray-800/50 !border-gray-700/50 shadow-lg"
+        title={
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-500/20 flex items-center justify-center">
+              <ExperimentOutlined className="text-cyan-400 text-lg" />
+            </div>
+            <span className="text-lg font-semibold">指标效果对比</span>
+            <Tag className="ml-2 !bg-cyan-500/10 !border-cyan-500/30 !text-cyan-400">{metrics.length} 项指标</Tag>
           </div>
-        </Col>
-      </Row>
+        }
+        extra={(
+          <Button
+            size="small"
+            className="!border-gray-600 !text-gray-200 hover:!border-cyan-500 hover:!text-cyan-300"
+            onClick={() => setShowAbnormalOnly((prev) => !prev)}
+          >
+            {showAbnormalOnly ? '显示全部' : '仅看未达标'}
+          </Button>
+        )}
+      >
+        {metrics.length > 0 ? (
+          <div className="space-y-5">
+            <Row gutter={[12, 12]}>
+              <Col xs={12} md={6}>
+                <div className="text-center p-4 rounded-xl border border-emerald-500/25 bg-emerald-500/10">
+                  <div className="text-2xl font-bold text-emerald-400">{improvedCount}</div>
+                  <div className="text-xs text-gray-400 mt-1">达标指标</div>
+                </div>
+              </Col>
+              <Col xs={12} md={6}>
+                <div className="text-center p-4 rounded-xl border border-amber-500/25 bg-amber-500/10">
+                  <div className="text-2xl font-bold text-amber-400">{belowCount}</div>
+                  <div className="text-xs text-gray-400 mt-1">未达标指标</div>
+                </div>
+              </Col>
+              <Col xs={12} md={6}>
+                <div className="text-center p-4 rounded-xl border border-gray-500/25 bg-gray-500/10">
+                  <div className="text-2xl font-bold text-gray-300">{unchangedCount}</div>
+                  <div className="text-xs text-gray-400 mt-1">无变化指标</div>
+                </div>
+              </Col>
+              <Col xs={12} md={6}>
+                <div className="text-center p-4 rounded-xl border border-cyan-500/25 bg-cyan-500/10">
+                  <div className={`text-2xl font-bold ${avgChangePct > 0 ? 'text-emerald-400' : avgChangePct < 0 ? 'text-rose-400' : 'text-gray-300'}`}>
+                    {avgChangePct > 0 ? '+' : ''}{avgChangePct.toFixed(1)}%
+                  </div>
+                  <div className="text-xs text-gray-400 mt-1">平均变化率</div>
+                </div>
+              </Col>
+            </Row>
+
+            <Table<MetricRow>
+              columns={metricColumns}
+              dataSource={tableData}
+              pagination={{ pageSize: 8, showSizeChanger: false }}
+              size="middle"
+              className="[&_.ant-table]:!bg-transparent [&_.ant-table-container]:!border [&_.ant-table-container]:!border-gray-700/50 [&_.ant-table-thead>tr>th]:!bg-gray-800/70 [&_.ant-table-thead>tr>th]:!text-gray-300 [&_.ant-table-thead>tr>th]:!border-gray-700/50 [&_.ant-table-tbody>tr>td]:!bg-gray-900/20 [&_.ant-table-tbody>tr>td]:!border-gray-800/70 [&_.ant-table-tbody>tr:hover>td]:!bg-gray-800/60 [&_.ant-pagination-item]:!bg-gray-800/70 [&_.ant-pagination-item]:!border-gray-700/50 [&_.ant-pagination-item>a]:!text-gray-300 [&_.ant-pagination-prev_.ant-pagination-item-link]:!bg-gray-800/70 [&_.ant-pagination-next_.ant-pagination-item-link]:!bg-gray-800/70 [&_.ant-pagination-prev_.ant-pagination-item-link]:!border-gray-700/50 [&_.ant-pagination-next_.ant-pagination-item-link]:!border-gray-700/50"
+              locale={{ emptyText: showAbnormalOnly ? '暂无未达标指标' : '暂无指标数据' }}
+            />
+          </div>
+        ) : (
+          <Empty description="暂无指标数据" className="py-8" />
+        )}
+      </Card>
 
       {/* ========== 报告章节 ========== */}
       {reportData.sections && reportData.sections.length > 0 && (
@@ -679,8 +599,7 @@ export default function TrackingReportPage() {
               </span>
               分（<span className="font-semibold" style={{ color: scoreLevel.color }}>{scoreLevel.label}</span>），
               <span className="font-bold text-emerald-400 mx-1">{improvedCount}</span>/
-              <span className="font-bold text-gray-300">{metrics.length}</span> 项指标达标，
-              任务完成率 <span className="font-bold text-cyan-400 mx-1">{execSummary.completion_rate?.toFixed(0) || 0}%</span>。
+              <span className="font-bold text-gray-300">{metrics.length}</span> 项指标达标。
             </p>
             <div className="mt-6 pt-4 border-t border-gray-700/50">
               <div className="text-xs text-gray-500 flex items-center justify-center gap-2">

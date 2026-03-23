@@ -2,7 +2,7 @@
 
 SOLUTION_GENERATION_SYSTEM = """你是一位资深电商运营优化顾问。根据诊断发现的异常指标和根因分析，生成可执行的优化方案。
 
-说明：用户消息中会给出当前异常指标对应的规范（5.2.3）条目。**你必须把这些要求融入你输出的方案**：有 tasks 的须体现在某个方案的 `steps` 中（可合并、细化或扩写，不可遗漏）；有 `coupon_campaign` 的须在相应方案的 `auto_actions` 中给出等价或更优的配置；有 `message` 的须在 `steps` 中写明触达人群与内容要点（或若系统支持则放入 `auto_actions`）。最终可执行侧只认你生成的方案，不再单独推一套规范任务。
+说明：用户消息中会给出 **「5.2.3 规则保底任务」JSON**（mandatory_rule_tasks）与完整规范条目。**你必须在「规则保底」之上做 LLM 增强**：对每条保底任务保留其核心动作意图与责任部门，用本店异常数据写满 `data_context`，将 `action` 写成可派单标题（可改写措辞，不可删掉该条任务）；`implementation_steps` 在保底列表基础上可增删细化（仍 3～6 条、可验收）。若将多条保底任务合并为一个 step，须在 `implementation_steps` 中分别覆盖原各条的核心动作。有 `coupon_campaign` 的须在相应方案的 `auto_actions` 中给出等价或更优的配置；有 `message` 的须在 `steps` 中写明触达人群与内容要点（或若系统支持则放入 `auto_actions`）。最终可执行侧只认你生成的方案。
 如果提供了历史成功案例，请参考其中验证有效的做法和经验教训，在此基础上优化或复用，但需结合当前企业实际情况做适配。
 
 方案要求（面向**一线业务人员**派单，拒绝顾问式空话）:
@@ -59,6 +59,9 @@ SOLUTION_GENERATION_USER = """## 企业画像
 ## 5.2.3 规范条目（须融入方案 steps / auto_actions）
 {indicator_push_rules}
 
+## 5.2.3 规则保底任务（mandatory_task_specs，必须全部落实到 steps 或等价合并）
+{mandatory_rule_tasks}
+
 ## 历史成功案例（知识库）
 {historical_cases}
 
@@ -68,5 +71,5 @@ SOLUTION_GENERATION_USER = """## 企业画像
 - owner_dept 从 销售/运营/客服/仓储/管理/市场/售后 中选一且必填
 - **implementation_steps**：3～6 条，一线人员可逐项打勾完成；写清系统/表/客户范围/交付物，避免抽象词
 - 如有匹配的历史成功案例，优先参考其验证有效的步骤和经验，结合当前实际做适配
-- **必须**落实上文「5.2.3 规范条目」：凡规范中为该次异常列出的任务动作，都应在某一方案的 steps 中体现；规范中的券、消息类要求用 steps 或 auto_actions 覆盖，避免与规范脱节
+- **必须**落实「规则保底任务」JSON 中的每一条（或等价合并后的 step）；并落实完整规范条目中的券、消息类要求（auto_actions 或 steps）
 """

@@ -18,6 +18,7 @@ from src.core.push_log_repo import save_push_log
 from src.core.effect_review_repo import save_effect_tracking, save_review_report
 from src.core.snapshot_repo import list_snapshots
 from src.core.solution_knowledge_repo import save_effective_plan
+from src.core.tracking_names import resolve_solution_name
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,15 @@ async def track_effects_node(state: DiagnosisState) -> dict:
 
     adopted_ids = (state.get("adopted_plan_ids") or [])[:1]
     adopted_plans = [p for p in state.get("solution_plans", []) if p.get("plan_id") in adopted_ids]
+    primary_plan = adopted_plans[0] if adopted_plans else {}
+    primary_plan_id = str(primary_plan.get("plan_id") or "").strip()
+    primary_plan_name = str(primary_plan.get("plan_name") or "").strip()
+    if primary_plan_id:
+        tracking_data["plan_id"] = primary_plan_id
+    tracking_data["solution_name"] = resolve_solution_name(
+        tracking_data,
+        fallback_plan_name=primary_plan_name,
+    )
 
     review_report = await _llm_generate_review(
         tracking_data=tracking_data,

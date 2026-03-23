@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+import re
 
 from src.agent.state import DiagnosisState
 from src.core.config import CN_TZ, get_settings
@@ -16,6 +17,11 @@ from src.core.indicator_push_rules import INDICATOR_PUSH_RULES
 logger = logging.getLogger(__name__)
 
 RULE_PLAN_ID = "rule_5.2.3"
+
+_DATE_PATTERNS = (
+    re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})"),
+    re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})"),
+)
 
 
 def _merge_task_ids(local_tasks: list[dict], created: list[dict] | None) -> list[dict]:
@@ -175,6 +181,54 @@ def _needs_approval(plan: dict) -> bool:
     if plan.get("priority_level") != "high":
         return False
     return bool(plan.get("auto_actions"))
+
+
+def _parse_deadline_date(value: object) -> datetime | None:
+    """尽量从 deadline/timeline 文本中提取日期。"""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+
+    # 优先尝试 ISO 格式（如 2026-03-23T10:00:00+08:00）
+    try:
+        iso = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if iso.tzinfo is not None:
+            return iso.astimezone(CN_TZ).replace(tzinfo=None)
+        return iso
+    except ValueError:
+        pass
+
+    # 回退提取 yyyy-mm-dd / yyyy/mm/dd
+    for p in _DATE_PATTERNS:
+        m = p.search(s)
+        if not m:
+            continue
+        y, mm, dd = m.groups()
+        try:
+            return datetime(int(y), int(mm), int(dd))
+        except ValueError:
+            continue
+    return None
+
+
+def _resolve_review_due_date(all_tasks: list[dict], delay_days: int) -> datetime.date:
+    """
+    复盘到期日：
+    1) 优先使用执行任务最晚 deadline；
+    2) 若均不可解析，回退为 now + delay_days。
+    """
+    latest: datetime | None = None
+    for t in all_tasks:
+        d = _parse_deadline_date(t.get("deadline"))
+        if d is None:
+            continue
+        if latest is None or d > latest:
+            latest = d
+    if latest is not None:
+        return latest.date()
+    return (datetime.now(CN_TZ) + timedelta(days=delay_days)).date()
 
 
 async def _send_task_notifications(
@@ -380,7 +434,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
     delay_days = settings.effect_track_delay_days
     if delay_days > 0:
         thread_id = state.get("thread_id", "")
-        due_date = (datetime.now(CN_TZ) + timedelta(days=delay_days)).date()
+        due_date = _resolve_review_due_date(all_tasks, delay_days)
         try:
             await save_pending_review(thread_id, tenant_id, store_id, due_date)
             emit_progress(state, f"效果追踪已调度，将于 {due_date} 自动执行复盘")

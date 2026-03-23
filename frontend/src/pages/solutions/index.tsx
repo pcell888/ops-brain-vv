@@ -50,6 +50,7 @@ function SolutionsPage() {
     isCompleted && selectedDiagnosisId ? selectedDiagnosisId : null,
   );
   const adoptSolution = useAdoptSolution();
+  const anySolutionAdopted = solutionData?.solutions?.some((s) => s.status === 'adopted') ?? false;
 
   const isLoading = listLoading || (isCompleted && (reportLoading || solutionsLoading));
 
@@ -156,6 +157,7 @@ function SolutionsPage() {
       render: (_, record) => {
         const isAdopted = record.status === 'adopted';
         const isRejected = record.status === 'rejected';
+        const adoptDisabled = isRejected || isAdopted || anySolutionAdopted;
         return (
           <div className="flex gap-1">
             <Button type="link" size="small" onClick={() => handleViewDetail(record.solution_id)}>
@@ -166,7 +168,8 @@ function SolutionsPage() {
               size="small"
               icon={<CheckCircleOutlined />}
               onClick={() => handleAdopt(record.solution_id)}
-              disabled={isAdopted || isRejected}
+              disabled={adoptDisabled}
+              title={anySolutionAdopted && !isAdopted ? '已有方案被采纳' : undefined}
               loading={adoptSolution.isPending}
             >
               {isAdopted ? '已采纳' : '采纳'}

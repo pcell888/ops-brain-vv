@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date, datetime
 
 from fastapi import APIRouter, Body
 
@@ -17,6 +18,24 @@ def _ok(data=None):
 
 def _gen_id(prefix: str = "ac", length: int = 14) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:length]}"
+
+
+def _parse_ts(value):
+    """将 JSON 中的日期字符串转为 asyncpg 可绑定的 date/datetime。"""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        if len(s) == 10 and s[4] == "-" and s[7] == "-":
+            return date.fromisoformat(s)
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return value
 
 
 @router.post("/coupon/create")
@@ -38,8 +57,8 @@ async def coupon_create(body: dict = Body(...)):
             body.get("couponType", 1),
             body.get("fullPrice", 0),
             body.get("reducePrice", 0),
-            body.get("startTime"),
-            body.get("endTime"),
+            _parse_ts(body.get("startTime")),
+            _parse_ts(body.get("endTime")),
         )
     return _ok({"couponId": coupon_id})
 
@@ -112,7 +131,7 @@ async def seckill_create(body: dict = Body(...)):
             sk_id,
             body.get("storeId", ""),
             body.get("title", "AI秒杀活动"),
-            body.get("startTime"),
-            body.get("endTime"),
+            _parse_ts(body.get("startTime")),
+            _parse_ts(body.get("endTime")),
         )
     return _ok({"id": sk_id})

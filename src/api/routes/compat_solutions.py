@@ -9,7 +9,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from src.api.deps import get_graph_app
+from src.api.deps import get_graph_app, running_tasks
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/solutions", tags=["方案(兼容层)"])
@@ -156,6 +156,16 @@ async def compat_solution_list(diagnosis_id: str):
     anomalies = values.get("anomalies") or []
 
     if not plans:
+        task = running_tasks.get(diagnosis_id)
+        if task and not task.done():
+            return {
+                "diagnosis_id": diagnosis_id,
+                "solutions": [],
+                "total": 0,
+                "generated_at": None,
+                "ai_recommendation": None,
+                "generating": True,
+            }
         return {
             "diagnosis_id": diagnosis_id,
             "solutions": [],

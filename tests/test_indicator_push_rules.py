@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from src.core.indicator_push_rules import INDICATOR_PUSH_RULES
+from src.core.indicator_push_rules import (
+    INDICATOR_PUSH_RULES,
+    collect_mandatory_task_specs,
+)
 from src.core.calculator import INDICATOR_META
 
 
@@ -58,6 +61,15 @@ def test_message_structure():
         if not msg:
             continue
         assert "type" in msg and "target_segment" in msg and "title" in msg
+
+
+def test_collect_mandatory_task_specs_positive_review_two_tasks():
+    """好评率低规则含两条 tasks，应拆成两条保底条目。"""
+    specs = collect_mandatory_task_specs(
+        [{"indicator_code": "positive_review_rate"}],
+    )
+    names = {s.get("task_name") for s in specs}
+    assert "售后服务优化" in names and "差评客户回访" in names
 
 
 def test_rule_indicators_in_meta():

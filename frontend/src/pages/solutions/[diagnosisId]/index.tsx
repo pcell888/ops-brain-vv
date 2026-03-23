@@ -34,7 +34,11 @@ export default function SolutionDetailPage() {
   const adoptSolution = useAdoptSolution();
 
   const solutions = typedSolutionData?.solutions || [];
+  const anySolutionAdopted = solutions.some((s) => s.status === 'adopted');
   const aiRecommendation: AIRecommendation | null = typedSolutionData?.ai_recommendation ?? null;
+  const recommendedSolution = aiRecommendation
+    ? solutions.find((s) => s.solution_id === aiRecommendation.recommended_solution_id)
+    : undefined;
   const aiRecommendationLine = aiRecommendation
     ? (() => {
         const rest = (aiRecommendation.comparison_summary || '').trim();
@@ -57,6 +61,10 @@ export default function SolutionDetailPage() {
   const selectedSolution = solutions.find(s => s.solution_id === selectedSolutionId);
 
   const handleAdopt = async (solutionId: string) => {
+    if (anySolutionAdopted && !solutions.find((s) => s.solution_id === solutionId && s.status === 'adopted')) {
+      message.warning('已有方案被采纳，不可再采纳其他方案');
+      return;
+    }
     try {
       await adoptSolution.mutateAsync(solutionId);
       message.success('方案已采纳');
@@ -79,6 +87,7 @@ export default function SolutionDetailPage() {
 
   const handleAdoptDetailWithConfirm = () => {
     if (!selectedSolution || selectedSolution.status === 'adopted') return;
+    if (anySolutionAdopted) return;
     const sid = selectedSolution.solution_id;
     Modal.confirm({
       title: '是否执行？',
@@ -108,6 +117,18 @@ export default function SolutionDetailPage() {
 
   if (solutionsLoading) {
     return <div className="flex items-center justify-center h-[60vh]"><Spin size="large" /></div>;
+  }
+
+  if (typedSolutionData?.generating) {
+    return (
+      <div className="space-y-6">
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
+        <div className="flex flex-col items-center justify-center h-[50vh] gap-4">
+          <Spin size="large" />
+          <p className="text-gray-400">正在生成优化方案，请稍候…</p>
+        </div>
+      </div>
+    );
   }
 
   if (solutions.length === 0) {
@@ -161,9 +182,14 @@ export default function SolutionDetailPage() {
                   icon={<CheckCircleOutlined />}
                   onClick={() => handleAdopt(aiRecommendation.recommended_solution_id)}
                   loading={adoptSolution.isPending}
-                  disabled={solutions.find(s => s.solution_id === aiRecommendation.recommended_solution_id)?.status === 'adopted'}
+                  disabled={
+                    !recommendedSolution
+                    || recommendedSolution.status === 'adopted'
+                    || (anySolutionAdopted && recommendedSolution.status !== 'adopted')
+                  }
+                  title={anySolutionAdopted && recommendedSolution?.status !== 'adopted' ? '已有方案被采纳' : undefined}
                 >
-                  {solutions.find(s => s.solution_id === aiRecommendation.recommended_solution_id)?.status === 'adopted' ? '已采纳' : '采纳推荐方案'}
+                  {recommendedSolution?.status === 'adopted' ? '已采纳' : '采纳推荐方案'}
                 </Button>
               </div>
             </div>
@@ -237,8 +263,9 @@ export default function SolutionDetailPage() {
                           size="small"
                           icon={<CheckCircleOutlined />}
                           onClick={(e) => { e.stopPropagation(); handleAdopt(solution.solution_id); }}
-                          disabled={solution.status === 'adopted'}
+                          disabled={solution.status === 'adopted' || anySolutionAdopted}
                           loading={adoptSolution.isPending}
+                          title={anySolutionAdopted && solution.status !== 'adopted' ? '已有方案被采纳' : undefined}
                         >
                           {solution.status === 'adopted' ? '已采纳' : '采纳'}
                         </Button>
@@ -269,7 +296,8 @@ export default function SolutionDetailPage() {
                       icon={<CheckCircleOutlined />}
                       onClick={handleAdoptDetailWithConfirm}
                       loading={adoptSolution.isPending}
-                      disabled={selectedSolution.status === 'adopted'}
+                      disabled={selectedSolution.status === 'adopted' || anySolutionAdopted}
+                      title={anySolutionAdopted && selectedSolution.status !== 'adopted' ? '已有方案被采纳' : undefined}
                     >
                       {selectedSolution.status === 'adopted' ? '已采纳' : '采纳方案'}
                     </Button>

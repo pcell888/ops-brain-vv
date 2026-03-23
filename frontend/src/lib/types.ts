@@ -83,6 +83,8 @@ export interface DiagnosisListItem {
   error_message?: string;
   health_score?: number;
   anomaly_count?: number;
+  /** 诊断报告已可 GET（diagnose 已落库），整段任务可能仍在生成方案 */
+  report_ready?: boolean;
   trigger_type: string;
   created_at: string;
 }
@@ -163,6 +165,8 @@ export interface SolutionGenerateResponse {
   total?: number;
   solutions: SolutionSummary[];
   generated_at?: string;
+  /** 后端 LangGraph 仍在执行，方案尚未写入 checkpoint */
+  generating?: boolean;
   /** 后端拼接的 AI 智能建议，列表接口返回 */
   ai_recommendation?: AIRecommendation | null;
 }
@@ -361,6 +365,11 @@ export interface TrackingSummary {
   started_at: string;
   last_snapshot_at?: string;
   completed_at?: string;
+  /** 延迟复盘时后端返回，预计自动执行 track_effects 的日期 */
+  review_due_date?: string;
+  scheduled?: boolean;
+  /** 计划总时长（天），优先用于展示“已用/总时长” */
+  total_duration_days?: number;
 }
 
 export interface MetricTrend {

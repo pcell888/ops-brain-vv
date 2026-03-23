@@ -10,18 +10,40 @@ interface FunnelStage {
 }
 
 interface ConversionFunnelProps {
-  data: FunnelStage[];
+  /** 漏斗阶段数组，或后端原始结构 `{ stages: [{ name, value }] }` */
+  data: FunnelStage[] | { stages?: Array<{ name: string; value?: number; count?: number }> } | undefined;
   title?: string;
   showIcon?: boolean;
   compact?: boolean;
 }
 
+function normalizeFunnelStages(
+  raw: FunnelStage[] | { stages?: Array<{ name: string; value?: number; count?: number }> } | undefined,
+): FunnelStage[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  const stages = raw.stages;
+  if (!stages?.length) return [];
+  const top = Number(stages[0].value ?? stages[0].count ?? 1) || 1;
+  return stages.map((stage, i) => {
+    const count = Number(stage.value ?? stage.count ?? 0);
+    const prev = i > 0 ? Number(stages[i - 1].value ?? stages[i - 1].count ?? 0) : count;
+    return {
+      name: stage.name,
+      count,
+      conversion_rate: i > 0 && prev > 0 ? (count / prev) * 100 : 0,
+      overall_rate: top > 0 ? (count / top) * 100 : 0,
+    };
+  });
+}
+
 export function ConversionFunnel({ 
-  data, 
+  data: rawData, 
   title = '线索转化漏斗', 
   showIcon = true,
   compact = false 
 }: ConversionFunnelProps) {
+  const data = normalizeFunnelStages(rawData);
   if (!data || data.length === 0) {
     return (
       <div className="bg-gray-800/30 rounded-lg p-3">
@@ -90,11 +112,27 @@ interface TeamData {
 }
 
 interface TeamComparisonProps {
-  data: TeamData[];
+  /** 兼容后端占位数据：可为 { name, score, deals } 或完整 TeamData */
+  data: (TeamData | Record<string, unknown>)[] | undefined;
   title?: string;
   showIcon?: boolean;
   compact?: boolean;
   syncHeight?: boolean;
+}
+
+function normalizeTeamRows(raw: (TeamData | Record<string, unknown>)[] | undefined): TeamData[] {
+  if (!raw?.length) return [];
+  return raw.map((t, i) => {
+    const r = t as Record<string, unknown>;
+    const cr = Number(r.conversion_rate ?? r.score ?? 0);
+    return {
+      team_name: String(r.team_name ?? r.name ?? `团队${i + 1}`),
+      leads_count: Number(r.leads_count ?? r.deals ?? 0) || 0,
+      converted_count: Number(r.converted_count ?? 0) || 0,
+      conversion_rate: Number.isFinite(cr) ? cr : 0,
+      avg_response_time: Number(r.avg_response_time ?? 0) || 0,
+    };
+  });
 }
 
 export function TeamComparison({ 
@@ -106,6 +144,7 @@ export function TeamComparison({
 }: TeamComparisonProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerHeight, setContainerHeight] = useState<number | undefined>(undefined);
+  const teams = normalizeTeamRows(data);
 
   useEffect(() => {
     if (syncHeight) {
@@ -118,7 +157,7 @@ export function TeamComparison({
     }
   }, [syncHeight, data]);
 
-  if (!data || data.length === 0) {
+  if (!teams.length) {
     return (
       <div className="bg-gray-800/30 rounded-lg p-3 h-full flex flex-col">
         {showIcon && (
@@ -145,7 +184,7 @@ export function TeamComparison({
         </h4>
       )}
       <div className={`space-y-2 overflow-y-auto flex-1 ${compact ? 'max-h-none' : ''}`}>
-        {data.map((team, index) => (
+        {teams.map((team, index) => (
           <div key={index} className="bg-gray-700/50 rounded-lg p-2">
             <div className="flex items-center justify-between mb-1">
               <span className="text-white font-medium text-sm">{team.team_name}</span>
@@ -201,12 +240,31 @@ interface SalesRankingItem {
 }
 
 interface SalesRankingProps {
-  data: SalesRankingItem[];
+  /** 兼容后端占位：{ rank, name, amount, deals } 等 */
+  data: (SalesRankingItem | Record<string, unknown>)[] | undefined;
   title?: string;
   showIcon?: boolean;
   showCount?: boolean;
   compact?: boolean;
   syncHeight?: boolean;
+}
+
+function normalizeRankingRows(raw: (SalesRankingItem | Record<string, unknown>)[] | undefined): SalesRankingItem[] {
+  if (!raw?.length) return [];
+  return raw.map((item, i) => {
+    const r = item as Record<string, unknown>;
+    const cr = Number(r.conversion_rate ?? 0);
+    return {
+      rank: Number(r.rank ?? i + 1),
+      sales_name: String(r.sales_name ?? r.name ?? '-'),
+      team_name: String(r.team_name ?? ''),
+      leads_count: Number(r.leads_count ?? r.deals ?? 0) || 0,
+      converted_count: Number(r.converted_count ?? 0) || 0,
+      conversion_rate: Number.isFinite(cr) ? cr : 0,
+      avg_response_time: Number(r.avg_response_time ?? 0) || 0,
+      follow_up_count: r.follow_up_count !== undefined ? Number(r.follow_up_count) : undefined,
+    };
+  });
 }
 
 export function SalesRanking({ 
@@ -219,6 +277,7 @@ export function SalesRanking({
 }: SalesRankingProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerHeight, setContainerHeight] = useState<number | undefined>(undefined);
+  const rankings = normalizeRankingRows(data);
 
   useEffect(() => {
     if (syncHeight) {
@@ -231,7 +290,7 @@ export function SalesRanking({
     }
   }, [syncHeight, data]);
 
-  if (!data || data.length === 0) {
+  if (!rankings.length) {
     return (
       <div className="bg-gray-800/30 rounded-lg p-3 h-full flex flex-col">
         {showIcon && (
@@ -256,12 +315,12 @@ export function SalesRanking({
           <CrownOutlined className="text-yellow-400" />
           <span>{title}</span>
           {showCount && (
-            <Tag className="ml-1 text-xs">{data.length}人</Tag>
+            <Tag className="ml-1 text-xs">{rankings.length}人</Tag>
           )}
         </h4>
       )}
       <div className={`space-y-1 overflow-y-auto flex-1 ${compact ? 'max-h-none' : ''}`}>
-        {data.map((sales, index) => (
+        {rankings.map((sales, index) => (
           <div
             key={index}
             className={`flex items-center gap-2 p-2 rounded-lg ${

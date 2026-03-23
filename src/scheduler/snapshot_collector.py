@@ -24,7 +24,7 @@ DIMENSION_TOOL_MAP: dict[str, str] = {
 
 
 async def _get_pending_threads() -> list[dict]:
-    """获取所有处于追踪等待状态的 pending review 记录（含未到期的）。"""
+    """获取所有处于追踪等待状态的 pending review 记录（含到期日）。"""
     from src.core.db_init import _uri_to_conninfo, ensure_ai_pending_review
     import psycopg
 
@@ -34,7 +34,7 @@ async def _get_pending_threads() -> list[dict]:
         async with await psycopg.AsyncConnection.connect(conninfo) as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
-                    "SELECT thread_id, tenant_id, store_id FROM ai_pending_review WHERE status = 'pending'"
+                    "SELECT thread_id, tenant_id, store_id, review_due_date FROM ai_pending_review WHERE status = 'pending'"
                 )
                 return await cur.fetchall()
     except Exception as e:
@@ -52,11 +52,17 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
     if interval <= 0:
         return
 
+    # 1:1 关系：每个 thread 只采集一次快照
     last_time = await get_last_snapshot_time(thread_id)
-    now_cn = datetime.now(CN_TZ)
     if last_time:
-        lt = last_time if last_time.tzinfo else last_time.replace(tzinfo=CN_TZ)
-        if (now_cn - lt) < timedelta(days=interval):
+        return
+
+    now_cn = datetime.now(CN_TZ)
+    due_date = thread.get("review_due_date")
+    if due_date is not None:
+        # 使用配置间隔作为“提前采集窗口”：仅在到期日前 N 天内采集一次
+        collect_from = datetime.combine(due_date, datetime.min.time(), tzinfo=CN_TZ) - timedelta(days=interval)
+        if now_cn < collect_from:
             return
 
     app = await get_graph_app()

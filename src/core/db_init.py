@@ -266,6 +266,14 @@ async def ensure_ai_exec_task():
                     stmt = stmt.strip()
                     if stmt:
                         await cur.execute(stmt)
+                # 历史数据：已派发仍占 pending 的行与采纳后自动执行语义对齐
+                await cur.execute(
+                    """
+                    UPDATE ai_exec_task SET status = 'running'
+                    WHERE status = 'pending'
+                      AND (related_resources->>'dispatch_status') = 'dispatched'
+                    """
+                )
             await conn.commit()
         logger.info("ai_exec_task 表已就绪")
     except Exception as e:
