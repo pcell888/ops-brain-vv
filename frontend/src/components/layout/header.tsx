@@ -1,8 +1,8 @@
-
-
 import { Layout, Dropdown, Avatar, Space, Modal, List, Tag, Spin, message } from 'antd';
 import { DownOutlined, UserOutlined, SwapOutlined, BankOutlined } from '@ant-design/icons';
 import { useState, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { matchPath, useLocation, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/stores/app-store';
 import { enterpriseApi } from '@/lib/api';
 
@@ -28,8 +28,33 @@ function getScaleDisplay(scale: string | null): string {
   return scaleMap[scale] || scale;
 }
 
+function getEnterpriseSwitchFallback(pathname: string): string | null {
+  if (matchPath({ path: '/diagnosis/:diagnosisId/anomaly/:anomalyId', end: true }, pathname)) {
+    return '/diagnosis/reports';
+  }
+  if (matchPath({ path: '/diagnosis/:diagnosisId', end: true }, pathname)) {
+    return '/diagnosis/reports';
+  }
+  if (matchPath({ path: '/solutions/:diagnosisId', end: true }, pathname)) {
+    return '/solutions';
+  }
+  if (matchPath({ path: '/execution/task/:taskId', end: true }, pathname)) {
+    return '/execution';
+  }
+  if (matchPath({ path: '/execution/:planId', end: true }, pathname)) {
+    return '/execution';
+  }
+  if (matchPath({ path: '/tracking/:trackingId/report', end: true }, pathname)) {
+    return '/tracking';
+  }
+  return null;
+}
+
 export function Header() {
   const { currentEnterprise, setCurrentEnterprise } = useAppStore();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [enterprises, setEnterprises] = useState<Enterprise[]>([]);
   const [loading, setLoading] = useState(false);
@@ -41,9 +66,9 @@ export function Header() {
         setLoading(true);
         const response = await enterpriseApi.list() as { enterprises: Enterprise[]; total: number };
         setEnterprises(response.enterprises || []);
-        
+
         const current = useAppStore.getState().currentEnterprise;
-        
+
         if (current) {
           // 如果已有选中企业，从服务器数据中查找并更新（确保数据是最新的）
           const updatedEnterprise = response.enterprises?.find(e => e.id === current.id);
@@ -64,28 +89,46 @@ export function Header() {
         setLoading(false);
       }
     };
-    
+
     loadEnterprises();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (currentEnterprise?.id) {
+      localStorage.setItem('enterpriseId', currentEnterprise.id);
+      return;
+    }
+    localStorage.removeItem('enterpriseId');
+  }, [currentEnterprise?.id]);
+
   // 处理企业切换
   const handleEnterpriseSelect = (enterprise: Enterprise) => {
+    if (enterprise.id === currentEnterprise?.id) {
+      setIsModalOpen(false);
+      return;
+    }
+
     setCurrentEnterprise(enterprise);
+    queryClient.invalidateQueries();
+
+    const fallbackPath = getEnterpriseSwitchFallback(location.pathname);
+    if (fallbackPath && fallbackPath !== location.pathname) {
+      navigate(fallbackPath, { replace: true });
+    }
+
     setIsModalOpen(false);
   };
 
   // 下拉菜单项
   const menuItems = [
-    { 
-      key: 'switch', 
-      label: '切换企业', 
+    {
+      key: 'switch',
+      label: '切换企业',
       icon: <SwapOutlined />,
       onClick: () => setIsModalOpen(true),
     },
-    { key: 'profile', label: '个人设置' },
-    { type: 'divider' as const },
-    { key: 'logout', label: '退出登录', danger: true },
   ];
 
   return (
@@ -134,9 +177,9 @@ export function Header() {
               >
                 <List.Item.Meta
                   avatar={
-                    <Avatar 
+                    <Avatar
                       className="bg-gradient-to-br from-blue-500 to-purple-500"
-                      icon={<BankOutlined />} 
+                      icon={<BankOutlined />}
                     />
                   }
                   title={

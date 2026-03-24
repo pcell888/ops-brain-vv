@@ -18,9 +18,29 @@ CONFIG_DEFAULTS = {
     "stores": [],
 }
 
+LEGACY_AUTO_TRIGGER_MODES = {"auto", "both", "daily", "weekly", "monthly"}
+
 
 def _conninfo() -> str:
     return _uri_to_conninfo(get_settings().postgres_uri)
+
+
+def normalize_diagnosis_trigger_mode(value: object) -> str:
+    """将历史/兼容枚举统一收敛为 auto 或 manual。"""
+    if isinstance(value, str) and value.lower() in LEGACY_AUTO_TRIGGER_MODES:
+        return "auto"
+    return "manual"
+
+
+def normalize_tenant_config(raw: dict | None) -> dict:
+    """合并默认值并归一化关键配置项。"""
+    config = {**CONFIG_DEFAULTS, **(raw or {})}
+    config["diagnosis_trigger_mode"] = normalize_diagnosis_trigger_mode(
+        config.get("diagnosis_trigger_mode")
+    )
+    stores = config.get("stores")
+    config["stores"] = stores if isinstance(stores, list) else []
+    return config
 
 
 async def get_tenant_config(tenant_id: str) -> dict:
@@ -39,7 +59,7 @@ async def get_tenant_config(tenant_id: str) -> dict:
     except Exception as e:
         logger.warning("读取租户 %s 配置失败: %s", tenant_id, e)
         raw = {}
-    return {**CONFIG_DEFAULTS, **raw}
+    return normalize_tenant_config(raw)
 
 
 async def sync_tenant(
@@ -67,7 +87,7 @@ async def sync_tenant(
                 raw = row[1] or {}
                 if isinstance(raw, str):
                     raw = json.loads(raw)
-                config = {**CONFIG_DEFAULTS, **raw}
+                config = normalize_tenant_config(raw)
                 config["team_size"] = team_size
 
                 if store_entry:
@@ -86,11 +106,12 @@ async def sync_tenant(
                     (tenant_name, industry_code, json.dumps(config, ensure_ascii=False), tenant_id),
                 )
             else:
-                config = {
-                    **CONFIG_DEFAULTS,
-                    "team_size": team_size,
-                    "stores": [store_entry] if store_entry else [],
-                }
+                config = normalize_tenant_config(
+                    {
+                        "team_size": team_size,
+                        "stores": [store_entry] if store_entry else [],
+                    }
+                )
                 await cur.execute(
                     "INSERT INTO tenant_registry "
                     "(tenant_id, tenant_name, api_base_url, auth_type, auth_credential, industry_code, status, config) "
@@ -114,6 +135,7 @@ async def update_tenant_config(tenant_id: str, patch: dict) -> dict:
     """更新租户配置（增量合并）。"""
     current = await get_tenant_config(tenant_id)
     current.update(patch)
+    current = normalize_tenant_config(current)
     async with await AsyncConnection.connect(_conninfo()) as conn:
         async with conn.cursor() as cur:
             await cur.execute(

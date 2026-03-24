@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from src.core.models import AdoptPlanRequest
 from src.core.config import CN_TZ, get_settings
-from src.api.deps import get_graph_app, manager, running_tasks
+from src.api.deps import astream_events_with_retry, get_graph_app, manager, running_tasks
 from src.agent.tools import set_progress_sender, clear_progress_sender
 
 logger = logging.getLogger(__name__)
@@ -163,10 +163,9 @@ async def adopt_plan(thread_id: str, request: AdoptPlanRequest):
 
 async def _resume_after_adoption(thread_id: str, config: dict):
     """Resume LangGraph 执行。"""
-    app = await get_graph_app()
     try:
         set_progress_sender(thread_id, manager)
-        async for event in app.astream_events(None, config=config, version="v2"):
+        async for event in astream_events_with_retry(None, config):
             kind = event["event"]
             if kind == "on_chain_end":
                 node_name = event.get("name", "")
@@ -199,6 +198,7 @@ async def _resume_after_adoption(thread_id: str, config: dict):
     finally:
         clear_progress_sender()
 
+    app = await get_graph_app()
     state = await app.aget_state(config)
     if state.next and "track_effects" in state.next:
         delay = get_settings().effect_track_delay_days

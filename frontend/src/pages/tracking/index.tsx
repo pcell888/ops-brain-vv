@@ -76,7 +76,7 @@ export default function TrackingPage() {
     selectedDiagnosisId,
   );
 
-  const items = trackingsData?.items ?? [];
+  const items = (trackingsData?.items ?? []) as TrackingSummary[];
   const takeSnapshot = useTakeSnapshot();
   const completeTracking = useCompleteTracking();
   const cancelTracking = useCancelTracking();

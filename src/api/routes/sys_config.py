@@ -26,8 +26,8 @@ class StoreItem(BaseModel):
 
 
 class UpdateTenantConfigRequest(BaseModel):
-    diagnosis_trigger_mode: Literal["manual", "auto", "both"] | None = Field(
-        default=None, description="诊断触发模式: manual=仅手动, auto=定时自动, both=手动+自动",
+    diagnosis_trigger_mode: Literal["manual", "auto"] | None = Field(
+        default=None, description="诊断方式: manual=手动, auto=自动",
     )
     analysis_period_days: Literal[30, 60, 90] | None = Field(
         default=None, description="数据分析周期(天)",
@@ -46,8 +46,8 @@ async def get_config(tenant_id: str):
         "config": {
             "diagnosis_trigger_mode": {
                 "value": config["diagnosis_trigger_mode"],
-                "options": ["manual", "auto", "both"],
-                "description": "诊断触发模式: manual=仅手动, auto=定时自动, both=手动+自动",
+                "options": ["manual", "auto"],
+                "description": "诊断方式: manual=手动, auto=自动",
             },
             "analysis_period_days": {
                 "value": config["analysis_period_days"],

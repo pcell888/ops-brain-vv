@@ -5,7 +5,7 @@ import { Card, Button, Tabs, App, Spin } from 'antd';
 import { SettingOutlined, SaveOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
 import { useAppStore } from '@/stores/app-store';
-import { enterpriseApi, type EnterpriseConfig } from '@/lib/api';
+import { enterpriseApi, type EnterpriseConfig, type EnterpriseDetail } from '@/lib/api';
 import type { FormInstance } from 'antd';
 
 const GeneralTab = lazy(() => import('./tabs/general-tab'));
@@ -27,11 +27,13 @@ export default function SettingsPage() {
   const loadEnterpriseDetail = async () => {
     if (!currentEnterprise?.id) return;
     try {
-      const res = await enterpriseApi.get(currentEnterprise.id) as Record<string, unknown>;
+      const res = await enterpriseApi.get(currentEnterprise.id) as EnterpriseDetail;
       setEnterpriseConfig((res?.config as Record<string, unknown>) ?? {});
       setEnterpriseContext({
         industry: res?.industry,
         name: res?.name,
+        team_size: res?.team_size,
+        stores: res?.stores ?? [],
       });
     } catch {
       setEnterpriseConfig({});

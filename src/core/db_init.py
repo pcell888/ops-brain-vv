@@ -220,8 +220,31 @@ async def ensure_tenant_registry():
                 await cur.execute(TENANT_REGISTRY_DDL)
                 await cur.execute(SEED_PLATFORM)
                 await cur.execute(SEED_WLWQ_LOCAL)
+                if settings.wlwq_business_api_base:
+                    u = settings.wlwq_business_api_base.rstrip("/")
+                    await cur.execute(
+                        """
+                        UPDATE tenant_registry
+                        SET api_base_url = %s, updated_at = NOW()
+                        WHERE tenant_id = 'wlwq_local'
+                        """,
+                        (u,),
+                    )
             await conn.commit()
         logger.info("tenant_registry 表已就绪")
+        if settings.wlwq_business_api_base:
+            try:
+                import redis.asyncio as aioredis
+
+                rd = aioredis.from_url(settings.redis_url, decode_responses=True)
+                await rd.delete("tenant:wlwq_local")
+                await rd.aclose()
+                logger.info(
+                    "wlwq_local api_base_url 已按 WLWQ_BUSINESS_API_BASE 覆盖为 %s，租户缓存已清理",
+                    settings.wlwq_business_api_base.rstrip("/"),
+                )
+            except Exception as re:
+                logger.warning("清理租户 Redis 缓存失败（可忽略）: %s", re)
     except Exception as e:
         logger.warning("tenant_registry 初始化跳过（可手动执行 make init-db）: %s", e)
 

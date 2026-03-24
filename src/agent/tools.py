@@ -120,6 +120,89 @@ async def close_all_sessions():
 MCP_CALL_TIMEOUT = 120.0
 
 
+def _strip_json_fence(s: str) -> str:
+    s = s.strip()
+    if not s.startswith("```"):
+        return s
+    lines = s.split("\n")
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def unwrap_mcp_json_value(val: Any, max_depth: int = 8) -> Any:
+    """将 MCP 可能返回的 JSON 字符串（含多重 string 编码、markdown 围栏）展开为 dict/list 等。"""
+    cur = val
+    for _ in range(max_depth):
+        if not isinstance(cur, str):
+            return cur
+        t = _strip_json_fence(cur)
+        if not t:
+            return {}
+        try:
+            cur = json.loads(t)
+        except (json.JSONDecodeError, TypeError):
+            return cur
+    return cur
+
+
+def _parse_call_tool_result(result: Any) -> Any:
+    """从 CallToolResult 取出结构化数据：优先 structuredContent（MCP 新版），否则解析 TextContent JSON。"""
+    is_error = getattr(result, "isError", False)
+    if is_error:
+        parts: list[str] = []
+        for block in getattr(result, "content", None) or []:
+            t = getattr(block, "text", None)
+            if isinstance(t, str) and t.strip():
+                parts.append(t.strip())
+        msg = " | ".join(parts) if parts else "unknown error"
+        logger.warning("MCP tool 返回 isError: %s", msg[:800])
+        return {}
+
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        return unwrap_mcp_json_value(structured)
+
+    blocks: list[str] = []
+    for block in getattr(result, "content", None) or []:
+        t = getattr(block, "text", None)
+        if isinstance(t, str) and t.strip():
+            blocks.append(t)
+
+    for raw in blocks:
+        text = _strip_json_fence(raw)
+        if not text:
+            continue
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, str):
+                try:
+                    return json.loads(parsed)
+                except (json.JSONDecodeError, TypeError):
+                    return parsed
+            return parsed
+        except json.JSONDecodeError:
+            continue
+
+    merged = _strip_json_fence("\n".join(blocks))
+    if merged:
+        try:
+            parsed = json.loads(merged)
+            if isinstance(parsed, str):
+                try:
+                    return json.loads(parsed)
+                except (json.JSONDecodeError, TypeError):
+                    return parsed
+            return parsed
+        except json.JSONDecodeError:
+            logger.warning("MCP 工具结果 JSON 解析失败，前 240 字: %s", merged[:240])
+            return merged
+
+    return {}
+
+
 async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
     """通过 stdio 调用 MCP Server 的 Tool。"""
     session = await _get_session(server_name)
@@ -141,14 +224,7 @@ async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) 
             timeout=MCP_CALL_TIMEOUT,
         )
 
-        if result.content:
-            text = result.content[0].text
-            try:
-                return json.loads(text)
-            except (json.JSONDecodeError, AttributeError):
-                return text
-
-        return {}
+        return unwrap_mcp_json_value(_parse_call_tool_result(result))
 
     except Exception as e:
         logger.error("MCP调用失败: %s.%s -> %s", server_name, tool_name, e)

@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from src.core.pending_review_repo import cancel_pending_review
 from src.core.solution_knowledge_repo import list_knowledge
-from src.api.deps import get_graph_app, running_tasks
+from src.api.deps import astream_events_with_retry, get_graph_app, running_tasks
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/review", tags=["复盘"])
@@ -35,9 +35,8 @@ async def start_review(thread_id: str):
 
 async def _resume_track_effects(thread_id: str, config: dict):
     """恢复 graph 执行 track_effects 节点。"""
-    app = await get_graph_app()
     try:
-        async for _ in app.astream_events(None, config=config, version="v2"):
+        async for _ in astream_events_with_retry(None, config):
             pass
         logger.info("手动触发复盘完成: thread=%s", thread_id)
     except Exception as e:

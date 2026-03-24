@@ -3,10 +3,10 @@ VENV_DIR := venv
 PYTHON := $(VENV_DIR)/bin/python
 PIP := $(VENV_DIR)/bin/pip
 
-# 本地服务占用端口，run-local 启动前会先释放
+# 本地服务占用端口，dev 启动前会先释放
 LOCAL_PORTS := 8000 8200 3000
 
-.PHONY: dev dev-infra run-local kill-local-ports dev-up dev-down deps venv create-pg-db init-db
+.PHONY: dev setup-dev dev-infra run-local kill-local-ports deps venv create-pg-db init-db
 
 # 创建 venv（不存在时）
 venv:
@@ -19,9 +19,9 @@ deps: venv
 
 # 本地开发：仅准备 venv 与依赖（不启动 Docker）
 # 请先确保 postgres:5432、redis:6379 已就绪（本机或 make dev-infra）
-dev: deps
+setup-dev: deps
 	@echo "--- 本地环境就绪 (venv: $(VENV_DIR))"
-	@echo "  启动所有应用: make run-local"
+	@echo "  启动所有应用: make dev"
 	@echo "  若需 Docker 起 postgres/redis: make dev-infra"
 
 # 仅用 Docker 启动 postgres + redis（供本机应用连接）
@@ -48,7 +48,7 @@ kill-local-ports:
 	@echo "--- 已释放端口: $(LOCAL_PORTS)"
 
 # 本机启动全部应用（API + wlwq + frontend），MCP server 通过 stdio 按需启动
-run-local: deps kill-local-ports
+dev: deps kill-local-ports
 	@echo "--- 启动本地服务 (API 8000, wlwq 8200, frontend 3000)..."
 	@echo "--- MCP servers 使用 stdio 传输，由 API 进程按需拉起"
 	@( \
@@ -58,9 +58,12 @@ run-local: deps kill-local-ports
 		wait \
 	)
 
-# Docker 启动全部服务（含 API、MCP、wlwq）
-dev-up:
+# 兼容旧命令
+run-local: dev
+
+# Docker 启动全部服务（含 API、MCP、wlwq、frontend 开发服务器）
+up:
 	docker compose up -d
 
-dev-down:
+down:
 	docker compose down

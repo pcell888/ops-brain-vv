@@ -6,7 +6,8 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Body, Query, HTTPException
+from pydantic import BaseModel
 
 from src.api.constants import API_PREFIX
 from src.core.models import DiagnosisRequest, DiagnosisStartResponse
@@ -15,7 +16,7 @@ from src.core.calculator import list_available_indicators
 from src.core.calculator import DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS, INDICATOR_META
 from src.core.diagnosis_report_repo import list_reports, get_report as get_report_from_db
 from src.core.tenant_config import get_tenant_config
-from src.api.deps import get_graph_app, manager, running_tasks, generate_thread_id
+from src.api.deps import astream_events_with_retry, get_graph_app, manager, running_tasks, generate_thread_id
 from src.api.routes.compat_ws import (
     get_active_diagnosis_thread_for_tenant,
     register_thread_enterprise,
@@ -28,6 +29,26 @@ from src.mcp_servers.biz_api_client import BizAPIClient, BizAPIError
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/diagnosis", tags=["诊断"])
 
+
+class CompatStartDiagnosisRequest(BaseModel):
+    """兼容旧版 /diagnosis/start 请求体。"""
+
+    enterprise_id: str
+    trigger_type: str = "manual"
+    dimensions: list[str] | None = None
+    async_mode: bool = True
+
+
+class CompatDiagnosisStatusResponse(BaseModel):
+    """兼容旧版启动诊断响应。"""
+
+    diagnosis_id: str
+    status: str
+    progress: int
+    message: str | None = None
+    health_score: float | None = None
+
+
 # 同一 tenant 并发「立即诊断」时串行化，避免检查与注册之间插入第二个任务
 _diagnosis_start_locks: dict[str, asyncio.Lock] = {}
 _diagnosis_start_lock_mutex = asyncio.Lock()
@@ -38,6 +59,25 @@ async def _get_tenant_diagnosis_start_lock(tenant_id: str) -> asyncio.Lock:
         if tenant_id not in _diagnosis_start_locks:
             _diagnosis_start_locks[tenant_id] = asyncio.Lock()
         return _diagnosis_start_locks[tenant_id]
+
+
+def _normalize_trigger_type(trigger_type: str | None) -> str:
+    normalized = (trigger_type or "").strip().lower()
+    if normalized in {"scheduled", "schedule", "auto", "automatic", "cron", "system"}:
+        return "scheduled"
+    return "manual"
+
+
+def _extract_health_score_value(report: dict | None) -> float | None:
+    if not report:
+        return None
+    raw = report.get("health_score")
+    if isinstance(raw, dict):
+        raw = raw.get("total_score")
+    try:
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
 
 # 仅处理图内节点事件，避免顶层 LangGraph 的 on_chain_end 重复推送整图 progress_messages
 _WORKFLOW_NODES = frozenset({
@@ -203,7 +243,6 @@ async def _run_diagnosis_with_stream(
     selected_indicators: list[str] | None = None,
 ):
     """核心: 流式运行 LangGraph 并推送进度。"""
-    app = await get_graph_app()
     config = {"configurable": {"thread_id": thread_id}}
     initial_state = {
         "thread_id": thread_id,
@@ -218,7 +257,7 @@ async def _run_diagnosis_with_stream(
 
     try:
         set_progress_sender(thread_id, manager)
-        async for event in app.astream_events(initial_state, config=config, version="v2"):
+        async for event in astream_events_with_retry(initial_state, config):
             kind = event["event"]
 
             if kind == "on_chain_start":
@@ -289,6 +328,7 @@ async def _run_diagnosis_with_stream(
     finally:
         clear_progress_sender()
 
+    app = await get_graph_app()
     state = await app.aget_state(config)
     if state.next and "wait_adoption" in state.next:
         await manager.send_progress(thread_id, {
@@ -325,21 +365,16 @@ async def get_diagnosis_history(
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
-@router.post("/start", response_model=DiagnosisStartResponse, summary="启动诊断流程")
-async def start_diagnosis(request: DiagnosisRequest):
-    """启动诊断流程，返回 thread_id 和 WebSocket URL。报告完成后落库到诊断系统 PG。"""
+async def _create_diagnosis_task(
+    request: DiagnosisRequest,
+) -> tuple[str, bool, asyncio.Task | None]:
     lock = await _get_tenant_diagnosis_start_lock(request.tenant_id)
     async with lock:
         existing = get_active_diagnosis_thread_for_tenant(request.tenant_id)
         if existing:
-            return DiagnosisStartResponse(
-                thread_id=existing,
-                ws_url=f"{API_PREFIX}/ws/diagnosis/{existing}",
-                already_running=True,
-            )
+            return existing, True, running_tasks.get(existing)
 
         thread_id = generate_thread_id()
-
         task = asyncio.create_task(
             _run_diagnosis_with_stream(
                 thread_id,
@@ -358,14 +393,82 @@ async def start_diagnosis(request: DiagnosisRequest):
             unregister_thread(thread_id)
 
         task.add_done_callback(_on_done)
-
         register_thread_enterprise(thread_id, request.tenant_id)
+        return thread_id, False, task
 
-        return DiagnosisStartResponse(
-            thread_id=thread_id,
-            ws_url=f"{API_PREFIX}/ws/diagnosis/{thread_id}",
-            already_running=False,
+
+async def _get_report_snapshot(thread_id: str) -> dict | None:
+    report = await get_report_from_db(thread_id)
+    if report is not None:
+        return report
+    app = await get_graph_app()
+    config = {"configurable": {"thread_id": thread_id}}
+    state = await app.aget_state(config)
+    if state and state.values:
+        report = state.values.get("diagnosis_report")
+        if isinstance(report, dict):
+            return report
+    return None
+
+
+@router.post(
+    "/start",
+    response_model=DiagnosisStartResponse | CompatDiagnosisStatusResponse,
+    summary="启动诊断流程",
+)
+async def start_diagnosis(
+    request: DiagnosisRequest | CompatStartDiagnosisRequest = Body(...),
+):
+    """启动诊断流程，同时兼容新版与旧版前端请求/响应结构。"""
+    if isinstance(request, CompatStartDiagnosisRequest):
+        compat_request = DiagnosisRequest(
+            tenant_id=request.enterprise_id,
+            store_id="",
+            trigger_type=_normalize_trigger_type(request.trigger_type),
+            selected_dimensions=request.dimensions,
         )
+        thread_id, already_running, task = await _create_diagnosis_task(compat_request)
+
+        if request.async_mode:
+            return CompatDiagnosisStatusResponse(
+                diagnosis_id=thread_id,
+                status="running" if already_running else "pending",
+                progress=0,
+                message="已有诊断正在执行" if already_running else "诊断任务已提交",
+            )
+
+        if task is None:
+            return CompatDiagnosisStatusResponse(
+                diagnosis_id=thread_id,
+                status="running" if already_running else "failed",
+                progress=0,
+                message="已有诊断正在执行" if already_running else "诊断任务启动失败",
+            )
+
+        await task
+        report = await _get_report_snapshot(thread_id)
+        if report is None:
+            return CompatDiagnosisStatusResponse(
+                diagnosis_id=thread_id,
+                status="failed",
+                progress=0,
+                message="诊断流程执行失败",
+            )
+
+        return CompatDiagnosisStatusResponse(
+            diagnosis_id=thread_id,
+            status="completed",
+            progress=100,
+            message="诊断完成",
+            health_score=_extract_health_score_value(report),
+        )
+
+    thread_id, already_running, _ = await _create_diagnosis_task(request)
+    return DiagnosisStartResponse(
+        thread_id=thread_id,
+        ws_url=f"{API_PREFIX}/ws/diagnosis/{thread_id}",
+        already_running=already_running,
+    )
 
 
 @router.post("/{thread_id}/cancel", summary="取消诊断流程")

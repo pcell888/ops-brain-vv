@@ -1,21 +1,60 @@
-
-
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Spin, Empty, Button, Descriptions, Tag, Row, Col, Statistic, Timeline } from 'antd';
-import { 
-  ArrowLeftOutlined, 
+import {
+  ArrowLeftOutlined,
   LoadingOutlined,
   BookOutlined,
   StarOutlined,
+  RiseOutlined,
   CheckCircleOutlined,
   BulbOutlined,
-  RiseOutlined,
 } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
-import { trackingApi } from '@/lib/api';
 import dayjs from 'dayjs';
+import { trackingApi } from '@/lib/api';
 
-// 行业选项映射
+interface IndicatorChange {
+  indicator_code: string;
+  before_value?: number;
+  after_value?: number;
+  change_pct?: number;
+  improved?: boolean;
+}
+
+interface PlanStep {
+  step?: number;
+  action?: string;
+  owner_dept?: string;
+  timeline?: string;
+  implementation_steps?: string[];
+}
+
+interface AutoAction {
+  type?: string;
+}
+
+interface PlanDetail {
+  description?: string;
+  steps?: PlanStep[];
+  expected_improvement?: Record<string, number>;
+  auto_actions?: AutoAction[];
+}
+
+interface BackendCaseDetail {
+  case_id: string;
+  tenant_id: string;
+  thread_id: string;
+  plan_id: string;
+  plan_name: string;
+  industry: string;
+  target_indicators: string[];
+  achievement_rate: number;
+  indicator_changes?: IndicatorChange[];
+  plan_detail?: PlanDetail;
+  lessons_learned?: string[];
+  created_at: string;
+}
+
 const industryLabels: Record<string, string> = {
   retail: '零售',
   finance: '金融',
@@ -23,252 +62,277 @@ const industryLabels: Record<string, string> = {
   healthcare: '医疗健康',
   education: '教育',
   technology: '科技',
+  internet: '互联网',
   general: '通用',
+  other: '其他',
 };
 
-// 问题类型映射
-const problemTypeLabels: Record<string, string> = {
-  lead_conversion: '线索转化',
-  customer_retention: '客户留存',
-  marketing_roi: '营销ROI',
-  operation_efficiency: '运营效率',
-  data_integration: '数据整合',
-  team_collaboration: '团队协作',
+const indicatorNameMap: Record<string, string> = {
+  lead_conversion_rate: '线索转化率',
+  conversion_rate: '线索转化率',
+  order_conversion_rate: '订单转化率',
+  browse_to_order_rate: '浏览-下单转化率',
+  seckill_conversion_rate: '秒杀转化率',
+  coupon_redemption_rate: '优惠券核销率',
+  response_time_avg: '平均响应时间',
+  avg_response_time: '平均响应时间',
+  follow_up_count: '跟进次数',
+  repurchase_rate: '复购率',
+  refund_rate: '退款率',
+  churn_rate: '流失率',
+  positive_review_rate: '好评率',
+  avg_customer_lifetime_value: '客户终身价值',
+  service_completion_rate: '服务完成率',
+  avg_shipping_hours: '平均发货时长',
+  task_on_time_rate: '任务按时完成率',
 };
 
-interface CaseDetail {
-  id: string;
-  title: string;
-  industry: string;
-  problem_type: string;
-  solution_summary: string;
-  improvement_score: number;
-  created_at: string;
-  // 扩展字段
-  problem_description?: string;
-  solution_details?: string;
-  implementation_steps?: string[];
-  key_metrics?: Array<{ name: string; before: number; after: number; unit: string }>;
-  lessons_learned?: string[];
-  recommendations?: string[];
-  duration_days?: number;
-  team_size?: number;
+function getIndustryLabel(industry: string): string {
+  const direct = industryLabels[industry];
+  if (direct) return direct;
+
+  const prefix = industry.split('_')[0];
+  return industryLabels[prefix] || industry;
+}
+
+function getIndicatorLabel(code: string): string {
+  return indicatorNameMap[code] || code;
+}
+
+function getActionLabel(type: string | undefined): string {
+  const actionMap: Record<string, string> = {
+    coupon_campaign: '优惠券活动',
+    message: '消息提醒',
+    seckill_activity: '秒杀活动',
+  };
+  return actionMap[type || ''] || (type || '未记录');
 }
 
 export default function CaseDetailPage() {
   const params = useParams();
   const navigate = useNavigate();
-  
   const caseId = params.caseId as string;
-  
-  const { data: caseDetail, isLoading } = useQuery<CaseDetail>({
+
+  const { data: caseDetail, isLoading } = useQuery<BackendCaseDetail>({
     queryKey: ['tracking', 'cases', caseId],
-    queryFn: () => trackingApi.getCaseDetail(caseId) as Promise<CaseDetail>,
+    queryFn: () => trackingApi.getCaseDetail(caseId) as Promise<BackendCaseDetail>,
     enabled: !!caseId,
   });
-  
+
   const handleBack = () => {
     navigate(-1);
   };
-  
+
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-[60vh]">
+      <div className='flex items-center justify-center h-[60vh]'>
         <Spin indicator={<LoadingOutlined style={{ fontSize: 48 }} spin />} />
       </div>
     );
   }
-  
+
   if (!caseDetail) {
     return (
-      <div className="space-y-6">
-        <Button 
-          icon={<ArrowLeftOutlined />} 
-          onClick={handleBack}
-        >
+      <div className='space-y-6'>
+        <Button icon={<ArrowLeftOutlined />} onClick={handleBack}>
           返回
         </Button>
-        <div className="flex items-center justify-center h-[50vh]">
-          <Empty description="案例不存在或已被删除" />
+        <div className='flex items-center justify-center h-[50vh]'>
+          <Empty description='案例不存在或已被删除' />
         </div>
       </div>
     );
   }
-  
-  const scoreColor = caseDetail.improvement_score >= 80 
-    ? 'text-emerald-400' 
-    : caseDetail.improvement_score >= 60 
-      ? 'text-amber-400' 
-      : 'text-gray-400';
-  
+
+  const planDetail = caseDetail.plan_detail || {};
+  const targetIndicators = caseDetail.target_indicators || [];
+  const indicatorChanges = caseDetail.indicator_changes || [];
+  const lessons = caseDetail.lessons_learned || [];
+  const planSteps = planDetail.steps || [];
+  const expectedImprovements = Object.entries(planDetail.expected_improvement || {});
+  const autoActions = (planDetail.auto_actions || []).map((item) => getActionLabel(item.type));
+  const solutionSummary = planDetail.description
+    || (targetIndicators.length > 0
+      ? `目标指标：${targetIndicators.map(getIndicatorLabel).join('、')}`
+      : '暂无方案说明');
+  const scoreColor = caseDetail.achievement_rate >= 80
+    ? 'text-emerald-400'
+    : caseDetail.achievement_rate >= 60
+      ? 'text-amber-400'
+      : 'text-gray-300';
+
+  const keyMetrics = indicatorChanges.filter((item) => (
+    typeof item.before_value === 'number' && typeof item.after_value === 'number'
+  ));
+
   return (
-    <div className="space-y-6">
-      {/* 页面标题 */}
-      <div className="flex justify-between items-center">
-        <div className="flex items-center gap-4">
-          <Button 
-            icon={<ArrowLeftOutlined />} 
-            onClick={handleBack}
-          />
+    <div className='space-y-6'>
+      <div className='flex justify-between items-center'>
+        <div className='flex items-center gap-4'>
+          <Button icon={<ArrowLeftOutlined />} onClick={handleBack} />
           <div>
-            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-              <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20">
+            <h1 className='text-2xl font-bold text-white flex items-center gap-3'>
+              <span className='w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20'>
                 <BookOutlined />
               </span>
               案例详情
             </h1>
-            <p className="text-gray-400 mt-1 text-sm">
-              {caseDetail.title}
-            </p>
+            <p className='text-gray-400 mt-1 text-sm'>{caseDetail.plan_name || '未命名方案'}</p>
           </div>
         </div>
       </div>
 
-      {/* 概览卡片 */}
-      <Card className="border-l-4 border-l-indigo-500">
+      <Card className='border-l-4 border-l-indigo-500'>
         <Row gutter={24}>
           <Col span={6}>
-            <Statistic 
-              title="提升效果"
-              value={caseDetail.improvement_score}
-              suffix="分"
-              valueStyle={{ color: caseDetail.improvement_score >= 80 ? '#10b981' : '#f59e0b' }}
+            <Statistic
+              title='达成率'
+              value={caseDetail.achievement_rate}
+              precision={1}
+              suffix='%'
+              valueStyle={{ color: caseDetail.achievement_rate >= 80 ? '#10b981' : '#f59e0b' }}
               prefix={<StarOutlined />}
             />
           </Col>
           <Col span={6}>
-            <Statistic 
-              title="所属行业"
-              value={industryLabels[caseDetail.industry] || caseDetail.industry}
+            <Statistic
+              title='所属行业'
+              value={getIndustryLabel(caseDetail.industry || 'general')}
               valueStyle={{ fontSize: 18, color: '#fff' }}
             />
           </Col>
           <Col span={6}>
-            <Statistic 
-              title="问题类型"
-              value={problemTypeLabels[caseDetail.problem_type] || caseDetail.problem_type}
+            <Statistic
+              title='目标指标数'
+              value={targetIndicators.length}
+              suffix='项'
               valueStyle={{ fontSize: 18, color: '#fff' }}
             />
           </Col>
           <Col span={6}>
-            <Statistic 
-              title="实施周期"
-              value={caseDetail.duration_days || '-'}
-              suffix="天"
+            <Statistic
+              title='方案步骤数'
+              value={planSteps.length || '-'}
               valueStyle={{ fontSize: 18, color: '#fff' }}
             />
           </Col>
         </Row>
       </Card>
 
-      {/* 基本信息 */}
-      <Card title={
-        <div className="flex items-center gap-2">
-          <span className="w-6 h-6 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 text-sm">
-            📋
-          </span>
-          基本信息
-        </div>
-      }>
-        <Descriptions bordered column={2} size="small">
-          <Descriptions.Item label="案例标题" span={2}>
-            <span className="font-medium">{caseDetail.title}</span>
-          </Descriptions.Item>
-          <Descriptions.Item label="行业">
-            <Tag color="blue">{industryLabels[caseDetail.industry] || caseDetail.industry}</Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="问题类型">
-            <Tag color="purple">{problemTypeLabels[caseDetail.problem_type] || caseDetail.problem_type}</Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="提升效果">
-            <span className={`font-bold ${scoreColor}`}>
-              {caseDetail.improvement_score}分
+      <Card
+        title={(
+          <div className='flex items-center gap-2'>
+            <span className='w-6 h-6 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 text-sm'>
+              基
             </span>
+            基本信息
+          </div>
+        )}
+      >
+        <Descriptions bordered column={2} size='small'>
+          <Descriptions.Item label='方案名称' span={2}>
+            <span className='font-medium'>{caseDetail.plan_name || '未命名方案'}</span>
           </Descriptions.Item>
-          <Descriptions.Item label="创建时间">
-            {dayjs(caseDetail.created_at).format('YYYY-MM-DD')}
+          <Descriptions.Item label='案例ID'>{caseDetail.case_id}</Descriptions.Item>
+          <Descriptions.Item label='创建时间'>{dayjs(caseDetail.created_at).format('YYYY-MM-DD HH:mm')}</Descriptions.Item>
+          <Descriptions.Item label='行业'>
+            <Tag color='blue'>{getIndustryLabel(caseDetail.industry || 'general')}</Tag>
           </Descriptions.Item>
-          {caseDetail.team_size && (
-            <Descriptions.Item label="团队规模">
-              {caseDetail.team_size}人
-            </Descriptions.Item>
-          )}
-          {caseDetail.duration_days && (
-            <Descriptions.Item label="实施周期">
-              {caseDetail.duration_days}天
-            </Descriptions.Item>
-          )}
+          <Descriptions.Item label='方案ID'>{caseDetail.plan_id || '-'}</Descriptions.Item>
+          <Descriptions.Item label='达成率'>
+            <span className={`font-bold ${scoreColor}`}>{caseDetail.achievement_rate.toFixed(1)}%</span>
+          </Descriptions.Item>
+          <Descriptions.Item label='追踪线程'>{caseDetail.thread_id || '-'}</Descriptions.Item>
+          <Descriptions.Item label='目标指标' span={2}>
+            <div className='flex flex-wrap gap-2'>
+              {targetIndicators.length > 0
+                ? targetIndicators.map((code) => (
+                    <Tag key={code} color='purple'>
+                      {getIndicatorLabel(code)}
+                    </Tag>
+                  ))
+                : <span className='text-gray-500'>未记录</span>}
+            </div>
+          </Descriptions.Item>
         </Descriptions>
       </Card>
 
       <Row gutter={16}>
-        {/* 问题描述 */}
         <Col span={12}>
-          <Card 
-            title={
-              <div className="flex items-center gap-2">
-                <span className="w-6 h-6 rounded-lg bg-rose-500/10 flex items-center justify-center text-rose-400 text-sm">
-                  ❓
+          <Card
+            title={(
+              <div className='flex items-center gap-2'>
+                <span className='w-6 h-6 rounded-lg bg-rose-500/10 flex items-center justify-center text-rose-400 text-sm'>
+                  述
                 </span>
-                问题描述
+                方案说明
               </div>
-            }
-            className="h-full"
+            )}
+            className='h-full'
           >
-            <p className="text-gray-300 leading-relaxed">
-              {caseDetail.problem_description || caseDetail.solution_summary || '暂无问题描述'}
-            </p>
+            <p className='text-gray-300 leading-relaxed'>{solutionSummary}</p>
           </Card>
         </Col>
-        
-        {/* 解决方案 */}
         <Col span={12}>
-          <Card 
-            title={
-              <div className="flex items-center gap-2">
-                <span className="w-6 h-6 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-sm">
-                  💡
+          <Card
+            title={(
+              <div className='flex items-center gap-2'>
+                <span className='w-6 h-6 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-sm'>
+                  执
                 </span>
-                解决方案
+                执行信息
               </div>
-            }
-            className="h-full"
+            )}
+            className='h-full'
           >
-            <p className="text-gray-300 leading-relaxed">
-              {caseDetail.solution_details || caseDetail.solution_summary || '暂无解决方案'}
-            </p>
+            <div className='space-y-3 text-gray-300'>
+              <div>
+                <div className='text-gray-400 text-xs mb-1'>实施步骤</div>
+                <div>{planSteps.length > 0 ? `${planSteps.length} 个步骤` : '暂无步骤信息'}</div>
+              </div>
+              <div>
+                <div className='text-gray-400 text-xs mb-1'>自动动作</div>
+                <div className='flex flex-wrap gap-2'>
+                  {autoActions.length > 0
+                    ? autoActions.map((action) => (
+                        <Tag key={action} color='cyan'>
+                          {action}
+                        </Tag>
+                      ))
+                    : <span className='text-gray-500'>未配置</span>}
+                </div>
+              </div>
+            </div>
           </Card>
         </Col>
       </Row>
 
-      {/* 关键指标改善 */}
-      {caseDetail.key_metrics && caseDetail.key_metrics.length > 0 && (
-        <Card 
-          title={
-            <div className="flex items-center gap-2">
-              <span className="w-6 h-6 rounded-lg bg-cyan-500/10 flex items-center justify-center text-cyan-400 text-sm">
+      {keyMetrics.length > 0 && (
+        <Card
+          title={(
+            <div className='flex items-center gap-2'>
+              <span className='w-6 h-6 rounded-lg bg-cyan-500/10 flex items-center justify-center text-cyan-400 text-sm'>
                 <RiseOutlined />
               </span>
               关键指标改善
             </div>
-          }
+          )}
         >
-          <div className="grid grid-cols-4 gap-4">
-            {caseDetail.key_metrics.map((metric, index) => {
-              const improvement = ((metric.after - metric.before) / metric.before) * 100;
+          <div className='grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4'>
+            {keyMetrics.map((metric) => {
+              const changePct = metric.change_pct ?? 0;
+              const isImproved = !!metric.improved;
+              const deltaText = `${changePct > 0 ? '+' : ''}${changePct.toFixed(1)}%`;
               return (
-                <div 
-                  key={index}
-                  className="p-4 bg-gray-800/50 rounded-lg text-center"
-                >
-                  <div className="text-gray-400 text-sm mb-2">{metric.name}</div>
-                  <div className="flex justify-center items-center gap-2">
-                    <span className="text-gray-500">{metric.before}{metric.unit}</span>
-                    <span className="text-gray-600">→</span>
-                    <span className="text-emerald-400 font-bold">{metric.after}{metric.unit}</span>
+                <div key={metric.indicator_code} className='p-4 bg-gray-800/50 rounded-lg text-center'>
+                  <div className='text-gray-400 text-sm mb-2'>{getIndicatorLabel(metric.indicator_code)}</div>
+                  <div className='flex justify-center items-center gap-2'>
+                    <span className='text-gray-500'>{metric.before_value}</span>
+                    <span className='text-gray-600'>→</span>
+                    <span className='text-white font-bold'>{metric.after_value}</span>
                   </div>
-                  <Tag color="green" className="!mt-2">
-                    +{improvement.toFixed(1)}%
+                  <Tag color={isImproved ? 'green' : changePct === 0 ? 'default' : 'red'} className='!mt-2'>
+                    {deltaText}
                   </Tag>
                 </div>
               );
@@ -277,24 +341,38 @@ export default function CaseDetailPage() {
         </Card>
       )}
 
-      {/* 实施步骤 */}
-      {caseDetail.implementation_steps && caseDetail.implementation_steps.length > 0 && (
-        <Card 
-          title={
-            <div className="flex items-center gap-2">
-              <span className="w-6 h-6 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400 text-sm">
-                📝
+      {planSteps.length > 0 && (
+        <Card
+          title={(
+            <div className='flex items-center gap-2'>
+              <span className='w-6 h-6 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400 text-sm'>
+                步
               </span>
               实施步骤
             </div>
-          }
+          )}
         >
           <Timeline
-            items={caseDetail.implementation_steps.map((step, index) => ({
+            items={planSteps.map((step, index) => ({
               color: 'blue',
               children: (
-                <div className="p-3 bg-gray-800/30 rounded-lg">
-                  <span className="text-gray-300">{step}</span>
+                <div className='p-3 bg-gray-800/30 rounded-lg space-y-3'>
+                  <div className='flex flex-wrap gap-2 items-center'>
+                    <span className='text-white font-medium'>步骤 {step.step || index + 1}</span>
+                    {step.owner_dept && <Tag color='gold'>{step.owner_dept}</Tag>}
+                    {step.timeline && <Tag color='geekblue'>{step.timeline}</Tag>}
+                  </div>
+                  {step.action && <div className='text-gray-300 leading-relaxed'>{step.action}</div>}
+                  {step.implementation_steps && step.implementation_steps.length > 0 && (
+                    <ul className='space-y-2'>
+                      {step.implementation_steps.map((item) => (
+                        <li key={item} className='flex items-start gap-2 text-gray-400'>
+                          <CheckCircleOutlined className='text-emerald-400 mt-0.5' />
+                          <span>{item}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               ),
             }))}
@@ -302,58 +380,48 @@ export default function CaseDetailPage() {
         </Card>
       )}
 
-      <Row gutter={16}>
-        {/* 经验教训 */}
-        {caseDetail.lessons_learned && caseDetail.lessons_learned.length > 0 && (
-          <Col span={12}>
-            <Card 
-              title={
-                <div className="flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400 text-sm">
-                    📚
-                  </span>
-                  经验教训
-                </div>
-              }
-            >
-              <ul className="space-y-2">
-                {caseDetail.lessons_learned.map((lesson, index) => (
-                  <li key={index} className="flex items-start gap-2 text-gray-300">
-                    <span className="text-purple-400 mt-0.5">•</span>
-                    {lesson}
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          </Col>
-        )}
+      {expectedImprovements.length > 0 && (
+        <Card
+          title={(
+            <div className='flex items-center gap-2'>
+              <span className='w-6 h-6 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400 text-sm'>
+                <BulbOutlined />
+              </span>
+              预期改善
+            </div>
+          )}
+        >
+          <div className='flex flex-wrap gap-2'>
+            {expectedImprovements.map(([code, value]) => (
+              <Tag key={code} color={value >= 0 ? 'green' : 'red'}>
+                {getIndicatorLabel(code)}: {value > 0 ? '+' : ''}{value}
+              </Tag>
+            ))}
+          </div>
+        </Card>
+      )}
 
-        {/* 建议 */}
-        {caseDetail.recommendations && caseDetail.recommendations.length > 0 && (
-          <Col span={12}>
-            <Card 
-              title={
-                <div className="flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400 text-sm">
-                    <BulbOutlined />
-                  </span>
-                  改进建议
-                </div>
-              }
-            >
-              <ul className="space-y-2">
-                {caseDetail.recommendations.map((rec, index) => (
-                  <li key={index} className="flex items-start gap-2 text-gray-300">
-                    <CheckCircleOutlined className="text-emerald-400 mt-0.5" />
-                    {rec}
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          </Col>
-        )}
-      </Row>
+      {lessons.length > 0 && (
+        <Card
+          title={(
+            <div className='flex items-center gap-2'>
+              <span className='w-6 h-6 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400 text-sm'>
+                复
+              </span>
+              经验教训
+            </div>
+          )}
+        >
+          <ul className='space-y-2'>
+            {lessons.map((lesson) => (
+              <li key={lesson} className='flex items-start gap-2 text-gray-300'>
+                <span className='text-purple-400 mt-0.5'>•</span>
+                <span>{lesson}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
     </div>
   );
 }
-

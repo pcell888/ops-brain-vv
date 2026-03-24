@@ -9,8 +9,9 @@ import psycopg
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from src.api.deps import get_graph_app, generate_thread_id
-from src.core.config import get_settings
+from src.api.deps import astream_events_with_retry, generate_thread_id
+from src.core.config import CN_TZ, get_settings
+from src.core.tenant_config import normalize_diagnosis_trigger_mode
 from src.scheduler.task_deadline_checker import check_task_deadlines
 from src.scheduler.effect_review_checker import check_pending_reviews
 from src.scheduler.snapshot_collector import collect_effect_snapshots
@@ -32,7 +33,6 @@ async def _get_active_tenants() -> list[dict]:
 
 async def _run_single_diagnosis(tenant_id: str, store_id: str):
     """为单个租户/店铺执行自动诊断。"""
-    app = await get_graph_app()
     thread_id = generate_thread_id()
     config = {"configurable": {"thread_id": thread_id}}
     initial_state = {
@@ -44,7 +44,7 @@ async def _run_single_diagnosis(tenant_id: str, store_id: str):
     }
 
     try:
-        async for _ in app.astream_events(initial_state, config=config, version="v2"):
+        async for _ in astream_events_with_retry(initial_state, config):
             pass
         logger.info("周度诊断完成: tenant=%s, store=%s, thread=%s", tenant_id, store_id, thread_id)
     except Exception as e:
@@ -60,8 +60,10 @@ async def run_weekly_diagnosis():
     for tenant in tenants:
         tenant_id = tenant["tenant_id"]
         config = tenant.get("config") or {}
-        trigger_mode = config.get("diagnosis_trigger_mode", "manual")
-        if trigger_mode not in ("auto", "both"):
+        trigger_mode = normalize_diagnosis_trigger_mode(
+            config.get("diagnosis_trigger_mode", "manual")
+        )
+        if trigger_mode != "auto":
             logger.info("租户 %s 未开启自动诊断 (mode=%s)，跳过", tenant_id, trigger_mode)
             continue
         await _run_single_diagnosis(tenant_id, "")
@@ -79,31 +81,31 @@ async def run_weekly_diagnosis():
 
 def start_scheduler():
     """启动定时任务调度器。"""
-    scheduler = AsyncIOScheduler()
+    scheduler = AsyncIOScheduler(timezone=CN_TZ)
     scheduler.add_job(
         run_weekly_diagnosis,
-        trigger=CronTrigger(day_of_week="mon", hour=2, minute=0),
+        trigger=CronTrigger(day_of_week="mon", hour=2, minute=0, timezone=CN_TZ),
         id="weekly_diagnosis",
         name="周度自动诊断",
         replace_existing=True,
     )
     scheduler.add_job(
         check_task_deadlines,
-        trigger=CronTrigger(hour=9, minute=0),
+        trigger=CronTrigger(hour=9, minute=0, timezone=CN_TZ),
         id="task_deadline_checker",
         name="每日任务到期/超期检查",
         replace_existing=True,
     )
     scheduler.add_job(
         collect_effect_snapshots,
-        trigger=CronTrigger(hour=3, minute=0),
+        trigger=CronTrigger(hour=3, minute=0, timezone=CN_TZ),
         id="snapshot_collector",
         name="每日效果追踪快照采集",
         replace_existing=True,
     )
     scheduler.add_job(
         check_pending_reviews,
-        trigger=CronTrigger(hour=4, minute=0),
+        trigger=CronTrigger(hour=4, minute=0, timezone=CN_TZ),
         id="effect_review_checker",
         name="每日效果追踪复盘检查",
         replace_existing=True,

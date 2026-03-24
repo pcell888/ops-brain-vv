@@ -155,6 +155,19 @@ function getAnalysisPeriodLabel(days?: number): string {
   return '近90天'; // 默认与设置一致
 }
 
+function normalizeAutoDiagnosisMode(value?: string): 'auto' | 'manual' {
+  return value === 'manual' ? 'manual' : value ? 'auto' : 'manual';
+}
+
+function getAutoDiagnosisLabel(mode: 'auto' | 'manual'): string {
+  return mode === 'auto' ? '自动' : '手动';
+}
+
+function getNextDiagnosisTime(): string {
+  const now = dayjs();
+  return now.add(1, 'week').startOf('week').add(1, 'day').hour(2).minute(0).format('MM月DD日 HH:mm');
+}
+
 export default function DashboardPage() {
   const { message } = App.useApp();
   const navigate = useNavigate();
@@ -172,38 +185,9 @@ export default function DashboardPage() {
   const industry = (enterpriseDetail as { industry?: string } | undefined)?.industry || 'general';
   const analysisPeriodDays = (enterpriseDetail as { config?: { analysis_period_days?: number } } | undefined)?.config?.analysis_period_days;
   const analysisPeriodLabel = getAnalysisPeriodLabel(analysisPeriodDays);
-  const autoDiagnosisFrequency = (enterpriseDetail as { config?: { auto_diagnosis_frequency?: string } } | undefined)?.config?.auto_diagnosis_frequency || 'weekly';
-  
-  // 频率标签映射
-  const frequencyLabelMap: Record<string, string> = {
-    daily: '每日',
-    weekly: '每周',
-    monthly: '每月',
-    manual: '仅手动',
-  };
-  
-  function getFrequencyLabel(frequency: string): string {
-    return frequencyLabelMap[frequency] || '未设置';
-  }
-  
-  // 计算下次诊断时间
-  function getNextDiagnosisTime(frequency: string): string {
-    if (frequency === 'manual') {
-      return '仅手动';
-    }
-    
-    const now = dayjs();
-    switch (frequency) {
-      case 'daily':
-        return now.add(1, 'day').hour(2).minute(0).format('MM月DD日 HH:mm');
-      case 'weekly':
-        return now.add(1, 'week').startOf('week').add(1, 'day').hour(2).minute(0).format('MM月DD日 HH:mm');
-      case 'monthly':
-        return now.add(1, 'month').date(1).hour(2).minute(0).format('MM月DD日 HH:mm');
-      default:
-        return '未设置';
-    }
-  }
+  const autoDiagnosisMode = normalizeAutoDiagnosisMode(
+    (enterpriseDetail as { config?: { auto_diagnosis_frequency?: string } } | undefined)?.config?.auto_diagnosis_frequency
+  );
   
   const { 
     data: report, 
@@ -714,21 +698,21 @@ export default function DashboardPage() {
               <p className="text-gray-400 text-sm">
                 基于{analysisPeriodLabel}数据，AI智能分析企业运营状况
               </p>
-              {autoDiagnosisFrequency !== 'manual' ? (
-                <Tooltip title={`下次自动诊断：${getNextDiagnosisTime(autoDiagnosisFrequency)}`}>
+              {autoDiagnosisMode === 'auto' ? (
+                <Tooltip title={`下次自动诊断：${getNextDiagnosisTime()}`}>
                   <Tag 
                     color="blue" 
                     className="cursor-pointer hover:opacity-80"
                     onClick={() => navigate('/settings?tab=general')}
                   >
                     <SyncOutlined className="mr-1" />
-                    自动诊断：{getFrequencyLabel(autoDiagnosisFrequency)}
+                    诊断方式：{getAutoDiagnosisLabel(autoDiagnosisMode)}
                   </Tag>
                 </Tooltip>
               ) : (
                 <Tag color="default">
                   <CalendarOutlined className="mr-1" />
-                  仅手动诊断
+                  诊断方式：{getAutoDiagnosisLabel(autoDiagnosisMode)}
                 </Tag>
               )}
             </div>
@@ -776,21 +760,21 @@ export default function DashboardPage() {
             <p className="text-gray-400 text-sm">
               基于{analysisPeriodLabel}数据，AI智能分析企业运营状况
             </p>
-            {autoDiagnosisFrequency !== 'manual' ? (
-              <Tooltip title={`下次自动诊断：${getNextDiagnosisTime(autoDiagnosisFrequency)}`}>
+            {autoDiagnosisMode === 'auto' ? (
+              <Tooltip title={`下次自动诊断：${getNextDiagnosisTime()}`}>
                 <Tag 
                   color="blue" 
                   className="cursor-pointer hover:opacity-80"
                   onClick={() => navigate('/settings?tab=general')}
                 >
                   <SyncOutlined className="mr-1" />
-                  自动诊断：{getFrequencyLabel(autoDiagnosisFrequency)}
+                  诊断方式：{getAutoDiagnosisLabel(autoDiagnosisMode)}
                 </Tag>
               </Tooltip>
             ) : (
               <Tag color="default">
                 <CalendarOutlined className="mr-1" />
-                仅手动诊断
+                诊断方式：{getAutoDiagnosisLabel(autoDiagnosisMode)}
               </Tag>
             )}
           </div>

@@ -469,33 +469,6 @@ async def compat_diagnosis_status(diagnosis_id: str):
     """兼容前端 GET /diagnosis/status/{diagnosisId}。"""
     report = await get_report_from_db(diagnosis_id)
     if report:
-        task = running_tasks.get(diagnosis_id)
-        if task and not task.done():
-            progress = 0
-            msg = "诊断执行中..."
-            try:
-                app = await get_graph_app()
-                config = {"configurable": {"thread_id": diagnosis_id}}
-                state = await app.aget_state(config)
-                values = state.values if state and state.values else {}
-                msgs = values.get("progress_messages") or []
-                if msgs:
-                    last = msgs[-1] if isinstance(msgs[-1], dict) else {}
-                    msg = str(last.get("content", "")) or msg
-                    try:
-                        progress = int(float(last.get("percent", 0)))
-                    except (TypeError, ValueError):
-                        pass
-            except Exception:
-                pass
-            hs = report.get("health_score", 0)
-            return {
-                "diagnosis_id": diagnosis_id,
-                "status": "running",
-                "progress": progress,
-                "message": msg,
-                "health_score": hs if not isinstance(hs, dict) else hs.get("total_score", 0),
-            }
         hs = report.get("health_score", 0)
         return {
             "diagnosis_id": diagnosis_id,
@@ -506,12 +479,30 @@ async def compat_diagnosis_status(diagnosis_id: str):
         }
 
     task = running_tasks.get(diagnosis_id)
-    if task and not task.done():
+    is_running = task is not None and not task.done()
+    if is_running:
+        progress = 0
+        msg = "诊断执行中..."
+        try:
+            app = await get_graph_app()
+            config = {"configurable": {"thread_id": diagnosis_id}}
+            state = await app.aget_state(config)
+            values = state.values if state and state.values else {}
+            msgs = values.get("progress_messages") or []
+            if msgs:
+                last = msgs[-1] if isinstance(msgs[-1], dict) else {}
+                msg = str(last.get("content", "")) or msg
+                try:
+                    progress = int(float(last.get("percent", 0)))
+                except (TypeError, ValueError):
+                    pass
+        except Exception:
+            pass
         return {
             "diagnosis_id": diagnosis_id,
-            "status": "running",
-            "progress": 0,
-            "message": "诊断执行中...",
+            "status": "pending" if progress <= 0 else "running",
+            "progress": progress,
+            "message": msg,
             "health_score": None,
         }
 
@@ -519,34 +510,50 @@ async def compat_diagnosis_status(diagnosis_id: str):
     config = {"configurable": {"thread_id": diagnosis_id}}
     try:
         state = await app.aget_state(config)
-        values = state.values if state and state.values else {}
-        if values.get("diagnosis_report"):
-            hs = values["diagnosis_report"].get("health_score", 0)
-            return {
-                "diagnosis_id": diagnosis_id,
-                "status": "completed",
-                "progress": 100,
-                "message": "诊断完成",
-                "health_score": hs if not isinstance(hs, dict) else hs.get("total_score", 0),
-            }
-        if state.next:
-            return {
-                "diagnosis_id": diagnosis_id,
-                "status": "running",
-                "progress": 0,
-                "message": "诊断执行中...",
-                "health_score": None,
-            }
     except Exception:
-        pass
+        state = None
 
-    return {
-        "diagnosis_id": diagnosis_id,
-        "status": "failed",
-        "progress": 0,
-        "message": "诊断不存在或已失败",
-        "health_score": None,
-    }
+    values = state.values if state and state.values else {}
+    state_report = values.get("diagnosis_report") if isinstance(values, dict) else None
+    if isinstance(state_report, dict):
+        hs = state_report.get("health_score", 0)
+        return {
+            "diagnosis_id": diagnosis_id,
+            "status": "completed",
+            "progress": 100,
+            "message": "诊断完成",
+            "health_score": hs if not isinstance(hs, dict) else hs.get("total_score", 0),
+        }
+
+    if state and state.next:
+        msgs = values.get("progress_messages") or [] if isinstance(values, dict) else []
+        msg = "诊断执行中..."
+        progress = 0
+        if msgs:
+            last = msgs[-1] if isinstance(msgs[-1], dict) else {}
+            msg = str(last.get("content", "")) or msg
+            try:
+                progress = int(float(last.get("percent", 0)))
+            except (TypeError, ValueError):
+                pass
+        return {
+            "diagnosis_id": diagnosis_id,
+            "status": "pending" if progress <= 0 else "running",
+            "progress": progress,
+            "message": msg,
+            "health_score": None,
+        }
+
+    if task is not None and task.done():
+        return {
+            "diagnosis_id": diagnosis_id,
+            "status": "failed",
+            "progress": 0,
+            "message": "诊断执行失败",
+            "health_score": None,
+        }
+
+    raise HTTPException(status_code=404, detail="诊断记录不存在")
 
 
 # ── /diagnosis/drill-down/{metricName} ──────────────────────────

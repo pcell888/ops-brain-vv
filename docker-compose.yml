@@ -1,80 +1,96 @@
 services:
   ops-brain-api:
     build: .
-    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port ${OPS_BRAIN_API_PORT:-8000}
     ports:
-      - "8000:8000"
+      - "${OPS_BRAIN_API_PORT:-8000}:${OPS_BRAIN_API_PORT:-8000}"
     environment:
       - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
       - REDIS_URL=redis://redis:6379/0
+      # 容器内访问 wlwq 模拟服务须用 Compose 服务名，不能用 localhost
+      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=qwen-max
       - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
     depends_on:
       - postgres
       - redis
+      - wlwq-enterprise
 
   mcp-metrics:
     build: .
     command: python -m src.mcp_servers.metrics_server
-    ports:
-      - "8100:8100"
     environment:
       - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
       - REDIS_URL=redis://redis:6379/0
+      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
       - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
 
   mcp-crm:
     build: .
     command: python -m src.mcp_servers.crm_server
-    ports:
-      - "8101:8101"
     environment:
       - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
       - REDIS_URL=redis://redis:6379/0
+      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
       - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
 
   mcp-benchmark:
     build: .
     command: python -m src.mcp_servers.benchmark_server
-    ports:
-      - "8102:8102"
     environment:
       - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
       - REDIS_URL=redis://redis:6379/1
+      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
       - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
 
   mcp-task:
     build: .
     command: python -m src.mcp_servers.task_server
-    ports:
-      - "8103:8103"
     environment:
       - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
       - REDIS_URL=redis://redis:6379/0
+      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
       - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
 
   mcp-notify:
     build: .
     command: python -m src.mcp_servers.notify_server
-    ports:
-      - "8104:8104"
     environment:
       - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
       - REDIS_URL=redis://redis:6379/0
+      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
       - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
 
   wlwq-enterprise:
     build: .
-    command: uvicorn src.wlwq.app:app --host 0.0.0.0 --port 8200
+    command: uvicorn src.wlwq.app:app --host 0.0.0.0 --port ${WLWQ_ENTERPRISE_PORT:-8200}
     ports:
-      - "8200:8200"
+      - "${WLWQ_ENTERPRISE_PORT:-8200}:${WLWQ_ENTERPRISE_PORT:-8200}"
     environment:
+      # 容器内须用 Compose 服务名 postgres，不能用 localhost；与 ops_brain 共用库即可（wlwq 表名不冲突）
+      - WLWQ_POSTGRES_URI=postgresql+asyncpg://postgres:password@postgres:5432/ops_brain
       - WLWQ_MYSQL_HOST=${WLWQ_MYSQL_HOST:-192.168.1.249}
       - WLWQ_MYSQL_PORT=${WLWQ_MYSQL_PORT:-3306}
       - WLWQ_MYSQL_USER=${WLWQ_MYSQL_USER:-wlwq}
       - WLWQ_MYSQL_PASSWORD=${WLWQ_MYSQL_PASSWORD:-Mysql@db$123!}
       - WLWQ_MYSQL_DATABASE=${WLWQ_MYSQL_DATABASE:-wlwq-enterprise-service}
+    depends_on:
+      - postgres
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - BACKEND_URL=http://ops-brain-api:${OPS_BRAIN_API_PORT:-8000}
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      - ops-brain-api
 
   postgres:
     image: postgres:16
@@ -84,12 +100,13 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
 
 volumes:
   pgdata:
+  frontend_node_modules:

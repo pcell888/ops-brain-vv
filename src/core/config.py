@@ -15,6 +15,8 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 class Settings(BaseSettings):
     postgres_uri: str = "postgresql://postgres:password@localhost:5432/ops_brain"
     wlwq_postgres_uri: str | None = None  # wlwq 模拟业务库，不设则 wlwq 用 POSTGRES_URI
+    # Docker 内需指向服务名，如 http://wlwq-enterprise:8200（覆盖 tenant_registry 中 wlwq_local 的 api_base_url）
+    wlwq_business_api_base: str | None = None
     redis_url: str = "redis://localhost:6379/0"
 
     llm_api_key: str = ""

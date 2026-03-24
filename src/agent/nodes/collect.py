@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from src.agent.state import DiagnosisState
-from src.agent.tools import mcp_call, emit_progress
+from src.agent.tools import mcp_call, emit_progress, unwrap_mcp_json_value
 from src.core.calculator import extract_indicator_codes, resolve_active_indicators, NOT_APPLICABLE_MAP
 from src.core.config import CN_TZ, get_settings
 from src.core.tenant_config import get_tenant_config
@@ -61,15 +61,16 @@ async def collect_data_node(state: DiagnosisState) -> dict:
 
     results = await asyncio.gather(*tasks)
     profile = results[0]
-    if isinstance(profile, str):
-        import json as _json
-        try:
-            profile = _json.loads(profile)
-        except (ValueError, TypeError):
-            profile = {}
+    if not isinstance(profile, dict):
+        profile = unwrap_mcp_json_value(profile)
     if not isinstance(profile, dict):
         profile = {}
-    dim_results = dict(zip(ordered_dims, results[1:]))
+    dim_results: dict[str, object] = {}
+    for dim, raw in zip(ordered_dims, results[1:]):
+        v = raw
+        if not isinstance(v, dict):
+            v = unwrap_mcp_json_value(v)
+        dim_results[dim] = v if isinstance(v, dict) else {}
 
     emit_progress(state, "数据采集完成，正在获取行业基准数据...", percent=25)
 
@@ -81,6 +82,10 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         "industry_code": profile.get("industry_code", ""),
         "indicator_codes": filtered_codes,
     })
+    if not isinstance(benchmarks, dict):
+        benchmarks = unwrap_mcp_json_value(benchmarks)
+    if not isinstance(benchmarks, dict):
+        benchmarks = {}
 
     emit_progress(state, f"已采集 {len(filtered_codes)} 项指标，行业基准数据就绪", percent=33)
 

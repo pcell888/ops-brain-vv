@@ -1,5 +1,6 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig } from 'axios';
+import { useAppStore } from '@/stores/app-store';
 
 /**
  * 说明：
@@ -36,7 +37,9 @@ api.interceptors.request.use(
     }
     
     // 添加企业ID
-    const enterpriseId = typeof window !== 'undefined' ? localStorage.getItem('enterpriseId') : null;
+    const enterpriseId =
+      useAppStore.getState().currentEnterprise?.id
+      || (typeof window !== 'undefined' ? localStorage.getItem('enterpriseId') : null);
     if (enterpriseId) {
       config.headers['X-Enterprise-ID'] = enterpriseId;
     }
@@ -78,10 +81,27 @@ export default api;
 // ============ 企业模块 API ============
 export type EnterpriseConfig = {
   analysis_period_days?: number;
-  auto_diagnosis_frequency?: string;
+  auto_diagnosis_frequency?: 'auto' | 'manual';
   industry_benchmark?: string;
   solution_sort_strategy?: string;
   max_solutions?: number;
+};
+
+export type EnterpriseStore = {
+  store_id: string;
+  store_name?: string;
+};
+
+export type EnterpriseDetail = {
+  id: string;
+  name: string;
+  industry?: string | null;
+  scale?: string | null;
+  team_size?: number | null;
+  config?: EnterpriseConfig;
+  stores?: EnterpriseStore[];
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type EnterpriseContext = {
@@ -111,7 +131,7 @@ export type DataQualityReport = {
 
 export const enterpriseApi = {
   list: () => api.get('/enterprises'),
-  get: (enterpriseId: string) => api.get(`/enterprises/${enterpriseId}`),
+  get: (enterpriseId: string) => api.get<EnterpriseDetail>(`/enterprises/${enterpriseId}`),
   updateConfig: (enterpriseId: string, config: EnterpriseConfig) =>
     api.patch(`/enterprises/${enterpriseId}/config`, config),
   updateContext: (enterpriseId: string, context: EnterpriseContext) =>

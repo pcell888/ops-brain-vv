@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from src.api.deps import get_graph_app
+from src.api.deps import astream_events_with_retry, get_graph_app
 from src.core.pending_review_repo import get_due_reviews, mark_review_done
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ async def check_pending_reviews():
                 await mark_review_done(thread_id)
                 continue
 
-            async for _ in app.astream_events(None, config=config, version="v2"):
+            async for _ in astream_events_with_retry(None, config):
                 pass
 
             await mark_review_done(thread_id)
