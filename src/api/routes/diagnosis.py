@@ -16,7 +16,14 @@ from src.core.calculator import list_available_indicators
 from src.core.calculator import DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS, INDICATOR_META
 from src.core.diagnosis_report_repo import list_reports, get_report as get_report_from_db
 from src.core.tenant_config import get_tenant_config
-from src.api.deps import astream_events_with_retry, get_graph_app, manager, running_tasks, generate_thread_id
+from src.api.deps import (
+    astream_events_with_retry,
+    get_graph_app,
+    manager,
+    running_tasks,
+    generate_thread_id,
+    progress_cache,
+)
 from src.api.routes.compat_ws import (
     get_active_diagnosis_thread_for_tenant,
     register_thread_enterprise,
@@ -79,11 +86,18 @@ def _extract_health_score_value(report: dict | None) -> float | None:
     except (TypeError, ValueError):
         return None
 
+
 # 仅处理图内节点事件，避免顶层 LangGraph 的 on_chain_end 重复推送整图 progress_messages
-_WORKFLOW_NODES = frozenset({
-    "collect_data", "diagnose", "generate_solutions", "wait_adoption",
-    "execute_plans", "track_effects",
-})
+_WORKFLOW_NODES = frozenset(
+    {
+        "collect_data",
+        "diagnose",
+        "generate_solutions",
+        "wait_adoption",
+        "execute_plans",
+        "track_effects",
+    }
+)
 
 _NODE_START_PERCENT = {
     "collect_data": 5,
@@ -98,14 +112,10 @@ _NODE_COMPLETE_PERCENT = {
 }
 
 
-_METRIC_NAME_TO_CODE = {
-    code.lower(): code for code in INDICATOR_META.keys()
-}
-_METRIC_NAME_TO_CODE.update({
-    (meta.get("name") or "").strip().lower(): code
-    for code, meta in INDICATOR_META.items()
-    if meta.get("name")
-})
+_METRIC_NAME_TO_CODE = {code.lower(): code for code in INDICATOR_META.keys()}
+_METRIC_NAME_TO_CODE.update(
+    {(meta.get("name") or "").strip().lower(): code for code, meta in INDICATOR_META.items() if meta.get("name")}
+)
 
 _biz_router = TenantRouter()
 _biz = BizAPIClient(_biz_router)
@@ -171,10 +181,7 @@ async def _query_drill_data_from_wlwq(
 
     allowed = DRILL_ITEM_FIELDS.get(metric_code)
     if allowed:
-        items = [
-            {k: v for k, v in (it if isinstance(it, dict) else {}).items() if k in allowed}
-            for it in raw_items
-        ]
+        items = [{k: v for k, v in (it if isinstance(it, dict) else {}).items() if k in allowed} for it in raw_items]
     else:
         items = raw_items
     total = data.get("total", len(items)) if isinstance(data, dict) else len(items)
@@ -183,7 +190,9 @@ async def _query_drill_data_from_wlwq(
 
 @router.get("/indicators", summary="获取可选指标清单")
 async def get_available_indicators(
-    dimensions: list[str] | None = Query(default=None, description="按维度筛选，如 ?dimensions=crm&dimensions=marketing"),
+    dimensions: list[str] | None = Query(
+        default=None, description="按维度筛选，如 ?dimensions=crm&dimensions=marketing"
+    ),
 ):
     """返回所有可选指标清单（按维度分组），供前端构建选择 UI。"""
     grouped = list_available_indicators(dimensions)
@@ -241,6 +250,7 @@ async def _run_diagnosis_with_stream(
     triggered_by: str | None = None,
     selected_dimensions: list[str] | None = None,
     selected_indicators: list[str] | None = None,
+    auth_token: str | None = None,
 ):
     """核心: 流式运行 LangGraph 并推送进度。"""
     config = {"configurable": {"thread_id": thread_id}}
@@ -252,6 +262,7 @@ async def _run_diagnosis_with_stream(
         "triggered_by": triggered_by,
         "selected_dimensions": selected_dimensions,
         "selected_indicators": selected_indicators,
+        "auth_token": auth_token,
         "progress_messages": [],
     }
 
@@ -301,29 +312,38 @@ async def _run_diagnosis_with_stream(
                 await manager.send_progress(thread_id, payload)
 
                 if node_name == "diagnose" and isinstance(output, dict) and "health_score" in output:
-                    await manager.send_progress(thread_id, {
-                        "type": "diagnosis_result",
-                        "health_score": output["health_score"],
-                        "anomaly_count": len(output.get("anomalies", [])),
-                        "dimension_scores": output.get("dimension_scores"),
-                    })
+                    await manager.send_progress(
+                        thread_id,
+                        {
+                            "type": "diagnosis_result",
+                            "health_score": output["health_score"],
+                            "anomaly_count": len(output.get("anomalies", [])),
+                            "dimension_scores": output.get("dimension_scores"),
+                        },
+                    )
 
                 if node_name == "generate_solutions" and isinstance(output, dict) and "solution_plans" in output:
-                    await manager.send_progress(thread_id, {
-                        "type": "solutions_ready",
-                        "plans": output["solution_plans"],
-                    })
+                    await manager.send_progress(
+                        thread_id,
+                        {
+                            "type": "solutions_ready",
+                            "plans": output["solution_plans"],
+                        },
+                    )
 
     except asyncio.CancelledError:
         logger.info("诊断流程已取消: thread=%s", thread_id)
         return
     except Exception as e:
         logger.error("诊断流程异常: %s", e, exc_info=True)
-        await manager.send_progress(thread_id, {
-            "type": "error",
-            "message": f"诊断流程出错: {str(e)}",
-            "timestamp": datetime.now(CN_TZ).isoformat(),
-        })
+        await manager.send_progress(
+            thread_id,
+            {
+                "type": "error",
+                "message": f"诊断流程出错: {str(e)}",
+                "timestamp": datetime.now(CN_TZ).isoformat(),
+            },
+        )
         return
     finally:
         clear_progress_sender()
@@ -331,23 +351,32 @@ async def _run_diagnosis_with_stream(
     app = await get_graph_app()
     state = await app.aget_state(config)
     if state.next and "wait_adoption" in state.next:
-        await manager.send_progress(thread_id, {
-            "type": "completed",
-            "message": "方案已生成，请选择需要采纳的方案",
-            "percent": 100,
-        })
+        await manager.send_progress(
+            thread_id,
+            {
+                "type": "completed",
+                "message": "方案已生成，请选择需要采纳的方案",
+                "percent": 100,
+            },
+        )
     elif state.next and "track_effects" in state.next:
-        await manager.send_progress(thread_id, {
-            "type": "completed",
-            "message": "方案执行任务已全部创建，效果追踪已调度",
-            "percent": 100,
-        })
+        await manager.send_progress(
+            thread_id,
+            {
+                "type": "completed",
+                "message": "方案执行任务已全部创建，效果追踪已调度",
+                "percent": 100,
+            },
+        )
     else:
-        await manager.send_progress(thread_id, {
-            "type": "completed",
-            "message": "诊断流程已完成",
-            "percent": 100,
-        })
+        await manager.send_progress(
+            thread_id,
+            {
+                "type": "completed",
+                "message": "诊断流程已完成",
+                "percent": 100,
+            },
+        )
 
 
 @router.get("/history", summary="获取诊断历史列表")
@@ -384,12 +413,14 @@ async def _create_diagnosis_task(
                 request.triggered_by,
                 request.selected_dimensions,
                 request.selected_indicators,
+                request.auth_token,
             )
         )
         running_tasks[thread_id] = task
 
         def _on_done(_):
             running_tasks.pop(thread_id, None)
+            progress_cache.pop(thread_id, None)
             unregister_thread(thread_id)
 
         task.add_done_callback(_on_done)
@@ -481,11 +512,14 @@ async def cancel_diagnosis(thread_id: str):
     task.cancel()
     # 不在此处 pop running_tasks，由 task 完成时的 _on_done 统一清理，避免取消过程中又启动同一 tenant 的第二个诊断
 
-    await manager.send_progress(thread_id, {
-        "type": "cancelled",
-        "message": "诊断流程已取消",
-        "timestamp": datetime.now(CN_TZ).isoformat(),
-    })
+    await manager.send_progress(
+        thread_id,
+        {
+            "type": "cancelled",
+            "message": "诊断流程已取消",
+            "timestamp": datetime.now(CN_TZ).isoformat(),
+        },
+    )
 
     return {"status": "cancelled", "thread_id": thread_id}
 
@@ -535,10 +569,7 @@ async def get_diagnosis_state(thread_id: str):
     return {
         "thread_id": thread_id,
         "next_nodes": list(state.next) if state.next else [],
-        "values": {
-            k: v for k, v in state.values.items()
-            if k != "progress_messages"
-        },
+        "values": {k: v for k, v in state.values.items() if k != "progress_messages"},
     }
 
 
@@ -598,11 +629,13 @@ def _build_steps(messages: list[dict]) -> list[dict]:
                 step["status"] = "running"
                 step["started_at"] = ts
             if content:
-                step["messages"].append({
-                    "text": content,
-                    "percent": pct,
-                    "timestamp": ts,
-                })
+                step["messages"].append(
+                    {
+                        "text": content,
+                        "percent": pct,
+                        "timestamp": ts,
+                    }
+                )
 
     for node, _ in _DIAGNOSIS_STEPS:
         step = steps[node]
@@ -629,6 +662,21 @@ async def get_diagnosis_progress(thread_id: str):
     values = state.values if state and state.values else {}
     next_nodes = list(state.next) if state and state.next else []
     messages = values.get("progress_messages") or []
+
+    # 如果任务仍在运行且 checkpoint 中无进度，尝试从实时缓存补充
+    task = running_tasks.get(thread_id)
+    is_running = task is not None and not task.done()
+    if is_running and not messages:
+        cached = progress_cache.get(thread_id)
+        if cached:
+            messages = [
+                {
+                    "type": "human",
+                    "content": cached.get("message", ""),
+                    "percent": cached.get("percent"),
+                    "timestamp": cached.get("timestamp"),
+                }
+            ]
 
     steps = _build_steps(messages if isinstance(messages, list) else [])
 

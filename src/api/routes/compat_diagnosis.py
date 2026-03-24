@@ -21,7 +21,7 @@ from src.core.calculator import (
     ALL_DIMENSIONS,
     calculate_dimension_benchmarks_scores,
 )
-from src.api.deps import get_graph_app, running_tasks
+from src.api.deps import get_graph_app, running_tasks, progress_cache
 from src.core.config import CN_TZ
 from src.api.routes.compat_ws import get_running_threads_for_enterprise
 
@@ -87,20 +87,24 @@ async def _build_running_item(thread_id: str) -> dict | None:
     except Exception:
         pass
 
+    _now = datetime.now(CN_TZ)
     return {
         "diagnosis_id": thread_id,
+        "name": _now.strftime("诊断 %Y-%m-%d %H:%M"),
         "status": status,
         "progress": progress,
         "message": message,
         "error_message": None,
         "health_score": None,
         "anomaly_count": None,
+        "report_ready": False,
         "trigger_type": "manual",
-        "created_at": datetime.now(CN_TZ).isoformat(),
+        "created_at": _now.isoformat(),
     }
 
 
 # ── /diagnosis/list ─────────────────────────────────────────────
+
 
 @router.get("/list", summary="诊断历史列表(兼容)")
 async def compat_diagnosis_list(
@@ -216,24 +220,43 @@ async def compat_diagnosis_list(
                     status = "failed"
                     error_message = "无法获取诊断状态"
 
-        result_items.append({
-            "diagnosis_id": thread_id,
-            "status": status,
-            "progress": progress,
-            "message": message,
-            "error_message": error_message,
-            "health_score": health_score_val,
-            "anomaly_count": anomaly_count,
-            "report_ready": report_ready,
-            "trigger_type": row.get("trigger_type", "manual"),
-            "created_at": row["created_at"].isoformat() if hasattr(row.get("created_at"), "isoformat") else row.get("created_at"),
-        })
+        _created_at = row.get("created_at")
+        if hasattr(_created_at, "strftime"):
+            _name = _created_at.strftime("诊断 %Y-%m-%d %H:%M")
+            _created_at_str = _created_at.isoformat()
+        elif isinstance(_created_at, str) and _created_at:
+            try:
+                _dt = datetime.fromisoformat(_created_at)
+                _name = _dt.strftime("诊断 %Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                _name = "诊断"
+            _created_at_str = _created_at
+        else:
+            _name = "诊断"
+            _created_at_str = None
+
+        result_items.append(
+            {
+                "diagnosis_id": thread_id,
+                "name": _name,
+                "status": status,
+                "progress": progress,
+                "message": message,
+                "error_message": error_message,
+                "health_score": health_score_val,
+                "anomaly_count": anomaly_count,
+                "report_ready": report_ready,
+                "trigger_type": row.get("trigger_type", "manual"),
+                "created_at": _created_at_str,
+            }
+        )
 
     adjusted_total = total + len(running_not_in_db)
     return {"items": result_items, "total": adjusted_total}
 
 
 # ── /diagnosis/report/{id} ─────────────────────────────────────
+
 
 def _extract_total_score(raw: dict) -> float:
     raw_health_score = raw.get("health_score", 0)
@@ -304,30 +327,38 @@ def _transform_report(thread_id: str, raw: dict, trend: dict | None = None) -> d
     dimension_scores_list = []
     for dim_name, dim_data in raw_dim_scores.items():
         score = dim_data.get("score", 60) if isinstance(dim_data, dict) else float(dim_data)
-        weight = dim_data.get("weight", DEFAULT_DIMENSION_WEIGHTS.get(dim_name, 0.25)) if isinstance(dim_data, dict) else DEFAULT_DIMENSION_WEIGHTS.get(dim_name, 0.25)
+        weight = (
+            dim_data.get("weight", DEFAULT_DIMENSION_WEIGHTS.get(dim_name, 0.25))
+            if isinstance(dim_data, dict)
+            else DEFAULT_DIMENSION_WEIGHTS.get(dim_name, 0.25)
+        )
 
         metrics_detail = []
         for ind in dim_indicator_scores.get(dim_name, []):
             code = ind.get("indicator_code", "")
             bench = DEFAULT_BENCHMARKS.get(code, {})
-            metrics_detail.append({
-                "name": code,
-                "display_name": ind.get("indicator_name", code),
-                "value": ind.get("current_value", 0),
-                "unit": ind.get("unit", "%"),
-                "score": ind.get("score", 60),
-                "benchmark_avg": bench.get("avg_value", 0) if isinstance(bench, dict) else 0,
-                "benchmark_excellent": bench.get("excellent_value", 0) if isinstance(bench, dict) else 0,
-            })
+            metrics_detail.append(
+                {
+                    "name": code,
+                    "display_name": ind.get("indicator_name", code),
+                    "value": ind.get("current_value", 0),
+                    "unit": ind.get("unit", "%"),
+                    "score": ind.get("score", 60),
+                    "benchmark_avg": bench.get("avg_value", 0) if isinstance(bench, dict) else 0,
+                    "benchmark_excellent": bench.get("excellent_value", 0) if isinstance(bench, dict) else 0,
+                }
+            )
 
-        dimension_scores_list.append({
-            "dimension": dim_name,
-            "score": score,
-            "weight": weight,
-            "weighted_score": round(score * weight, 2),
-            "status": _score_to_status(score),
-            "metrics_detail": metrics_detail,
-        })
+        dimension_scores_list.append(
+            {
+                "dimension": dim_name,
+                "score": score,
+                "weight": weight,
+                "weighted_score": round(score * weight, 2),
+                "status": _score_to_status(score),
+                "metrics_detail": metrics_detail,
+            }
+        )
 
     raw_anomalies = raw.get("anomalies") or []
     anomalies_list = []
@@ -342,40 +373,46 @@ def _transform_report(thread_id: str, raw: dict, trend: dict | None = None) -> d
         meta = INDICATOR_META.get(code, {})
 
         stable_id = a.get("id") or hashlib.md5(f"{thread_id}:{code}".encode()).hexdigest()[:8]
-        anomalies_list.append({
-            "id": stable_id,
-            "rule_id": code,
-            "rule_name": a.get("indicator_name") or meta.get("name", code),
-            "metric_name": code,
-            "dimension": a.get("dimension", ""),
-            "current_value": a.get("current_value", 0),
-            "benchmark_value": a.get("benchmark_avg"),
-            "gap_percentage": abs(a.get("deviation_pct", 0)),
-            "severity": _map_severity(a.get("severity", "low")),
-            "root_cause_chain": root_cause_chain,
-            "unit": meta.get("unit", "%"),
-        })
+        anomalies_list.append(
+            {
+                "id": stable_id,
+                "rule_id": code,
+                "rule_name": a.get("indicator_name") or meta.get("name", code),
+                "metric_name": code,
+                "dimension": a.get("dimension", ""),
+                "current_value": a.get("current_value", 0),
+                "benchmark_value": a.get("benchmark_avg"),
+                "gap_percentage": abs(a.get("deviation_pct", 0)),
+                "severity": _map_severity(a.get("severity", "low")),
+                "root_cause_chain": root_cause_chain,
+                "unit": meta.get("unit", "%"),
+            }
+        )
 
     raw_root_causes = raw.get("root_causes") or []
     root_cause_analyses = []
     for rc in raw_root_causes:
-        root_cause_analyses.append({
-            "metric_name": rc.get("anomaly_indicator", ""),
-            "cause_chain": [
-                {"step": 1, "description": rc.get("cause", ""), "is_root": True},
-            ],
-            "explanation": rc.get("evidence", ""),
-            "recommendations": _normalize_recommendations(rc.get("recommendations")),
-        })
+        root_cause_analyses.append(
+            {
+                "metric_name": rc.get("anomaly_indicator", ""),
+                "cause_chain": [
+                    {"step": 1, "description": rc.get("cause", ""), "is_root": True},
+                ],
+                "explanation": rc.get("evidence", ""),
+                "recommendations": _normalize_recommendations(rc.get("recommendations")),
+            }
+        )
 
     benchmark_dimension_scores = []
     dim_bench_scores = raw.get("dimension_benchmarks_scores") or {}
     if dim_bench_scores:
         for dim_name, score in dim_bench_scores.items():
-            benchmark_dimension_scores.append({
-                "dimension": dim_name,
-                "score": score,
-            })
+            benchmark_dimension_scores.append(
+                {
+                    "dimension": dim_name,
+                    "score": score,
+                }
+            )
 
     health_score_obj = {
         "total_score": round(total_score, 1),
@@ -429,6 +466,7 @@ async def compat_diagnosis_report(diagnosis_id: str):
 
 # ── /diagnosis/benchmarks/dimension-scores ──────────────────────
 
+
 @router.get("/benchmarks/dimension-scores", summary="行业基准维度得分(兼容)")
 async def compat_benchmark_dimension_scores(
     industry: str = Query(default="general"),
@@ -443,26 +481,26 @@ async def compat_benchmark_dimension_scores(
         bench = DEFAULT_BENCHMARKS.get(code)
         if bench is None:
             continue
-        dim_benchmarks.setdefault(dim, []).append({
-            "indicator_code": code,
-            "indicator_name": meta["name"],
-            "unit": meta["unit"],
-            "avg_value": bench.get("avg_value") if isinstance(bench, dict) else bench,
-            "excellent_value": bench.get("excellent_value") if isinstance(bench, dict) else None,
-        })
+        dim_benchmarks.setdefault(dim, []).append(
+            {
+                "indicator_code": code,
+                "indicator_name": meta["name"],
+                "unit": meta["unit"],
+                "avg_value": bench.get("avg_value") if isinstance(bench, dict) else bench,
+                "excellent_value": bench.get("excellent_value") if isinstance(bench, dict) else None,
+            }
+        )
 
     scores = calculate_dimension_benchmarks_scores(dim_benchmarks)
 
     return {
         "industry": industry,
-        "dimension_scores": [
-            {"dimension": dim, "score": scores.get(dim, 60.0)}
-            for dim in ALL_DIMENSIONS
-        ],
+        "dimension_scores": [{"dimension": dim, "score": scores.get(dim, 60.0)} for dim in ALL_DIMENSIONS],
     }
 
 
 # ── /diagnosis/status/{id} ──────────────────────────────────────
+
 
 @router.get("/status/{diagnosis_id}", summary="诊断状态(兼容)")
 async def compat_diagnosis_status(diagnosis_id: str):
@@ -483,21 +521,30 @@ async def compat_diagnosis_status(diagnosis_id: str):
     if is_running:
         progress = 0
         msg = "诊断执行中..."
-        try:
-            app = await get_graph_app()
-            config = {"configurable": {"thread_id": diagnosis_id}}
-            state = await app.aget_state(config)
-            values = state.values if state and state.values else {}
-            msgs = values.get("progress_messages") or []
-            if msgs:
-                last = msgs[-1] if isinstance(msgs[-1], dict) else {}
-                msg = str(last.get("content", "")) or msg
-                try:
-                    progress = int(float(last.get("percent", 0)))
-                except (TypeError, ValueError):
-                    pass
-        except Exception:
-            pass
+        # 优先从实时进度缓存读取（绕过 checkpoint 延迟）
+        cached = progress_cache.get(diagnosis_id)
+        if cached:
+            msg = cached.get("message", msg)
+            try:
+                progress = int(float(cached.get("percent", 0) or 0))
+            except (TypeError, ValueError):
+                pass
+        else:
+            try:
+                app = await get_graph_app()
+                config = {"configurable": {"thread_id": diagnosis_id}}
+                state = await app.aget_state(config)
+                values = state.values if state and state.values else {}
+                msgs = values.get("progress_messages") or []
+                if msgs:
+                    last = msgs[-1] if isinstance(msgs[-1], dict) else {}
+                    msg = str(last.get("content", "")) or msg
+                    try:
+                        progress = int(float(last.get("percent", 0)))
+                    except (TypeError, ValueError):
+                        pass
+            except Exception:
+                pass
         return {
             "diagnosis_id": diagnosis_id,
             "status": "pending" if progress <= 0 else "running",
@@ -558,6 +605,7 @@ async def compat_diagnosis_status(diagnosis_id: str):
 
 # ── /diagnosis/drill-down/{metricName} ──────────────────────────
 
+
 def _empty_drill_response(metric_name: str, dimension: str, days: int, page: int, page_size: int) -> dict:
     now = datetime.now(CN_TZ)
     return {
@@ -600,21 +648,21 @@ async def compat_drill_down(
         raise HTTPException(status_code=400, detail=f"指标 {metric_name} 不支持钻取")
 
     _INDICATOR_TABLE_MAP: dict[str, tuple[str, str]] = {
-        "lead_conversion_rate":       ("client_record", "create_time"),
-        "response_time_avg":          ("examine_initiate", "create_time"),
-        "follow_up_count":            ("examine_initiate", "create_time"),
-        "coupon_redemption_rate":     ("account_coupon", "create_time"),
-        "browse_to_order_rate":       ("store_order", "create_time"),
-        "order_conversion_rate":      ("store_order", "pay_time"),
-        "seckill_conversion_rate":    ("store_seckill_apply", "start_time"),
-        "repurchase_rate":            ("client_record", "create_time"),
-        "refund_rate":                ("store_refund_order", "refund_apply_time"),
-        "churn_rate":                 ("client_record", "create_time"),
-        "positive_review_rate":       ("store_order_evaluate", "create_time"),
-        "avg_customer_lifetime_value":("store_order", "create_time"),
-        "service_completion_rate":    ("store_order", "create_time"),
-        "avg_shipping_hours":         ("store_order", "pay_time"),
-        "task_on_time_rate":          ("examine_initiate", "create_time"),
+        "lead_conversion_rate": ("client_record", "create_time"),
+        "response_time_avg": ("examine_initiate", "create_time"),
+        "follow_up_count": ("examine_initiate", "create_time"),
+        "coupon_redemption_rate": ("account_coupon", "create_time"),
+        "browse_to_order_rate": ("store_order", "create_time"),
+        "order_conversion_rate": ("store_order", "pay_time"),
+        "seckill_conversion_rate": ("store_seckill_apply", "start_time"),
+        "repurchase_rate": ("client_record", "create_time"),
+        "refund_rate": ("store_refund_order", "refund_apply_time"),
+        "churn_rate": ("client_record", "create_time"),
+        "positive_review_rate": ("store_order_evaluate", "create_time"),
+        "avg_customer_lifetime_value": ("store_order", "create_time"),
+        "service_completion_rate": ("store_order", "create_time"),
+        "avg_shipping_hours": ("store_order", "pay_time"),
+        "task_on_time_rate": ("examine_initiate", "create_time"),
     }
 
     table_info = _INDICATOR_TABLE_MAP.get(metric_name)

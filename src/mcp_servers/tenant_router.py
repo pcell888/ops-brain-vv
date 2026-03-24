@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 from dataclasses import dataclass, field
@@ -38,6 +37,7 @@ def _pg_uri_to_conninfo(uri: str) -> str:
     if parsed.password:
         parts.append(f"password={parsed.password}")
     return " ".join(parts)
+
 
 PLATFORM_TENANT_ID = "__platform__"
 
@@ -82,6 +82,12 @@ class TenantRouter:
         cache_key = f"tenant:{tenant_id}"
         cached = await rd.hgetall(cache_key)
         if cached and "api_base_url" in cached:
+            logger.debug(
+                "租户解析命中缓存: tenant_id=%s tenant_name=%s api_base_url=%s",
+                tenant_id,
+                cached.get("tenant_name"),
+                cached.get("api_base_url"),
+            )
             return TenantContext(
                 tenant_id=cached["tenant_id"],
                 tenant_name=cached["tenant_name"],
@@ -91,6 +97,7 @@ class TenantRouter:
                 config=json.loads(cached.get("config", "{}")),
             )
 
+        logger.debug("租户解析缓存未命中，查询数据库: tenant_id=%s", tenant_id)
         async with await psycopg.AsyncConnection.connect(self._pg_conninfo) as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
@@ -100,6 +107,7 @@ class TenantRouter:
                 row = await cur.fetchone()
 
         if not row:
+            logger.error("租户不存在或已停用: tenant_id=%s", tenant_id)
             raise TenantNotFoundError(f"租户 {tenant_id} 不存在或已停用")
 
         auth_headers = self._build_auth_headers(row["auth_type"], row["auth_credential"])
@@ -123,17 +131,27 @@ class TenantRouter:
         }
         await rd.hset(cache_key, mapping=mapping)
         await rd.expire(cache_key, settings.tenant_cache_ttl)
+        logger.debug(
+            "租户解析完成并缓存: tenant_id=%s tenant_name=%s api_base_url=%s",
+            tenant_id,
+            ctx.tenant_name,
+            ctx.api_base_url,
+        )
         return ctx
 
     async def get_client(self, tenant_id: str) -> httpx.AsyncClient:
         """获取面向指定租户的 HTTP Client（连接池复用）。"""
         if tenant_id not in self._http_clients:
+            logger.debug("创建新的HTTP客户端: tenant_id=%s", tenant_id)
             ctx = await self.resolve(tenant_id)
             self._http_clients[tenant_id] = httpx.AsyncClient(
                 base_url=ctx.api_base_url,
                 headers=ctx.auth_headers,
                 timeout=30.0,
             )
+            logger.debug("HTTP客户端创建完成: tenant_id=%s base_url=%s", tenant_id, ctx.api_base_url)
+        else:
+            logger.debug("复用已有HTTP客户端: tenant_id=%s", tenant_id)
         return self._http_clients[tenant_id]
 
     async def get_platform_client(self) -> httpx.AsyncClient:
@@ -143,7 +161,7 @@ class TenantRouter:
     def _build_auth_headers(self, auth_type: str, credential: str) -> dict:
         decrypted = self._decrypt(credential)
         if auth_type == "token":
-            return {"Authorization": f"Bearer {decrypted}"}
+            return {"Authorization": decrypted}
         elif auth_type == "hmac":
             return {"X-Service-Signature": decrypted}
         return {}

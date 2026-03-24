@@ -20,20 +20,20 @@ biz = BizAPIClient(router)
 
 
 @server.tool()
-async def get_store_profile(tenant_id: str, store_id: str = "") -> dict:
+async def get_store_profile(tenant_id: str, store_id: str = "", auth_token: str | None = None) -> dict:
     """
     获取企业/店铺画像信息。
     store_id 为空时返回企业级聚合画像（全企业诊断）。
     """
     if not store_id:
-        return await _get_tenant_profile(tenant_id)
+        return await _get_tenant_profile(tenant_id, auth_token)
 
-    store_data = await biz.get(tenant_id, f"/store/{store_id}")
+    store_data = await biz.get(tenant_id, f"/store/{store_id}", auth_token=auth_token)
 
     class_id = store_data.get("classId")
     class_data = {}
     if class_id:
-        class_data = await biz.get(tenant_id, f"/store-class/{class_id}")
+        class_data = await biz.get(tenant_id, f"/store-class/{class_id}", auth_token=auth_token)
 
     return {
         "tenant_id": tenant_id,
@@ -54,12 +54,12 @@ async def get_store_profile(tenant_id: str, store_id: str = "") -> dict:
     }
 
 
-async def _get_tenant_profile(tenant_id: str) -> dict:
+async def _get_tenant_profile(tenant_id: str, auth_token: str | None = None) -> dict:
     """调用 /store/list 获取全部店铺，聚合为企业级画像。"""
     import psycopg
     from src.core.config import get_settings
 
-    store_list_data = await biz.get(tenant_id, "/store/list")
+    store_list_data = await biz.get(tenant_id, "/store/list", auth_token=auth_token)
     stores = store_list_data.get("list", [])
 
     settings = get_settings()
@@ -121,14 +121,20 @@ async def get_customer_list(
     filter_type: str = "all",
     page: int = 1,
     page_size: int = 20,
+    auth_token: str | None = None,
 ) -> dict:
     """获取客户列表（支持分类筛选: all | high_value | churn_risk | new）。"""
-    data = await biz.get(tenant_id, "/client-record/list", {
-        "storeId": store_id,
-        "filterType": filter_type,
-        "page": page,
-        "pageSize": page_size,
-    })
+    data = await biz.get(
+        tenant_id,
+        "/client-record/list",
+        {
+            "storeId": store_id,
+            "filterType": filter_type,
+            "page": page,
+            "pageSize": page_size,
+        },
+        auth_token=auth_token,
+    )
     return {
         "total": data.get("total", 0),
         "items": data.get("list", []),
@@ -136,12 +142,13 @@ async def get_customer_list(
 
 
 @server.tool()
-async def get_customer_detail(tenant_id: str, client_record_id: str) -> dict:
+async def get_customer_detail(tenant_id: str, client_record_id: str, auth_token: str | None = None) -> dict:
     """获取单个客户详情（含交易记录、跟进记录）。"""
     import asyncio
+
     client_data, contracts = await asyncio.gather(
-        biz.get(tenant_id, f"/client-record/{client_record_id}"),
-        biz.get(tenant_id, "/sales-contract/list", {"clientRecordId": client_record_id}),
+        biz.get(tenant_id, f"/client-record/{client_record_id}", auth_token=auth_token),
+        biz.get(tenant_id, "/sales-contract/list", {"clientRecordId": client_record_id}, auth_token=auth_token),
     )
     client_data["contracts"] = contracts.get("list", [])
     return client_data
@@ -154,33 +161,37 @@ async def get_order_analytics(
     start_date: str,
     end_date: str,
     group_by: str = "day",
+    auth_token: str | None = None,
 ) -> dict:
     """获取订单分析数据（GMV趋势、客单价、品类分布）。"""
-    data = await biz.get(tenant_id, "/store-order/analytics", {
-        "storeId": store_id,
-        "startDate": start_date,
-        "endDate": end_date,
-        "groupBy": group_by,
-    })
+    data = await biz.get(
+        tenant_id,
+        "/store-order/analytics",
+        {
+            "storeId": store_id,
+            "startDate": start_date,
+            "endDate": end_date,
+            "groupBy": group_by,
+        },
+        auth_token=auth_token,
+    )
     return data
 
 
 @server.tool()
-async def get_dept_structure(tenant_id: str, store_id: str = "") -> dict:
+async def get_dept_structure(tenant_id: str, store_id: str = "", auth_token: str | None = None) -> dict:
     """获取部门架构与人员信息。store_id 为空时聚合所有店铺的部门树。"""
     if store_id:
-        return await _fetch_dept_tree(tenant_id, store_id)
+        return await _fetch_dept_tree(tenant_id, store_id, auth_token)
 
-    store_list_data = await biz.get(tenant_id, "/store/list")
+    store_list_data = await biz.get(tenant_id, "/store/list", auth_token=auth_token)
     stores = store_list_data.get("list", [])
     if not stores:
         return {"store_id": "", "departments": []}
 
     import asyncio
-    trees = await asyncio.gather(*[
-        _fetch_dept_tree(tenant_id, s.get("storeId", ""))
-        for s in stores
-    ])
+
+    trees = await asyncio.gather(*[_fetch_dept_tree(tenant_id, s.get("storeId", ""), auth_token) for s in stores])
     seen_ids: set[str] = set()
     merged: list[dict] = []
     for tree in trees:
@@ -192,20 +203,22 @@ async def get_dept_structure(tenant_id: str, store_id: str = "") -> dict:
     return {"store_id": "", "departments": merged}
 
 
-async def _fetch_dept_tree(tenant_id: str, store_id: str) -> dict:
-    dept_tree = await biz.get(tenant_id, "/sys-dept/tree", {"storeId": store_id})
+async def _fetch_dept_tree(tenant_id: str, store_id: str, auth_token: str | None = None) -> dict:
+    dept_tree = await biz.get(tenant_id, "/sys-dept/tree", {"storeId": store_id}, auth_token=auth_token)
     raw_list = dept_tree.get("list") or dept_tree.get("children") or []
     departments = []
     for dept in raw_list:
         dept_id = dept.get("deptId", dept.get("id"))
-        users_data = await biz.get(tenant_id, "/sys-user/list", {"deptId": dept_id})
+        users_data = await biz.get(tenant_id, "/sys-user/list", {"deptId": dept_id}, auth_token=auth_token)
         users = users_data.get("list") or []
-        departments.append({
-            "dept_id": dept_id,
-            "dept_name": dept.get("deptName", dept.get("name", "")),
-            "parent_id": dept.get("parentId"),
-            "users": users,
-        })
+        departments.append(
+            {
+                "dept_id": dept_id,
+                "dept_name": dept.get("deptName", dept.get("name", "")),
+                "parent_id": dept.get("parentId"),
+                "users": users,
+            }
+        )
     return {"store_id": store_id, "departments": departments}
 
 

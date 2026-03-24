@@ -44,6 +44,9 @@ manager = ConnectionManager()
 # 运行中的诊断任务，用于支持取消
 running_tasks: dict[str, "asyncio.Task"] = {}  # type: ignore[name-defined]
 
+# 实时进度缓存 — emit_progress 写入，HTTP 轮询端点读取，绕过 checkpoint 延迟
+progress_cache: dict[str, dict] = {}
+
 _graph_app = None
 _graph_init_lock = asyncio.Lock()
 
@@ -87,8 +90,10 @@ async def astream_events_with_retry(
             return
         except PsycopgOperationalError as e:
             msg = str(e).lower()
-            if attempt == 0 and not yielded and (
-                "connection is closed" in msg or "server closed the connection" in msg
+            if (
+                attempt == 0
+                and not yielded
+                and ("connection is closed" in msg or "server closed the connection" in msg)
             ):
                 logger.warning("LangGraph checkpoint 连接失效，重新初始化: %s", e)
                 await reset_graph_app()

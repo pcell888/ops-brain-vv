@@ -18,6 +18,7 @@ class DiagnosisState(TypedDict):
     triggered_by: str | None
     selected_dimensions: list[str] | None
     selected_indicators: list[str] | None
+    auth_token: str | None  # 前端透传的鉴权 token
 
     # ── 采集阶段产出 ──
     store_profile: dict | None

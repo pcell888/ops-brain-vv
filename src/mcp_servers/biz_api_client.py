@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any
 
 import httpx
@@ -114,7 +115,6 @@ MOCK_DATA: dict[str, dict | list] = {
             {"userId": 2, "userName": "运营经理", "deptId": "d2"},
         ],
     },
-
     # ── Metrics: CRM 维度 ──
     "/client-record/statistics": {"total": 3280, "newClients": 320},
     "/sales-contract/statistics": {"signedCount": 185, "totalAmount": 680000},
@@ -122,7 +122,6 @@ MOCK_DATA: dict[str, dict | list] = {
         "followTotal": 1260,
         "avgResponseHours": 4.8,
     },
-
     # ── Metrics: 营销维度 ──
     "/account-coupon/statistics": {"totalIssued": 5000, "totalUsed": 1850},
     "/store-order/conversion-stats": {
@@ -133,7 +132,6 @@ MOCK_DATA: dict[str, dict | list] = {
     },
     "/seckill-apply/conversion-stats": {"totalSeckillGoods": 500, "soldGoods": 185},
     "/manage-data/exposure-stats": {"browseUsers": 12600},
-
     # ── Metrics: 留存维度 ──
     "/store-order/repurchase-stats": {
         "totalBuyers": 2800,
@@ -144,12 +142,10 @@ MOCK_DATA: dict[str, dict | list] = {
     },
     "/store-refund-order/statistics": {"totalCompletedOrders": 2050, "refundOrders": 82},
     "/store-order-evaluate/statistics": {"totalReviews": 1680, "positiveReviews": 1462},
-
     # ── Metrics: 效率维度 ──
     "/examine-initiate/turnaround-stats": {"onTimeRate": 78.5},
     "/service-order/completion-stats": {"totalServiceOrders": 360, "completedOrders": 306},
     "/store-order/shipping-stats": {"avgShippingHours": 14.2},
-
     # ── Benchmark ──
     "/industry-trend-statistics/benchmark": {
         "benchmarks": {
@@ -185,7 +181,6 @@ MOCK_DATA: dict[str, dict | list] = {
             {"period": "2026-03", "value": 5.2},
         ],
     },
-
     # ── Task ──
     "/ai-diagnosis/exec-task/batch-create": {"tasks": [], "count": 0},
     "/ai-diagnosis/exec-task/{id}/status": {},
@@ -193,7 +188,6 @@ MOCK_DATA: dict[str, dict | list] = {
     "/coupon/create": {"couponId": "mock-coupon-001"},
     "/coupon/distribute": {"count": 500},
     "/seckill-apply/create": {"id": "mock-seckill-001"},
-
     # ── Notify ──
     "/message-remind/batch-create": {},
     "/message-remind/targeted": {"sent_count": 0},
@@ -222,24 +216,27 @@ class BizAPIClient:
         tenant_id: str,
         path: str,
         params: dict | None = None,
+        auth_token: str | None = None,
     ) -> dict[str, Any]:
-        return await self._safe_request(tenant_id, "GET", path, params=params)
+        return await self._safe_request(tenant_id, "GET", path, params=params, auth_token=auth_token)
 
     async def post(
         self,
         tenant_id: str,
         path: str,
         json_data: dict | None = None,
+        auth_token: str | None = None,
     ) -> dict[str, Any]:
-        return await self._safe_request(tenant_id, "POST", path, json_data=json_data)
+        return await self._safe_request(tenant_id, "POST", path, json_data=json_data, auth_token=auth_token)
 
     async def put(
         self,
         tenant_id: str,
         path: str,
         json_data: dict | None = None,
+        auth_token: str | None = None,
     ) -> dict[str, Any]:
-        return await self._safe_request(tenant_id, "PUT", path, json_data=json_data)
+        return await self._safe_request(tenant_id, "PUT", path, json_data=json_data, auth_token=auth_token)
 
     async def platform_get(self, path: str, params: dict | None = None) -> dict[str, Any]:
         """调用平台中台API。"""
@@ -247,6 +244,8 @@ class BizAPIClient:
 
     # 租户解析(Redis/PG)或请求 wlwq 无响应时会阻塞，整次请求加超时后降级 mock
     _REQUEST_TIMEOUT = 15.0
+    _MAX_RETRIES = 3
+    _RETRY_DELAY = 1.0  # 秒
 
     async def _safe_request(
         self,
@@ -255,25 +254,115 @@ class BizAPIClient:
         path: str,
         params: dict | None = None,
         json_data: dict | None = None,
+        auth_token: str | None = None,
     ) -> dict[str, Any]:
+        # 记录所有请求（包括GET）
         if method in ("POST", "PUT") and json_data is not None:
             logger.info(
-                "mcp_servers push tenant=%s %s %s json=%s",
+                "业务API请求: tenant=%s %s %s json=%s",
                 tenant_id,
                 method,
                 path,
                 json.dumps(json_data, ensure_ascii=False),
             )
+        else:
+            logger.info(
+                "业务API请求: tenant=%s %s %s params=%s",
+                tenant_id,
+                method,
+                path,
+                params,
+            )
 
         async def _do():
             client = await self.router.get_client(tenant_id)
-            return await self._request(client, method, path, params=params, json_data=json_data)
+            extra_headers = {}
+            if auth_token:
+                extra_headers["Authorization"] = auth_token
+            return await self._request(
+                client, method, path, params=params, json_data=json_data, extra_headers=extra_headers
+            )
 
-        try:
-            return await asyncio.wait_for(_do(), timeout=self._REQUEST_TIMEOUT)
-        except (asyncio.TimeoutError, Exception):
-            # wlwq 未接通时直接抛出，不走 mock
-            raise
+        last_exception = None
+        for attempt in range(1, self._MAX_RETRIES + 1):
+            start_time = time.time()
+            try:
+                result = await asyncio.wait_for(_do(), timeout=self._REQUEST_TIMEOUT)
+                elapsed = time.time() - start_time
+                logger.info(
+                    "业务API响应成功: tenant=%s %s %s 耗时=%.2fs 尝试=%d/%d",
+                    tenant_id,
+                    method,
+                    path,
+                    elapsed,
+                    attempt,
+                    self._MAX_RETRIES,
+                )
+                return result
+            except asyncio.TimeoutError as e:
+                elapsed = time.time() - start_time
+                last_exception = e
+                logger.warning(
+                    "业务API请求超时: tenant=%s %s %s 耗时=%.2fs 超时限制=%ss 尝试=%d/%d",
+                    tenant_id,
+                    method,
+                    path,
+                    elapsed,
+                    self._REQUEST_TIMEOUT,
+                    attempt,
+                    self._MAX_RETRIES,
+                )
+            except httpx.HTTPStatusError as e:
+                elapsed = time.time() - start_time
+                last_exception = e
+                # 4xx错误不重试
+                if 400 <= e.response.status_code < 500:
+                    logger.error(
+                        "业务API客户端错误(不重试): tenant=%s %s %s 状态码=%s 耗时=%.2fs",
+                        tenant_id,
+                        method,
+                        path,
+                        e.response.status_code,
+                        elapsed,
+                    )
+                    raise
+                logger.warning(
+                    "业务API服务端错误: tenant=%s %s %s 状态码=%s 耗时=%.2fs 尝试=%d/%d",
+                    tenant_id,
+                    method,
+                    path,
+                    e.response.status_code,
+                    elapsed,
+                    attempt,
+                    self._MAX_RETRIES,
+                )
+            except Exception as e:
+                elapsed = time.time() - start_time
+                last_exception = e
+                logger.warning(
+                    "业务API请求异常: tenant=%s %s %s 耗时=%.2fs 错误=%s 尝试=%d/%d",
+                    tenant_id,
+                    method,
+                    path,
+                    elapsed,
+                    str(e),
+                    attempt,
+                    self._MAX_RETRIES,
+                )
+
+            # 如果不是最后一次尝试，等待后重试
+            if attempt < self._MAX_RETRIES:
+                await asyncio.sleep(self._RETRY_DELAY * attempt)
+
+        # 所有重试都失败
+        logger.error(
+            "业务API请求最终失败: tenant=%s %s %s 重试次数=%d",
+            tenant_id,
+            method,
+            path,
+            self._MAX_RETRIES,
+        )
+        raise last_exception
 
     async def _request(
         self,
@@ -282,23 +371,48 @@ class BizAPIClient:
         path: str,
         params: dict | None = None,
         json_data: dict | None = None,
+        extra_headers: dict | None = None,
     ) -> dict[str, Any]:
         url = path
         try:
-            resp = await client.request(method, url, params=params, json=json_data)
+            headers = dict(client.headers)
+            if extra_headers:
+                headers.update(extra_headers)
+            resp = await client.request(method, url, params=params, json=json_data, headers=headers)
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
-            logger.error("业务API调用失败: %s %s -> %s", method, url, e.response.status_code)
+            logger.error(
+                "业务API HTTP错误: %s %s 状态码=%s 响应=%s",
+                method,
+                url,
+                e.response.status_code,
+                e.response.text[:500],
+            )
             raise BizAPIError(e.response.status_code, e.response.text[:500], str(url))
         except httpx.RequestError as e:
-            logger.error("业务API请求异常: %s %s -> %s", method, url, e)
+            logger.error("业务API请求异常: %s %s 错误=%s", method, url, str(e))
             raise BizAPIError(0, str(e), str(url))
 
         body = resp.json()
+        logger.debug(
+            "业务API响应: %s %s 状态码=%s 响应体=%s",
+            method,
+            url,
+            resp.status_code,
+            json.dumps(body, ensure_ascii=False)[:500],
+        )
 
         if isinstance(body, dict) and "code" in body:
             if body["code"] not in (0, 200, "0", "200"):
-                raise BizAPIError(resp.status_code, body.get("msg", "unknown error"), str(url))
+                error_msg = body.get("msg", "unknown error")
+                logger.error(
+                    "业务API业务错误: %s %s code=%s msg=%s",
+                    method,
+                    url,
+                    body["code"],
+                    error_msg,
+                )
+                raise BizAPIError(resp.status_code, error_msg, str(url))
             return body.get("data", body)
 
         return body

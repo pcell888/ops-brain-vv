@@ -27,6 +27,7 @@ async def get_crm_indicators(
     store_id: str,
     start_date: str,
     end_date: str,
+    auth_token: str | None = None,
 ) -> dict:
     """
     采集CRM共享维度指标。
@@ -35,9 +36,9 @@ async def get_crm_indicators(
     params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
 
     clients_data, contracts_data, follows_data = await asyncio.gather(
-        biz.get(tenant_id, "/client-record/statistics", params),
-        biz.get(tenant_id, "/sales-contract/statistics", params),
-        biz.get(tenant_id, "/examine-initiate/follow-stats", params),
+        biz.get(tenant_id, "/client-record/statistics", params, auth_token=auth_token),
+        biz.get(tenant_id, "/sales-contract/statistics", params, auth_token=auth_token),
+        biz.get(tenant_id, "/examine-initiate/follow-stats", params, auth_token=auth_token),
     )
 
     total_clients = clients_data.get("total", 0)
@@ -80,6 +81,7 @@ async def get_marketing_indicators(
     store_id: str,
     start_date: str,
     end_date: str,
+    auth_token: str | None = None,
 ) -> dict:
     """
     采集营销效果维度指标。
@@ -89,10 +91,10 @@ async def get_marketing_indicators(
     params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
 
     coupon_data, order_data, exposure_data, seckill_data = await asyncio.gather(
-        biz.get(tenant_id, "/account-coupon/statistics", params),
-        biz.get(tenant_id, "/store-order/conversion-stats", params),
-        biz.get(tenant_id, "/manage-data/exposure-stats", params),
-        biz.get(tenant_id, "/seckill-apply/conversion-stats", params),
+        biz.get(tenant_id, "/account-coupon/statistics", params, auth_token=auth_token),
+        biz.get(tenant_id, "/store-order/conversion-stats", params, auth_token=auth_token),
+        biz.get(tenant_id, "/manage-data/exposure-stats", params, auth_token=auth_token),
+        biz.get(tenant_id, "/seckill-apply/conversion-stats", params, auth_token=auth_token),
     )
 
     total_coupons = coupon_data.get("totalIssued", 0)
@@ -150,6 +152,7 @@ async def get_retention_indicators(
     store_id: str,
     start_date: str,
     end_date: str,
+    auth_token: str | None = None,
 ) -> dict:
     """
     采集客户留存维度指标。
@@ -159,9 +162,9 @@ async def get_retention_indicators(
     params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
 
     repurchase_data, refund_data, evaluate_data = await asyncio.gather(
-        biz.get(tenant_id, "/store-order/repurchase-stats", params),
-        biz.get(tenant_id, "/store-refund-order/statistics", params),
-        biz.get(tenant_id, "/store-order-evaluate/statistics", params),
+        biz.get(tenant_id, "/store-order/repurchase-stats", params, auth_token=auth_token),
+        biz.get(tenant_id, "/store-refund-order/statistics", params, auth_token=auth_token),
+        biz.get(tenant_id, "/store-order-evaluate/statistics", params, auth_token=auth_token),
     )
 
     total_buyers = repurchase_data.get("totalBuyers", 0)
@@ -227,6 +230,7 @@ async def get_efficiency_indicators(
     store_id: str,
     start_date: str,
     end_date: str,
+    auth_token: str | None = None,
 ) -> dict:
     """
     采集运营效率维度指标。
@@ -235,9 +239,9 @@ async def get_efficiency_indicators(
     params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
 
     approval_data, service_data, shipping_data = await asyncio.gather(
-        biz.get(tenant_id, "/examine-initiate/turnaround-stats", params),
-        biz.get(tenant_id, "/service-order/completion-stats", params),
-        biz.get(tenant_id, "/store-order/shipping-stats", params),
+        biz.get(tenant_id, "/examine-initiate/turnaround-stats", params, auth_token=auth_token),
+        biz.get(tenant_id, "/service-order/completion-stats", params, auth_token=auth_token),
+        biz.get(tenant_id, "/store-order/shipping-stats", params, auth_token=auth_token),
     )
 
     task_on_time = approval_data.get("onTimeRate", 0)
@@ -284,6 +288,7 @@ async def drill_down_indicator(
     end_date: str,
     page: int = 1,
     page_size: int = 20,
+    auth_token: str | None = None,
 ) -> dict:
     """
     指标数据钻取 — 返回指标对应的明细数据列表，支持分页。
@@ -326,7 +331,7 @@ async def drill_down_indicator(
     endpoint, extra_params = drill_map[indicator_code]
     params.update(extra_params)
 
-    data = await biz.get(tenant_id, endpoint, params)
+    data = await biz.get(tenant_id, endpoint, params, auth_token=auth_token)
     raw_items = data.get("list", data.get("items", []))
     allowed = DRILL_ITEM_FIELDS.get(indicator_code)
     items = (

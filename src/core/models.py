@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 # ── API Request / Response ──────────────────────────────────────
 
+
 class DiagnosisRequest(BaseModel):
     tenant_id: str
     store_id: str = Field(default="", description="店铺ID，为空则诊断全企业")
@@ -22,6 +23,10 @@ class DiagnosisRequest(BaseModel):
     selected_indicators: list[str] | None = Field(
         default=None,
         description="参与诊断的指标代码列表，如 ['lead_conversion_rate']；为空则按维度全量",
+    )
+    auth_token: str | None = Field(
+        default=None,
+        description="前端透传的鉴权 token，用于访问 wlwq API",
     )
 
 
@@ -40,6 +45,7 @@ class AdoptPlanRequest(BaseModel):
 
 # ── Indicator Models ────────────────────────────────────────────
 
+
 class IndicatorValue(BaseModel):
     value: float
     unit: str = "%"
@@ -56,6 +62,7 @@ class DimensionIndicators(BaseModel):
 
 # ── Benchmark Models ────────────────────────────────────────────
 
+
 class BenchmarkValue(BaseModel):
     avg_value: float
     median_value: float
@@ -64,8 +71,10 @@ class BenchmarkValue(BaseModel):
 
 # ── Anomaly & Diagnosis ────────────────────────────────────────
 
+
 class RootCauseBrief(BaseModel):
     """挂载在异常上的根因摘要"""
+
     cause: str
     evidence: str
     confidence: float = Field(ge=0, le=1)
@@ -100,6 +109,7 @@ class DimensionScore(BaseModel):
 
 class DimensionIndicatorScore(BaseModel):
     """单指标得分，用于报告「各维度指标得分」"""
+
     indicator_code: str
     indicator_name: str
     score: float
@@ -110,6 +120,7 @@ class DimensionIndicatorScore(BaseModel):
 
 class DimensionBenchmark(BaseModel):
     """该次诊断使用的单指标行业基准"""
+
     indicator_code: str
     indicator_name: str
     unit: str = "%"
@@ -134,6 +145,7 @@ class DiagnosisReport(BaseModel):
 
 # ── Solution Plan Models ────────────────────────────────────────
 
+
 class AutoAction(BaseModel):
     type: str
     config: dict
@@ -156,6 +168,7 @@ class SolutionPlan(BaseModel):
 
 # ── Execution Task Models ───────────────────────────────────────
 
+
 class ExecTask(BaseModel):
     task_id: str = ""
     task_name: str
@@ -169,6 +182,7 @@ class ExecTask(BaseModel):
 
 
 # ── Tracking & Review ──────────────────────────────────────────
+
 
 class IndicatorChange(BaseModel):
     indicator_code: str
@@ -188,6 +202,7 @@ class ReviewReport(BaseModel):
 
 
 # ── WebSocket Messages ─────────────────────────────────────────
+
 
 class WSProgressMessage(BaseModel):
     type: str

@@ -24,6 +24,7 @@ def set_progress_sender(thread_id: str, manager: Any) -> None:
 def clear_progress_sender() -> None:
     _progress_sender.set(None)
 
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -228,9 +229,7 @@ async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) 
 
     except Exception as e:
         logger.error("MCP调用失败: %s.%s -> %s", server_name, tool_name, e)
-        raise RuntimeError(
-            f"MCP 服务 {server_name} 调用失败: {e}"
-        ) from e
+        raise RuntimeError(f"MCP 服务 {server_name} 调用失败: {e}") from e
 
 
 def emit_progress(state: dict, message: str, percent: int | float | None = None):
@@ -245,6 +244,17 @@ def emit_progress(state: dict, message: str, percent: int | float | None = None)
     if percent is not None:
         payload["percent"] = percent
     state["progress_messages"].append(payload)
+
+    # 同步写入共享进度缓存，供 HTTP 轮询端点实时读取
+    try:
+        from src.api.deps import progress_cache
+
+        thread_id_key = state.get("thread_id", "")
+        if thread_id_key:
+            progress_cache[thread_id_key] = {"message": message, "percent": percent, "timestamp": ts}
+    except Exception:
+        pass
+
     sender = _progress_sender.get()
     if sender:
         thread_id, manager = sender

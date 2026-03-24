@@ -54,6 +54,9 @@ async def send_diagnosis_report_notification(
         for aid in admin_account_ids
     ]
 
+    if not messages:
+        return {"sent_count": 0, "status": "no_admin"}
+
     data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
 
     return {"sent_count": len(messages), "status": "sent", **data}
@@ -79,17 +82,21 @@ async def send_task_reminder(
     }
     title = type_labels.get(reminder_type, "任务提醒")
 
-    data = await biz.post(tenant_id, "/message-remind/batch-create", {
-        "messages": [
-            {
-                "accountId": account_id,
-                "title": title,
-                "content": message,
-                "type": f"ai_task_{reminder_type}",
-                "bizId": task_id,
-            }
-        ],
-    })
+    data = await biz.post(
+        tenant_id,
+        "/message-remind/batch-create",
+        {
+            "messages": [
+                {
+                    "accountId": account_id,
+                    "title": title,
+                    "content": message,
+                    "type": f"ai_task_{reminder_type}",
+                    "bizId": task_id,
+                }
+            ],
+        },
+    )
 
     return {"status": "sent", **data}
 
@@ -117,6 +124,9 @@ async def send_plan_adoption_request(
         }
         for aid in admin_account_ids
     ]
+
+    if not messages:
+        return {"sent_count": 0, "status": "no_admin"}
 
     data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
     return {"sent_count": len(messages), "status": "sent", **data}
@@ -148,6 +158,9 @@ async def send_review_report_notification(
         for aid in admin_account_ids
     ]
 
+    if not messages:
+        return {"sent_count": 0, "status": "no_admin"}
+
     data = await biz.post(tenant_id, "/message-remind/batch-create", {"messages": messages})
     return {"sent_count": len(messages), "status": "sent", **data}
 
@@ -169,13 +182,15 @@ async def send_task_assignment_notification(
             continue
         task_name = t.get("task_name", "")
         deadline = t.get("deadline", "")
-        messages.append({
-            "accountId": str(account_id),
-            "title": f"新任务分配：{task_name}",
-            "content": f"您有一项新的AI诊断执行任务「{task_name}」，请在{deadline}前完成。",
-            "type": "ai_task_assignment",
-            "bizId": t.get("task_id", ""),
-        })
+        messages.append(
+            {
+                "accountId": str(account_id),
+                "title": f"新任务分配：{task_name}",
+                "content": f"您有一项新的AI诊断执行任务「{task_name}」，请在{deadline}前完成。",
+                "type": "ai_task_assignment",
+                "bizId": t.get("task_id", ""),
+            }
+        )
 
     if not messages:
         return {"sent_count": 0, "status": "no_assignee"}
@@ -199,13 +214,17 @@ async def send_customer_targeted_message(
     target_segment: churn_risk | no_repurchase_90d | coupon_expiring_soon | low_conversion
     wlwq 需实现 POST /message-remind/targeted 或由本工具先拉取客户列表再 batch-create。
     """
-    data = await biz.post(tenant_id, "/message-remind/targeted", {
-        "storeId": store_id,
-        "targetSegment": target_segment,
-        "title": title,
-        "content": content,
-        "type": message_type,
-    })
+    data = await biz.post(
+        tenant_id,
+        "/message-remind/targeted",
+        {
+            "storeId": store_id,
+            "targetSegment": target_segment,
+            "title": title,
+            "content": content,
+            "type": message_type,
+        },
+    )
     return {"sent_count": data.get("sent_count", 0), "status": "sent", **data}
 
 

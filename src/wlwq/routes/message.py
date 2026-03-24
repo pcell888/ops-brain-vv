@@ -79,13 +79,15 @@ _SEGMENT_QUERIES: dict[str, str] = {
 async def message_remind_targeted(body: dict):
     """
     按人群定向推送消息（5.2.3）。
-    body: storeId, targetSegment, title, content, type.
+    body: storeId(必传), targetSegment, title, content, type.
     根据 targetSegment 查询目标客户列表后批量写 message_remind。
     """
+    store_id = body.get("storeId", "")
     segment = body.get("targetSegment", "")
     title = (body.get("title") or "")[:1000]
     content = (body.get("content") or "")[:10000]
     msg_type = body.get("type", "ai_targeted")
+    jump_url = body.get("jumpUrl")
 
     query = _SEGMENT_QUERIES.get(segment)
     if not query:
@@ -107,7 +109,12 @@ async def message_remind_targeted(body: dict):
                 (message_remind_id, account_id, message_title, message_content, message_type, model_id, model_status)
                 VALUES ($1, $2, $3, $4, $5, $6, 1)
                 """,
-                rid, str(aid), title, content, msg_type, segment,
+                rid,
+                str(aid),
+                title,
+                content,
+                msg_type,
+                segment,
             )
 
     return _ok({"sent_count": len(account_ids), "segment": segment})

@@ -25,14 +25,41 @@ async def follow_stats(
     storeId: str | None = Query(None, alias="storeId"),
     startDate: str | None = Query(None, alias="startDate"),
     endDate: str | None = Query(None, alias="endDate"),
+    detail: bool = Query(False),
+    filterType: str | None = Query(None),
+    page: int = Query(1),
+    pageSize: int = Query(20),
     useRandom: bool | None = Query(None, alias="useRandom"),
 ):
-    """跟进统计：followTotal, avgResponseHours。"""
+    """跟进统计：followTotal, avgResponseHours。支持 detail=true 返回明细，filterType=slow_response 筛选慢响应。"""
+    if detail or filterType == "slow_response":
+        import random as _r
+        from datetime import datetime, timedelta
+
+        rows = []
+        base_time = datetime.now() - timedelta(days=30)
+        for i in range(15):
+            t = (base_time + timedelta(days=_r.randint(0, 30), hours=_r.randint(0, 23))).strftime("%Y-%m-%d %H:%M:%S")
+            finish = (base_time + timedelta(hours=_r.randint(1, 72))).strftime("%Y-%m-%d %H:%M:%S")
+            rows.append(
+                {
+                    "examine_initiate_id": _gen_id("ei"),
+                    "content": _r.choice(["电话跟进", "客户拜访", "方案发送", "需求确认"]),
+                    "create_time": t,
+                    "finish_time": finish,
+                    "user_name": _r.choice(["张三", "李四", "王五", "赵六"]),
+                }
+            )
+        return _ok({"total": len(rows) * 3, "list": rows})
     if random_enabled(useRandom):
-        return _ok({
-            "followTotal": random_int("WLWQ_FOLLOW_TOTAL_RANDOM_MIN", "WLWQ_FOLLOW_TOTAL_RANDOM_MAX", 380, 720),
-            "avgResponseHours": random_float("WLWQ_AVG_RESPONSE_RANDOM_MIN", "WLWQ_AVG_RESPONSE_RANDOM_MAX", 8.0, 12.0, 2),
-        })
+        return _ok(
+            {
+                "followTotal": random_int("WLWQ_FOLLOW_TOTAL_RANDOM_MIN", "WLWQ_FOLLOW_TOTAL_RANDOM_MAX", 380, 720),
+                "avgResponseHours": random_float(
+                    "WLWQ_AVG_RESPONSE_RANDOM_MIN", "WLWQ_AVG_RESPONSE_RANDOM_MAX", 8.0, 12.0, 2
+                ),
+            }
+        )
     try:
         async with get_cursor() as cur:
             await cur.execute(
@@ -61,9 +88,9 @@ async def turnaround_stats(
 ):
     """审批时效：onTimeRate。"""
     if random_enabled(useRandom):
-        return _ok({
-            "onTimeRate": random_float("WLWQ_ON_TIME_RATE_RANDOM_MIN", "WLWQ_ON_TIME_RATE_RANDOM_MAX", 45.0, 68.0, 2)
-        })
+        return _ok(
+            {"onTimeRate": random_float("WLWQ_ON_TIME_RATE_RANDOM_MIN", "WLWQ_ON_TIME_RATE_RANDOM_MAX", 45.0, 68.0, 2)}
+        )
     try:
         async with get_cursor() as cur:
             await cur.execute(
@@ -109,8 +136,13 @@ async def create(body: dict = Body(...)):
              biz_type, biz_id, user_id, examine_status, created_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, 1, NOW())
             """,
-            ei_id, store_id, title, content,
-            biz_type, biz_id, user_id,
+            ei_id,
+            store_id,
+            title,
+            content,
+            biz_type,
+            biz_id,
+            user_id,
         )
 
         if approver_user_id:
@@ -122,14 +154,18 @@ async def create(body: dict = Body(...)):
                  user_id, examine_sequence, examine_status, created_at)
                 VALUES ($1, $2, $3, $4, 1, 2, NOW())
                 """,
-                flow_id, ei_id, examine_tag, int(approver_user_id),
+                flow_id,
+                ei_id,
+                examine_tag,
+                int(approver_user_id),
             )
 
-    return _ok({
-        "id": ei_id,
-        "examine_status": 1,
-        "approver_user_id": approver_user_id,
-        "biz_type": biz_type,
-        "biz_id": biz_id,
-    })
-
+    return _ok(
+        {
+            "id": ei_id,
+            "examine_status": 1,
+            "approver_user_id": approver_user_id,
+            "biz_type": biz_type,
+            "biz_id": biz_id,
+        }
+    )
