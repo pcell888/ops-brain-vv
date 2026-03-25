@@ -377,7 +377,7 @@ export default function CRMRealtimeDashboard() {
                 <div key={lead.id} className="flex items-center gap-2 text-gray-300">
                   <Badge status={index === 0 ? 'processing' : 'default'} />
                   <span className="flex-1 truncate">{lead.lead_name}</span>
-                  <Tag color={statusMap[lead.status]?.color || 'default'}>
+                  <Tag style={{ backgroundColor: statusMap[lead.status]?.color ? `${statusMap[lead.status].color}20` : 'rgba(107, 114, 128, 0.2)', color: statusMap[lead.status]?.color || '#6b7280', border: 'none' }}>
                     {statusMap[lead.status]?.label || lead.status}
                   </Tag>
                 </div>

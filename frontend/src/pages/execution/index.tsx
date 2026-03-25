@@ -36,7 +36,7 @@ export default function ExecutionPage() {
       render: (name: string, record) => (
         <Button
           type="link"
-          className="!text-white !font-medium !p-0 h-auto text-left whitespace-normal"
+          className="!text-primary !font-medium !p-0 h-auto text-left whitespace-normal"
           onClick={() => navigate(`/execution/task/${encodeURIComponent(record.id)}`)}
         >
           {name || '—'}
@@ -49,7 +49,7 @@ export default function ExecutionPage() {
       key: 'recipient',
       width: 120,
       render: (_: string, record) => (
-        <span className="text-gray-300 text-sm">{record.recipient || record.assigned_to || '—'}</span>
+        <span className="text-secondary text-sm">{record.recipient || record.assigned_to || '—'}</span>
       ),
     },
     {
@@ -60,7 +60,7 @@ export default function ExecutionPage() {
       render: (_: string, record) => {
         const t = record.dispatch_time || record.scheduled_start;
         return (
-          <span className="text-gray-400 text-sm">
+          <span className="text-secondary text-sm">
             {t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '—'}
           </span>
         );
@@ -99,13 +99,13 @@ export default function ExecutionPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg">
+          {/* <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg text-white">
               <RocketOutlined />
             </span>
             任务派发
-          </h1>
-          <p className="text-gray-400 mt-2 text-sm">
+          </h1> */}
+          <p className="text-[#303133] mt-2 text-sm">
             列表展示已推送任务摘要；完整业务内容请点任务名称或「详情」。
           </p>
         </div>

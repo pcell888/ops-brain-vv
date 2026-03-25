@@ -113,7 +113,7 @@ export default function ExecutionDetailPage() {
     <div className="space-y-6">
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-start">
         <div className="flex items-center gap-4">
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
           <div>
             <h1 className="text-2xl font-bold text-white flex items-center gap-3">
               <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg">

@@ -48,9 +48,9 @@ export default function ExecutionTaskDetailPage() {
     <div className="space-y-6 max-w-4xl">
       <div className="flex flex-wrap items-center gap-2 justify-between">
         <div className="flex items-center gap-3">
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
-          <h1 className="text-xl font-bold text-white flex items-center gap-2">
-            <span className="w-9 h-9 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
+          <h1 className="text-xl font-bold text-[#303133] flex items-center gap-2">
+            <span className="w-9 h-9 text-[#fff] rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
               <RocketOutlined />
             </span>
             任务详情
@@ -61,7 +61,7 @@ export default function ExecutionTaskDetailPage() {
       <Card title="派发信息" className="border-gray-700">
         <Descriptions column={1} size="small" labelStyle={{ color: '#9ca3af', width: 120 }}>
           <Descriptions.Item label="任务名称">
-            <span className="text-white font-medium">{data.name || '—'}</span>
+            <span className="text-[#303133] font-medium">{data.name || '—'}</span>
           </Descriptions.Item>
           <Descriptions.Item label="接收者">
             {data.recipient || data.assigned_to || '—'}
@@ -95,14 +95,14 @@ export default function ExecutionTaskDetailPage() {
       </Card>
 
       <Card title="业务内容" className="border-gray-700">
-        <div className="text-gray-200 whitespace-pre-wrap break-words leading-relaxed">
+        <div className="text-[#303133] whitespace-pre-wrap break-words leading-relaxed">
           {data.description?.trim() || '—'}
         </div>
       </Card>
 
       {steps.length > 0 && (
         <Card title="实施步骤" className="border-gray-700">
-          <ol className="list-decimal pl-5 space-y-2 text-gray-200">
+          <ol className="list-decimal pl-5 space-y-2 text-[#303133]">
             {steps.map((s, i) => (
               <li key={i}>{s}</li>
             ))}

@@ -3,20 +3,20 @@
 @tailwind utilities;
 
 :root {
-  --bg-primary: #0a0e17;
-  --bg-secondary: #111827;
-  --bg-card: #1a2234;
-  --bg-hover: #232f46;
+  --bg-primary: #F0F1F9;
+  --bg-secondary: #F0F1F9;
+  --bg-card: #fff;
+  --bg-hover: #F0F1F9;
   --accent-blue: #3b82f6;
   --accent-cyan: #06b6d4;
   --accent-emerald: #10b981;
   --accent-amber: #f59e0b;
   --accent-rose: #f43f5e;
   --accent-purple: #8b5cf6;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --border-color: #2d3a52;
+  --text-primary: #303133;
+  --text-secondary: #606266;
+  --text-muted: #909399;
+  --border-color: #e2e8f0;
 }
 
 body {
@@ -44,7 +44,7 @@ body {
   background: var(--accent-blue);
 }
 
-/* Ant Design 暗色主题覆盖 */
+/* Ant Design 白色主题覆盖 */
 .ant-layout {
   background: var(--bg-primary) !important;
 }
@@ -57,21 +57,13 @@ body {
   background: var(--bg-secondary) !important;
 }
 
-.ant-menu-dark,
-.ant-menu.ant-menu-dark,
-.ant-menu-dark .ant-menu-sub {
+.ant-menu, .ant-menu .ant-menu-sub {
   background: transparent !important;
+  display: flex !important;
+  align-items: center !important;
 }
 
-.ant-menu-dark .ant-menu-item-group-title {
-  color: var(--text-muted) !important;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding-left: 16px;
-}
-
-.ant-menu-dark .ant-menu-item {
+.ant-menu .ant-menu-item {
   color: var(--text-secondary) !important;
   margin: 3px 8px !important;
   padding-left: 16px !important;
@@ -81,36 +73,117 @@ body {
   font-size: 13px !important;
 }
 
-.ant-menu-dark .ant-menu-item:hover {
-  background: var(--bg-hover) !important;
-  color: var(--text-primary) !important;
+/* .ant-menu .ant-menu-item:hover {
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+} */
+
+.ant-menu .ant-menu-item-selected {
+  background: #0A43FF !important;
+  color: #fff !important;
 }
 
-.ant-menu-dark .ant-menu-item-selected {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(139, 92, 246, 0.2)) !important;
-  color: var(--accent-blue) !important;
+/* 强制覆盖所有 antd 按钮禁用状态透明度和背景 */
+.ant-btn:disabled,
+.ant-btn[disabled],
+.ant-btn-primary:disabled,
+.ant-btn-primary[disabled],
+.ant-btn-loading:disabled,
+.ant-btn-loading[disabled] {
+  opacity: 1 !important;
+  background-color: #0A43FF !important;
+  border-color: #0A43FF !important;
+  color: #fff !important;
+}
+
+/* loading 状态也强制不透明 */
+.ant-btn-loading:not(.ant-btn-link) {
+  opacity: 1 !important;
+  background-color: #0A43FF !important;
 }
 
 .ant-card {
   background: var(--bg-card) !important;
   border-color: var(--border-color) !important;
-  border-radius: 16px !important;
+  border-radius: 12px !important;
 }
 
 .ant-card-head {
-  background: transparent !important;
+  background: #ffffff !important;
   border-color: var(--border-color) !important;
   color: var(--text-primary) !important;
 }
 
 .ant-card-body {
-  color: var(--text-primary) !important;
+  color: #303133 !important;
+  background: #ffffff !important;
+  border-radius: 12px !important;
 }
 
-.ant-btn-default {
-  background: var(--bg-hover) !important;
+.ant-descriptions-item-content {
+  color: #303133 !important;
+}
+
+.ant-descriptions-item-label {
+  color: #303133 !important;
+}
+
+.ant-select-selection-item {
+  color: #303133 !important;
+}
+
+.ant-select-arrow {
+  color: #303133 !important;
+}
+
+.ant-form-item-label > label {
+  color: #303133 !important;
+}
+
+.ant-select-item-option-content {
+  color: #303133 !important;
+}
+
+.ant-select-dropdown {
+  color: #303133 !important;
+  background-color: #ffffff !important;
   border-color: var(--border-color) !important;
-  color: var(--text-secondary) !important;
+}
+
+.ant-select-item-option-selected {
+  background-color: #f1f5f9 !important;
+  color: #303133 !important;
+}
+
+.ant-table {
+  background-color: #ffffff !important;
+  color: #303133 !important;
+}
+
+.ant-table-tbody > tr > td {
+  background-color: #ffffff !important;
+  color: #303133 !important;
+}
+
+.ant-table-thead > tr > th {
+  background-color: #ffffff !important;
+  color: #303133 !important;
+  border-bottom: 1px solid var(--border-color) !important;
+}
+
+.ant-table-tbody > tr:hover > td {
+  background-color: var(--bg-hover) !important;
+}
+
+.ant-select-selector {
+  background-color: #ffffff !important;
+  border-color: var(--border-color) !important;
+}
+
+.ant-select-dropdown {
+  color: #303133 !important;
+  background-color: #ffffff !important;
+  border-color: var(--border-color) !important;
 }
 
 .ant-btn-default:hover {
@@ -119,15 +192,10 @@ body {
   color: var(--accent-blue) !important;
 }
 
-.ant-btn-primary {
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple)) !important;
-  border: none !important;
-  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4) !important;
-}
+
 
 .ant-btn-primary:hover {
   opacity: 0.9;
-  box-shadow: 0 6px 20px rgba(59, 130, 246, 0.5) !important;
 }
 
 .ant-tag {
@@ -136,7 +204,7 @@ body {
 }
 
 .ant-progress-circle .ant-progress-text {
-  color: var(--text-primary) !important;
+  /* 移除颜色覆盖，让组件自己控制颜色 */
 }
 
 /* 卡片悬浮效果 */
@@ -146,7 +214,7 @@ body {
 
 .hover-card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
 }
 
 /* 发光效果 */
@@ -219,4 +287,52 @@ body {
 
 .animate-pulse-slow {
   animation: pulse-slow 3s ease-in-out infinite;
+}
+
+/* 分页器样式 */
+.ant-pagination-total-text {
+  color: #303133 !important;
+}
+
+.ant-pagination-item {
+  background-color: transparent !important;
+  border-color: var(--border-color) !important;
+}
+
+.ant-pagination-item a {
+  color: #303133 !important;
+}
+
+.ant-pagination-item:hover {
+  border-color: #fff !important;
+}
+
+.ant-pagination-item:hover a {
+  color: #303133 !important;
+}
+
+.ant-pagination-item-active {
+  background-color: #fff !important;
+  border-color: #fff !important;
+}
+
+.ant-pagination-item-active a {
+  color: #303133 !important;
+}
+
+.ant-pagination-prev button,
+.ant-pagination-next button {
+  color: #303133 !important;
+}
+
+.ant-pagination-prev:hover button,
+.ant-pagination-next:hover button {
+  color: #303133 !important;
+}
+
+.ant-table-wrapper .ant-table-tbody >tr >td {
+  border-bottom: 1px solid #e2e8f0;
+}
+.ant-statistic-title {
+  color: #303133 !important;
 }

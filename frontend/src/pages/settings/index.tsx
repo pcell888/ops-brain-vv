@@ -5,7 +5,7 @@ import { Card, Button, Tabs, App, Spin } from 'antd';
 import { SettingOutlined, SaveOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
 import { useAppStore } from '@/stores/app-store';
-import { enterpriseApi, type EnterpriseConfig, type EnterpriseDetail } from '@/lib/api';
+import { enterpriseApi, type EnterpriseConfig } from '@/lib/api';
 import type { FormInstance } from 'antd';
 
 const GeneralTab = lazy(() => import('./tabs/general-tab'));
@@ -27,13 +27,11 @@ export default function SettingsPage() {
   const loadEnterpriseDetail = async () => {
     if (!currentEnterprise?.id) return;
     try {
-      const res = await enterpriseApi.get(currentEnterprise.id) as EnterpriseDetail;
+      const res = await enterpriseApi.get(currentEnterprise.id) as Record<string, unknown>;
       setEnterpriseConfig((res?.config as Record<string, unknown>) ?? {});
       setEnterpriseContext({
         industry: res?.industry,
         name: res?.name,
-        team_size: res?.team_size,
-        stores: res?.stores ?? [],
       });
     } catch {
       setEnterpriseConfig({});
@@ -84,13 +82,13 @@ export default function SettingsPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-gray-500 to-gray-700 flex items-center justify-center text-lg shadow-lg">
+          {/* <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-gray-500 to-gray-700 flex items-center justify-center text-lg shadow-lg text-white">
               <SettingOutlined />
             </span>
             系统设置
-          </h1>
-          <p className="text-gray-400 mt-2 text-sm">配置企业信息和诊断参数</p>
+          </h1> */}
+          <p className="text-[#303133] mt-2 text-sm">配置企业信息和诊断参数</p>
         </div>
         <Button type="primary" icon={<SaveOutlined />} loading={loading} onClick={handleSave}>保存设置</Button>
       </div>

@@ -248,7 +248,7 @@ export default function DimensionsTab({ allDimensions, dimensionsLoading, loadDi
       width: 100, 
       align: 'center', 
       render: (val: number) => (
-        <Tag color="cyan" className="font-medium">{(val * 100).toFixed(0)}%</Tag>
+        <Tag style={{ backgroundColor: 'rgba(6, 182, 212, 0.2)', color: '#06b6d4', border: 'none' }} className="font-medium">{(val * 100).toFixed(0)}%</Tag>
       )
     },
     { 
@@ -258,7 +258,7 @@ export default function DimensionsTab({ allDimensions, dimensionsLoading, loadDi
       align: 'center', 
       render: (_, record) => (
         <Tooltip title={record.metrics_config?.metrics?.map(m => m.display_name).join('、') || '无'}>
-          <Tag className="cursor-help">{record.metrics_config?.metrics?.length || 0}</Tag>
+          <Tag style={{ backgroundColor: 'rgba(107, 114, 128, 0.2)', color: '#6b7280', border: 'none' }} className="cursor-help">{record.metrics_config?.metrics?.length || 0}</Tag>
         </Tooltip>
       )
     },
@@ -269,7 +269,7 @@ export default function DimensionsTab({ allDimensions, dimensionsLoading, loadDi
       align: 'center', 
       render: (_, record) => (
         <Tooltip title={record.rules_config?.rules?.map(r => r.name).join('、') || '无'}>
-          <Tag className="cursor-help">{record.rules_config?.rules?.length || 0}</Tag>
+          <Tag style={{ backgroundColor: 'rgba(107, 114, 128, 0.2)', color: '#6b7280', border: 'none' }} className="cursor-help">{record.rules_config?.rules?.length || 0}</Tag>
         </Tooltip>
       )
     },
@@ -280,7 +280,7 @@ export default function DimensionsTab({ allDimensions, dimensionsLoading, loadDi
       align: 'center', 
       render: (_, record) => (
         <Tooltip title={record.tasks_config?.tasks?.map(t => t.name).join('、') || '无'}>
-          <Tag color="purple" className="cursor-help">{record.tasks_config?.tasks?.length || 0}</Tag>
+          <Tag style={{ backgroundColor: 'rgba(139, 92, 246, 0.2)', color: '#8b5cf6', border: 'none' }} className="cursor-help">{record.tasks_config?.tasks?.length || 0}</Tag>
         </Tooltip>
       )
     },
@@ -484,7 +484,7 @@ export default function DimensionsTab({ allDimensions, dimensionsLoading, loadDi
                     <Row gutter={16}>
                       <Col span={6}><Form.Item {...field} name={[field.name, 'operator']} label="比较方式"><Select options={operatorOptions} /></Form.Item></Col>
                       <Col span={6}><Form.Item {...field} name={[field.name, 'threshold']} label="阈值" tooltip="基于行业基准值自动推算。越高越好的指标取均值×0.7，越低越好的指标取均值×1.5。可手动调整。"><InputNumber style={{ width: '100%' }} /></Form.Item></Col>
-                      <Col span={6}><Form.Item {...field} name={[field.name, 'severity']} label="严重程度"><Select>{severityOptions.map(opt => <Select.Option key={opt.value} value={opt.value}><Tag color={opt.color}>{opt.label}</Tag></Select.Option>)}</Select></Form.Item></Col>
+                      <Col span={6}><Form.Item {...field} name={[field.name, 'severity']} label="严重程度"><Select>{severityOptions.map(opt => <Select.Option key={opt.value} value={opt.value}><Tag style={{ backgroundColor: `${opt.color}20`, color: opt.color, border: 'none' }}>{opt.label}</Tag></Select.Option>)}</Select></Form.Item></Col>
                       <Col span={6}><Form.Item {...field} name={[field.name, 'solution_tags']} label="方案标签" tooltip="系统自动生成，用于匹配优化建议。可手动调整。"><Select mode="tags" placeholder="输入后回车添加" /></Form.Item></Col>
                     </Row>
                     <Form.Item {...field} name={[field.name, 'root_cause_chain']} label="根因链" tooltip="由 AI 自动生成因果推导链路。可手动调整节点顺序和内容。"><Select mode="tags" placeholder="按因果顺序依次输入，如：成本上升 → 毛利下降 → 利润率低" /></Form.Item>
@@ -512,11 +512,11 @@ export default function DimensionsTab({ allDimensions, dimensionsLoading, loadDi
                       <Col span={8}>
                         <Form.Item {...field} name={[field.name, 'execution_type']} label="执行类型" rules={[{ required: true, message: '必填' }]}>
                           <Select placeholder="选择执行类型">
-                            <Select.Option value="auto"><Tag color="green">自动</Tag></Select.Option>
-                            <Select.Option value="semi_auto"><Tag color="orange">半自动</Tag></Select.Option>
-                            <Select.Option value="manual"><Tag color="blue">手动</Tag></Select.Option>
-                            <Select.Option value="custom_api"><Tag color="purple">自定义API</Tag></Select.Option>
-                            <Select.Option value="custom_script"><Tag color="cyan">自定义脚本</Tag></Select.Option>
+                            <Select.Option value="auto"><Tag style={{ backgroundColor: 'rgba(16, 185, 129, 0.2)', color: '#10b981', border: 'none' }}>自动</Tag></Select.Option>
+                            <Select.Option value="semi_auto"><Tag style={{ backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b', border: 'none' }}>半自动</Tag></Select.Option>
+                            <Select.Option value="manual"><Tag style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6', border: 'none' }}>手动</Tag></Select.Option>
+                            <Select.Option value="custom_api"><Tag style={{ backgroundColor: 'rgba(139, 92, 246, 0.2)', color: '#8b5cf6', border: 'none' }}>自定义API</Tag></Select.Option>
+                            <Select.Option value="custom_script"><Tag style={{ backgroundColor: 'rgba(6, 182, 212, 0.2)', color: '#06b6d4', border: 'none' }}>自定义脚本</Tag></Select.Option>
                           </Select>
                         </Form.Item>
                       </Col>

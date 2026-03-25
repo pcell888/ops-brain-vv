@@ -388,16 +388,16 @@ export function TemplateTaskFlow({ tasks, templateId, onTaskClick }: TemplateTas
   return (
     <div className="space-y-4">
       {/* 统计信息 */}
-      <div className="flex items-center justify-between bg-gray-800/50 rounded-lg p-4">
+      <div className="flex items-center justify-between bg-gray-50 rounded-lg p-4 border border-gray-200">
         <div className="flex items-center gap-6">
           <div className="text-center">
-            <div className="text-2xl font-bold text-white">{tasks.length}</div>
-            <div className="text-xs text-gray-400">总任务数</div>
+            <div className="text-2xl font-bold text-primary">{tasks.length}</div>
+            <div className="text-xs text-secondary">总任务数</div>
           </div>
-          <div className="w-px h-8 bg-gray-700" />
+          <div className="w-px h-8 bg-gray-200" />
           <div className="text-center">
-            <div className="text-2xl font-bold text-amber-400">{totalDuration}</div>
-            <div className="text-xs text-gray-400">总耗时(天)</div>
+            <div className="text-2xl font-bold text-amber-600">{totalDuration}</div>
+            <div className="text-xs text-secondary">总耗时(天)</div>
           </div>
         </div>
         <div className="flex items-center gap-4">
@@ -407,8 +407,8 @@ export function TemplateTaskFlow({ tasks, templateId, onTaskClick }: TemplateTas
                 className="w-3 h-3 rounded-full" 
                 style={{ backgroundColor: config.borderColor }}
               />
-              <span className="text-xs text-gray-400">
-                {config.label}: <span className="font-medium text-white">{typeStats[key as keyof typeof typeStats]}</span>
+              <span className="text-xs text-secondary">
+                {config.label}: <span className="font-medium text-primary">{typeStats[key as keyof typeof typeStats]}</span>
               </span>
             </div>
           ))}
@@ -416,7 +416,7 @@ export function TemplateTaskFlow({ tasks, templateId, onTaskClick }: TemplateTas
       </div>
 
       {/* 流程图 */}
-      <div className="h-[480px] bg-slate-900/50 rounded-xl border border-slate-700/50 overflow-hidden">
+      <div className="h-[480px] bg-[#F0F1F9] rounded-xl border border-gray-200 overflow-hidden">
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -436,16 +436,16 @@ export function TemplateTaskFlow({ tasks, templateId, onTaskClick }: TemplateTas
           panOnDrag={true}
           zoomOnScroll={true}
         >
-          <Background color="#1e293b" gap={24} size={1} />
+          <Background color="#f0f2f5" gap={24} size={1} />
           <Controls 
-            className="!bg-gray-800 !border-gray-700 !rounded-lg [&>button]:!bg-gray-800 [&>button]:!border-gray-700 [&>button]:!text-gray-400 [&>button:hover]:!bg-gray-700"
+            className="!bg-[#F0F1F9] !border-gray-200 !rounded-lg [&>button]:!bg-[#F0F1F9] [&>button]:!border-gray-200 [&>button]:!text-gray-600 [&>button:hover]:!bg-gray-100"
             showInteractive={false}
           />
         </ReactFlow>
       </div>
 
       {/* 提示 */}
-      <div className="text-center text-xs text-gray-500">
+      <div className="text-center text-xs text-secondary">
         💡 鼠标悬停任务节点可查看详情，支持拖拽和缩放
       </div>
     </div>

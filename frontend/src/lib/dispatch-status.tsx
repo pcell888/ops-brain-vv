@@ -9,5 +9,5 @@ export function DispatchStatusTag({ status }: { status?: string }) {
     pending: { label: '待派发', color: 'default' },
   };
   const cfg = map[s] || { label: status || '—', color: 'default' };
-  return <Tag color={cfg.color}>{cfg.label}</Tag>;
+  return <Tag style={{ backgroundColor: cfg.color === 'success' ? 'rgba(16, 185, 129, 0.2)' : cfg.color === 'error' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(107, 114, 128, 0.2)', color: cfg.color === 'success' ? '#10b981' : cfg.color === 'error' ? '#ef4444' : '#6b7280', border: 'none' }}>{cfg.label}</Tag>;
 }

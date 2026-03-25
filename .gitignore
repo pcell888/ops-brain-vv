@@ -11,3 +11,6 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Frontend: never commit local pnpm store or install artifacts
+frontend/.pnpm-store/

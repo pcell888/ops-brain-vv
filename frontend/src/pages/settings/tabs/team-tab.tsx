@@ -25,16 +25,16 @@ export default function TeamTab() {
                   <div className="text-xs text-gray-500">{m.email}</div>
                 </div>
               </div>
-              <Tag color={m.roleColor}>{m.role}</Tag>
+              <Tag style={{ backgroundColor: m.roleColor === 'gold' ? 'rgba(245, 158, 11, 0.2)' : m.roleColor === 'blue' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(107, 114, 128, 0.2)', color: m.roleColor === 'gold' ? '#f59e0b' : m.roleColor === 'blue' ? '#3b82f6' : '#6b7280', border: 'none' }}>{m.role}</Tag>
             </div>
           ))}
         </div>
       </Card>
       <Card title="角色权限" size="small">
         <div className="space-y-2 text-sm text-gray-400">
-          <div className="flex items-center gap-2"><Tag color="gold">管理员</Tag><span>拥有所有权限，可管理团队成员和系统设置</span></div>
-          <div className="flex items-center gap-2"><Tag color="blue">编辑</Tag><span>可执行诊断、生成方案、管理执行计划</span></div>
-          <div className="flex items-center gap-2"><Tag color="default">只读</Tag><span>仅可查看诊断报告和方案，不可执行操作</span></div>
+          <div className="flex items-center gap-2"><Tag style={{ backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b', border: 'none' }}>管理员</Tag><span>拥有所有权限，可管理团队成员和系统设置</span></div>
+          <div className="flex items-center gap-2"><Tag style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6', border: 'none' }}>编辑</Tag><span>可执行诊断、生成方案、管理执行计划</span></div>
+          <div className="flex items-center gap-2"><Tag style={{ backgroundColor: 'rgba(107, 114, 128, 0.2)', color: '#6b7280', border: 'none' }}>只读</Tag><span>仅可查看诊断报告和方案，不可执行操作</span></div>
         </div>
       </Card>
     </div>

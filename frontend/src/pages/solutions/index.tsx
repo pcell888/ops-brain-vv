@@ -78,12 +78,12 @@ function SolutionsPage() {
       width: 70,
       render: (rank: number) => (
         <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${
-          rank === 1 ? 'bg-amber-500/20 text-amber-400' :
-          rank === 2 ? 'bg-gray-400/20 text-gray-300' :
-          rank === 3 ? 'bg-orange-600/20 text-orange-400' :
-          'bg-gray-700/50 text-gray-400'
+          rank === 1 ? 'bg-[#0A43FF] text-[#fff]' :
+          rank === 2 ? 'bg-[#D5EAFB] text-[#0A43FF]' :
+          rank === 3 ? 'bg-[#D5EAFB] text-[#0A43FF]' :
+          'bg-[#D5EAFB] text-[#0A43FF]'
         }`}>
-          {rank <= 3 ? <TrophyOutlined /> : rank}
+          {rank <= 3 ? rank : rank}
         </div>
       ),
     },
@@ -91,7 +91,7 @@ function SolutionsPage() {
       title: '方案名称',
       dataIndex: 'name',
       key: 'name',
-      render: (name: string) => <span className="font-medium text-white">{name}</span>,
+      render: (name: string) => <span className="font-medium text-primary">{name}</span>,
     },
     {
       title: '针对异常',
@@ -110,9 +110,9 @@ function SolutionsPage() {
         return (
           <div className="flex flex-wrap gap-1">
             {matched.slice(0, 3).map((a) => (
-              <Tag key={a.id} color="orange" className="!m-0">{a.rule_name}</Tag>
+              <Tag key={a.id} style={{ backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b', border: 'none' }} className="!m-0">{a.rule_name}</Tag>
             ))}
-            {matched.length > 3 && <Tag color="orange" className="!m-0">+{matched.length - 3}</Tag>}
+            {matched.length > 3 && <Tag style={{ backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b', border: 'none' }} className="!m-0">+{matched.length - 3}</Tag>}
           </div>
         );
       },
@@ -133,7 +133,7 @@ function SolutionsPage() {
       key: 'step_roi',
       width: 120,
       render: (_, record) => (
-        <span className="text-gray-300 text-sm">
+        <span className="text-secondary text-sm">
           <ClockCircleOutlined className="mr-1" />
           {record.step_count} 步 · ROI {record.expected_roi.toFixed(1)}
         </span>
@@ -145,9 +145,9 @@ function SolutionsPage() {
       key: 'status',
       width: 90,
       render: (status: string) => {
-        if (status === 'adopted') return <Tag color="green">已采纳</Tag>;
-        if (status === 'rejected') return <Tag color="red">已拒绝</Tag>;
-        return <Tag color="default">待评估</Tag>;
+        if (status === 'adopted') return <Tag style={{ backgroundColor: 'rgba(16, 185, 129, 0.2)', color: '#10b981', border: 'none' }}>已采纳</Tag>;
+        if (status === 'rejected') return <Tag style={{ backgroundColor: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', border: 'none' }}>已拒绝</Tag>;
+        return <Tag style={{ backgroundColor: 'rgba(107, 114, 128, 0.2)', color: '#6b7280', border: 'none' }}>待评估</Tag>;
       },
     },
     {
@@ -199,16 +199,16 @@ function SolutionsPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 bg-[#F0F1F9] min-h-screen">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20">
+          {/* <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20 text-white">
               <BulbOutlined />
             </span>
             优化方案
-          </h1>
-          <p className="text-gray-400 mt-2 text-sm">
+          </h1> */}
+          <p className="text-[#303133] mt-2 text-sm">
             诊断完成后自动生成的优化方案，按综合评分排序
           </p>
         </div>

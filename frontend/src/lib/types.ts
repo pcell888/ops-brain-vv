@@ -77,7 +77,6 @@ export interface DiagnosisReport {
 
 export interface DiagnosisListItem {
   diagnosis_id: string;
-  name: string;
   status: string;
   progress?: number;
   message?: string;

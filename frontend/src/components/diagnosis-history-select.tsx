@@ -19,7 +19,7 @@ export function DiagnosisHistorySelect({ diagnosisItems, value, onChange, loadin
       <span className="flex items-center justify-between gap-2">
         <span>{dayjs(i.created_at).format('YYYY-MM-DD HH:mm')}</span>
         {i.status !== 'completed' && (
-          <Tag className="!m-0" color={i.status === 'running' ? 'processing' : 'default'}>
+          <Tag className="!m-0" color={i.status === 'running' ? 'processing' : 'default'} style={{ background: '#E7ECFF', color: 'rgba(10, 67, 255, 1)', border: 'none' }}>
             {i.status === 'running' ? '进行中' : i.status === 'failed' ? '失败' : i.status}
           </Tag>
         )}

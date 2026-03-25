@@ -76,17 +76,23 @@ export default function TrackingPage() {
     selectedDiagnosisId,
   );
 
-  const items = (trackingsData?.items ?? []) as TrackingSummary[];
+  const items = trackingsData?.items ?? [];
   const takeSnapshot = useTakeSnapshot();
   const completeTracking = useCompleteTracking();
   const cancelTracking = useCancelTracking();
   const startReviewNow = useStartReviewNow();
 
-  const activeRow = useMemo(() => items.find((t) => t.status === 'active') ?? null, [items]);
-  const scheduledRow = useMemo(() => items.find((t) => t.status === 'scheduled') ?? null, [items]);
+  const activeRow = useMemo(
+    () => items.find((t: TrackingSummary) => t.status === 'active') ?? null,
+    [items]
+  );
+  const scheduledRow = useMemo(
+    () => items.find((t: TrackingSummary) => t.status === 'scheduled') ?? null,
+    [items]
+  );
 
   const snapshotQueries = useQueries({
-    queries: items.map((t) => ({
+    queries: items.map((t: TrackingSummary) => ({
       queryKey: ['tracking', 'snapshots', t.tracking_id],
       queryFn: () => trackingApi.getSnapshots(t.tracking_id),
       enabled: t.status !== 'scheduled',
@@ -96,7 +102,7 @@ export default function TrackingPage() {
 
   const snapshotRows = useMemo<SnapshotRow[]>(() => {
     const rows: SnapshotRow[] = [];
-    items.forEach((tracking, idx) => {
+    items.forEach((tracking: TrackingSummary, idx: number) => {
       const data = snapshotQueries[idx]?.data as { items?: SnapshotItem[] } | undefined;
       const snaps = data?.items ?? [];
       snaps.forEach((s) => {
@@ -118,14 +124,19 @@ export default function TrackingPage() {
   }, [snapshotRows]);
 
   const stats = useMemo(() => {
-    const scored = items.filter((t) => t.current_score != null);
+    const scored = items.filter((t: TrackingSummary) => t.current_score != null);
     const avg = scored.length
-      ? Math.round(scored.reduce((sum, t) => sum + Number(t.current_score || 0), 0) / scored.length)
+      ? Math.round(
+          scored.reduce(
+            (sum: number, t: TrackingSummary) => sum + Number(t.current_score || 0),
+            0
+          ) / scored.length
+        )
       : 0;
     return {
       totalTracking: items.length,
-      active: items.filter((t) => t.status === 'active').length,
-      completed: items.filter((t) => t.status === 'completed').length,
+      active: items.filter((t: TrackingSummary) => t.status === 'active').length,
+      completed: items.filter((t: TrackingSummary) => t.status === 'completed').length,
       snapshotTotal: snapshotRows.length,
       avgScore: avg,
     };
@@ -263,13 +274,13 @@ export default function TrackingPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-lg shadow-lg shadow-purple-500/20">
+          <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-lg shadow-lg shadow-purple-500/20 text-white">
               <LineChartOutlined />
             </span>
             效果追踪
           </h1>
-          <p className="text-gray-400 mt-2 text-sm">本次诊断全部追踪概况与采集明细</p>
+          <p className="text-[#303133] mt-2 text-sm">本次诊断全部追踪概况与采集明细</p>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:flex-wrap sm:justify-end">
           {diagnosisItems.length > 0 && (

@@ -440,10 +440,10 @@ export function TaskFlowChart({ planStatus, planProgress, taskStats, tasks, temp
   return (
     <div className="space-y-4">
       {/* 进度和统计 */}
-      <div className="flex items-center justify-between bg-gray-800/50 rounded-lg p-4">
+      <div className="flex items-center justify-between bg-gray-50 rounded-lg p-4 border border-gray-200">
         <div className="flex items-center gap-4">
           <div>
-            <div className="text-xs text-gray-500 mb-1">整体进度</div>
+            <div className="text-xs text-secondary mb-1">整体进度</div>
             <div className="flex items-center gap-2">
               <Progress
                 percent={planProgress}
@@ -454,11 +454,11 @@ export function TaskFlowChart({ planStatus, planProgress, taskStats, tasks, temp
                   '0%': '#3b82f6',
                   '100%': '#10b981',
                 }}
-                trailColor="rgba(255,255,255,0.1)"
+                trailColor="#e5e7eb"
               />
               <span className={clsx(
                 'text-lg font-bold',
-                planProgress >= 100 ? 'text-emerald-400' : 'text-blue-400'
+                planProgress >= 100 ? 'text-emerald-600' : 'text-blue-600'
               )}>
                 {planProgress}%
               </span>
@@ -471,14 +471,14 @@ export function TaskFlowChart({ planStatus, planProgress, taskStats, tasks, temp
               <div className="text-lg font-bold" style={{ color: stat.color }}>
                 {stat.value}
               </div>
-              <div className="text-xs text-gray-500">{stat.label}</div>
+              <div className="text-xs text-secondary">{stat.label}</div>
             </div>
           ))}
         </div>
       </div>
 
       {/* 流程图 */}
-      <div className="bg-slate-900/50 rounded-lg border border-slate-800/50" style={{ height: 500 }}>
+      <div className="bg-[#F0F1F9] rounded-lg border border-gray-200" style={{ height: 500 }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -498,12 +498,12 @@ export function TaskFlowChart({ planStatus, planProgress, taskStats, tasks, temp
           panOnDrag={true}
           zoomOnScroll={true}
         >
-          <Background color="#1e293b" gap={20} size={1} />
+          <Background color="#f0f2f5" gap={20} size={1} />
         </ReactFlow>
       </div>
 
       {/* 图例 */}
-      <div className="flex items-center justify-center gap-6 flex-wrap text-xs text-gray-500">
+      <div className="flex items-center justify-center gap-6 flex-wrap text-xs text-secondary">
         <span className="font-medium">状态:</span>
         {Object.entries(statusConfig).slice(0, 6).map(([key, config]) => (
           <span key={key} className="flex items-center gap-1">

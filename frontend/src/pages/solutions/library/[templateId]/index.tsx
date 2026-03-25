@@ -72,7 +72,8 @@ export default function TemplateDetailPage() {
     return (
       <div className="space-y-6">
         <Button 
-          icon={<ArrowLeftOutlined />} 
+          icon={<ArrowLeftOutlined />}
+          style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }} 
           onClick={() => navigate(-1)}
         >
           返回
@@ -100,7 +101,8 @@ export default function TemplateDetailPage() {
       <div className="flex items-center justify-between">
         <Button 
           type="text"
-          icon={<ArrowLeftOutlined />} 
+          icon={<ArrowLeftOutlined />}
+          style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }} 
           onClick={() => navigate('/solutions/library')}
           className="text-gray-400 hover:text-white"
         >
@@ -120,7 +122,7 @@ export default function TemplateDetailPage() {
               <div>
                 <h1 className="text-2xl font-bold text-white">{template.name}</h1>
                 <div className="flex items-center gap-2 mt-1">
-                  <Tag color={categoryInfo.color}>{categoryInfo.label}</Tag>
+                  <Tag style={{ backgroundColor: `${categoryInfo.color}20`, color: categoryInfo.color, border: 'none' }}>{categoryInfo.label}</Tag>
                   <span className="text-gray-400 text-sm">ID: {template.template_id}</span>
                 </div>
               </div>
@@ -136,7 +138,7 @@ export default function TemplateDetailPage() {
                 <TagsOutlined className="text-gray-400" />
                 <span className="text-gray-400 text-sm">适用场景：</span>
                 {template.applicable_tags.map((tag) => (
-                  <Tag key={tag} color="blue" className="m-0">{getTagLabel(tag)}</Tag>
+                  <Tag key={tag} style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6', border: 'none' }} className="m-0">{getTagLabel(tag)}</Tag>
                 ))}
               </div>
             )}
@@ -365,7 +367,7 @@ export default function TemplateDetailPage() {
           <Descriptions.Item label="适用标签" span={2}>
             <div className="flex flex-wrap gap-1">
               {template.applicable_tags?.map((tag) => (
-                <Tag key={tag} color="blue">{getTagLabel(tag)}</Tag>
+                <Tag key={tag} style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6', border: 'none' }}>{getTagLabel(tag)}</Tag>
               )) || '-'}
             </div>
           </Descriptions.Item>
@@ -423,7 +425,7 @@ function TaskCard({ task, index }: { task: TemplateTask; index: number }) {
         </div>
         <div className="flex flex-col items-end gap-2">
           <Tag 
-            color={typeConfig.color} 
+            style={{ backgroundColor: `${typeConfig.color}20`, color: typeConfig.color, border: 'none' }} 
             icon={typeConfig.icon}
             className="m-0"
           >

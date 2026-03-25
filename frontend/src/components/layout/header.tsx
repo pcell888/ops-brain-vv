@@ -1,8 +1,8 @@
+
+
 import { Layout, Dropdown, Avatar, Space, Modal, List, Tag, Spin, message } from 'antd';
 import { DownOutlined, UserOutlined, SwapOutlined, BankOutlined } from '@ant-design/icons';
 import { useState, useEffect } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { matchPath, useLocation, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/stores/app-store';
 import { enterpriseApi } from '@/lib/api';
 
@@ -28,33 +28,8 @@ function getScaleDisplay(scale: string | null): string {
   return scaleMap[scale] || scale;
 }
 
-function getEnterpriseSwitchFallback(pathname: string): string | null {
-  if (matchPath({ path: '/diagnosis/:diagnosisId/anomaly/:anomalyId', end: true }, pathname)) {
-    return '/diagnosis/reports';
-  }
-  if (matchPath({ path: '/diagnosis/:diagnosisId', end: true }, pathname)) {
-    return '/diagnosis/reports';
-  }
-  if (matchPath({ path: '/solutions/:diagnosisId', end: true }, pathname)) {
-    return '/solutions';
-  }
-  if (matchPath({ path: '/execution/task/:taskId', end: true }, pathname)) {
-    return '/execution';
-  }
-  if (matchPath({ path: '/execution/:planId', end: true }, pathname)) {
-    return '/execution';
-  }
-  if (matchPath({ path: '/tracking/:trackingId/report', end: true }, pathname)) {
-    return '/tracking';
-  }
-  return null;
-}
-
 export function Header() {
   const { currentEnterprise, setCurrentEnterprise } = useAppStore();
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const location = useLocation();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [enterprises, setEnterprises] = useState<Enterprise[]>([]);
   const [loading, setLoading] = useState(false);
@@ -66,9 +41,9 @@ export function Header() {
         setLoading(true);
         const response = await enterpriseApi.list() as { enterprises: Enterprise[]; total: number };
         setEnterprises(response.enterprises || []);
-
+        
         const current = useAppStore.getState().currentEnterprise;
-
+        
         if (current) {
           // 如果已有选中企业，从服务器数据中查找并更新（确保数据是最新的）
           const updatedEnterprise = response.enterprises?.find(e => e.id === current.id);
@@ -89,43 +64,22 @@ export function Header() {
         setLoading(false);
       }
     };
-
+    
     loadEnterprises();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (currentEnterprise?.id) {
-      localStorage.setItem('enterpriseId', currentEnterprise.id);
-      return;
-    }
-    localStorage.removeItem('enterpriseId');
-  }, [currentEnterprise?.id]);
-
   // 处理企业切换
   const handleEnterpriseSelect = (enterprise: Enterprise) => {
-    if (enterprise.id === currentEnterprise?.id) {
-      setIsModalOpen(false);
-      return;
-    }
-
     setCurrentEnterprise(enterprise);
-    queryClient.invalidateQueries();
-
-    const fallbackPath = getEnterpriseSwitchFallback(location.pathname);
-    if (fallbackPath && fallbackPath !== location.pathname) {
-      navigate(fallbackPath, { replace: true });
-    }
-
     setIsModalOpen(false);
   };
 
   // 下拉菜单项
   const menuItems = [
-    {
-      key: 'switch',
-      label: '切换企业',
+    { 
+      key: 'switch', 
+      label: '切换企业', 
       icon: <SwapOutlined />,
       onClick: () => setIsModalOpen(true),
     },
@@ -133,17 +87,17 @@ export function Header() {
 
   return (
     <>
-      <AntHeader className="bg-transparent px-6 flex items-center justify-end h-16">
+      <AntHeader className="bg-transparent px-6 flex items-center justify-end h-12">
         <Dropdown menu={{ items: menuItems }}>
           <Space className="cursor-pointer hover:opacity-80 transition-opacity">
             <Avatar
               className="bg-gradient-to-br from-cyan-500 to-emerald-500"
               icon={<UserOutlined />}
             />
-            <span className="text-gray-300 font-medium">
+            <span className="text-primary font-medium">
               {currentEnterprise?.name || '请选择企业'}
             </span>
-            <DownOutlined className="text-gray-400 text-xs" />
+            <DownOutlined className="text-secondary text-xs" />
           </Space>
         </Dropdown>
       </AntHeader>
@@ -177,21 +131,21 @@ export function Header() {
               >
                 <List.Item.Meta
                   avatar={
-                    <Avatar
+                    <Avatar 
                       className="bg-gradient-to-br from-blue-500 to-purple-500"
-                      icon={<BankOutlined />}
+                      icon={<BankOutlined />} 
                     />
                   }
                   title={
                     <div className="flex items-center gap-2">
-                      <span className="text-gray-200">{item.name}</span>
+                      <span className="text-primary">{item.name}</span>
                       {currentEnterprise?.id === item.id && (
                         <Tag color="blue" className="!m-0">当前</Tag>
                       )}
                     </div>
                   }
                   description={
-                    <span className="text-gray-500">
+                    <span className="text-secondary">
                       {item.industry || '未设置'} · {getScaleDisplay(item.scale)}
                     </span>
                   }

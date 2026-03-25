@@ -70,7 +70,7 @@ export default function TrackingSnapshotDetailPage() {
   if (isError || !summary) {
     return (
       <div className="space-y-6">
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/tracking')}>返回</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/tracking')} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
         <div className="flex items-center justify-center h-[50vh]"><Empty description="记录不存在或无法加载" /></div>
       </div>
     );
@@ -79,7 +79,7 @@ export default function TrackingSnapshotDetailPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/tracking')}>返回列表</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/tracking')} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回列表</Button>
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
             <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-lg shadow-lg shadow-purple-500/20"><CameraOutlined /></span>

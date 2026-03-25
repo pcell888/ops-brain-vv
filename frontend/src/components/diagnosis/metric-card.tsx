@@ -4,6 +4,10 @@ import { Card, Tag, Tooltip, Progress } from 'antd';
 import { InfoCircleOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import clsx from 'clsx';
 import { useState } from 'react';
+import icon1 from '../../assets/icon/icon-1.png';
+import icon2 from '../../assets/icon/icon-2.png';
+import icon3 from '../../assets/icon/icon-3.png';
+import icon4 from '../../assets/icon/icon-4.png';
 
 // 指标明细类型
 export interface MetricDetail {
@@ -32,46 +36,50 @@ const statusConfig = {
   excellent: {
     label: '表现优秀',
     color: 'green',
-    bgGlow: 'hover:shadow-[0_0_30px_rgba(16,185,129,0.15)]',
+    bgColor: 'rgba(0,199,119,1)',
+    bgGlow: 'hover:shadow-[0_0_30px_rgba(0,199,119,0.15)]',
   },
   good: {
     label: '表现良好',
     color: 'green',
-    bgGlow: 'hover:shadow-[0_0_30px_rgba(16,185,129,0.15)]',
+    bgColor: 'rgba(0,199,119,1)',
+    bgGlow: 'hover:shadow-[0_0_30px_rgba(0,199,119,0.15)]',
   },
   warning: {
     label: '需要关注',
     color: 'orange',
-    bgGlow: 'hover:shadow-[0_0_30px_rgba(245,158,11,0.15)]',
+    bgColor: 'rgba(255,141,40,1)',
+    bgGlow: 'hover:shadow-[0_0_30px_rgba(255,141,40,0.15)]',
   },
   danger: {
     label: '亟需改善',
     color: 'red',
-    bgGlow: 'shadow-[0_0_20px_rgba(244,63,94,0.1)]',
+    bgColor: 'rgba(255,56,60,1)',
+    bgGlow: 'shadow-[0_0_20px_rgba(255,56,60,0.1)]',
   },
 };
 
-const dimensionConfig: Record<string, { icon: string; bg: string; text: string; gradient: string }> = {
+const dimensionConfig: Record<string, { icon: any; bg: string; text: string; gradient: string }> = {
   crm: {
-    icon: '📊',
+    icon: icon1,
     bg: 'bg-blue-500/10',
     text: 'text-blue-400',
     gradient: 'from-blue-500/20 to-blue-600/5',
   },
   marketing: {
-    icon: '📈',
+    icon: icon2,
     bg: 'bg-purple-500/10',
     text: 'text-purple-400',
     gradient: 'from-purple-500/20 to-purple-600/5',
   },
   retention: {
-    icon: '👥',
+    icon: icon3,
     bg: 'bg-emerald-500/10',
     text: 'text-emerald-400',
     gradient: 'from-emerald-500/20 to-emerald-600/5',
   },
   efficiency: {
-    icon: '⚙️',
+    icon: icon4,
     bg: 'bg-cyan-500/10',
     text: 'text-cyan-400',
     gradient: 'from-cyan-500/20 to-cyan-600/5',
@@ -115,17 +123,17 @@ function isWorseThanBenchmark(metric: MetricDetail): boolean {
 
 // 根据得分获取颜色（纯分数档）
 function getScoreColor(score: number): string {
-  if (score >= 80) return 'text-emerald-400';
-  if (score >= 60) return 'text-blue-400';
-  if (score >= 40) return 'text-amber-400';
-  return 'text-rose-400';
+  if (score >= 80) return 'text-[rgba(0,199,119,1)]';
+  if (score >= 60) return 'text-[rgba(10,67,255,1)]';
+  if (score >= 40) return 'text-[rgba(255,141,40,1)]';
+  return 'text-[rgba(255,56,60,1)]';
 }
 
 function getProgressColor(score: number): string {
-  if (score >= 80) return '#10b981';
-  if (score >= 60) return '#3b82f6';
-  if (score >= 40) return '#f59e0b';
-  return '#f43f5e';
+  if (score >= 80) return 'rgba(0,199,119,1)';
+  if (score >= 60) return 'rgba(10,67,255,1)';
+  if (score >= 40) return 'rgba(255,141,40,1)';
+  return 'rgba(255,56,60,1)';
 }
 
 /** 数值与进度条颜色：差于行业均值时避免 40–60 分仍显「中性黄」，与业务含义一致 */
@@ -133,10 +141,10 @@ function getMetricValueColor(metric: MetricDetail): string {
   const score = metric.score;
   const worse = isWorseThanBenchmark(metric);
   if (worse) {
-    if (score >= 80) return 'text-emerald-400';
-    if (score >= 60) return 'text-amber-400';
-    if (score >= 40) return 'text-orange-400';
-    return 'text-rose-400';
+    if (score >= 80) return 'text-[rgba(0,199,119,1)]';
+    if (score >= 60) return 'text-[rgba(255,141,40,1)]';
+    if (score >= 40) return 'text-[rgba(255,141,40,1)]';
+    return 'text-[rgba(255,56,60,1)]';
   }
   return getScoreColor(score);
 }
@@ -145,10 +153,10 @@ function getMetricProgressColor(metric: MetricDetail): string {
   const score = metric.score;
   const worse = isWorseThanBenchmark(metric);
   if (worse) {
-    if (score >= 80) return '#10b981';
-    if (score >= 60) return '#f59e0b';
-    if (score >= 40) return '#f97316';
-    return '#f43f5e';
+    if (score >= 80) return 'rgba(0,199,119,1)';
+    if (score >= 60) return 'rgba(255,141,40,1)';
+    if (score >= 40) return 'rgba(255,141,40,1)';
+    return 'rgba(255,56,60,1)';
   }
   return getProgressColor(score);
 }
@@ -172,41 +180,34 @@ export function MetricCard({
     <Card
       className={clsx(
         'hover:translate-y-[-4px] transition-all duration-300 cursor-pointer overflow-hidden',
-        'border-l-4 border-t-0 border-r-0 border-b-0',
-        status === 'excellent' && 'border-l-emerald-500',
-        status === 'good' && 'border-l-emerald-500',
-        status === 'warning' && 'border-l-amber-500',
-        status === 'danger' && 'border-l-rose-500 soft-pulse',
+        'border-0',          // 全边框清除
+        'bg-white !important',
         config.bgGlow
       )}
-      styles={{ body: { padding: '20px' } }}
+      style={{
+        backgroundColor: '#fff !important',
+        borderLeft: `4px solid ${config.bgColor}`,
+      }}
+      styles={{
+        body: {
+          padding: '20px',
+          backgroundColor: '#ffffff !important'
+        },
+      }}
     >
-      {/* 背景渐变装饰 */}
-      <div className={clsx(
-        'absolute top-0 right-0 w-32 h-32 rounded-full blur-3xl opacity-30 -translate-y-1/2 translate-x-1/2',
-        `bg-gradient-to-br ${dimConfig.gradient}`
-      )} />
 
       <div className="relative">
         <div className="flex justify-between items-start mb-4">
-          <div
-            className={clsx(
-              'w-11 h-11 rounded-xl flex items-center justify-center text-xl',
-              dimConfig.bg,
-              'backdrop-blur-sm border border-white/5'
-            )}
-          >
-            {dimConfig.icon}
-          </div>
+          <img width="32px" src={dimConfig.icon} alt="icon" />
           <div className="flex items-center gap-2">
             {/* 指标详情按钮 */}
             {metricsDetail && metricsDetail.length > 0 && (
               <Tooltip title={showDetail ? '收起指标详情' : '查看指标详情'}>
-                <div 
+                <div
                   className={clsx(
                     'w-6 h-6 rounded-md flex items-center justify-center cursor-pointer transition-all',
-                    showDetail 
-                      ? 'bg-blue-500/20 text-blue-400' 
+                    showDetail
+                      ? 'bg-blue-500/20 text-blue-400'
                       : 'bg-gray-500/10 text-gray-400 hover:bg-gray-500/20 hover:text-gray-300'
                   )}
                   onClick={(e) => {
@@ -218,9 +219,13 @@ export function MetricCard({
                 </div>
               </Tooltip>
             )}
-            <Tag 
-              color={config.color} 
+            <Tag
               className="!m-0 !px-3 !py-0.5 !text-xs !font-medium"
+              style={{
+                backgroundColor: config.bgColor,
+                color: 'white',
+                borderColor: config.bgColor
+              }}
             >
               {config.label}
             </Tag>
@@ -228,10 +233,12 @@ export function MetricCard({
         </div>
 
         <div className="text-gray-400 text-sm mb-1 font-medium">{title}</div>
-        <div className={clsx(
-          'text-4xl font-bold mb-3 tracking-tight',
-          dimConfig.text
-        )}>
+        <div
+          className={clsx(
+            'text-4xl font-bold mb-3 tracking-tight',
+            value.includes('分') && 'text-[#333]'
+          )}
+        >
           {value}
         </div>
 
@@ -258,10 +265,10 @@ export function MetricCard({
           <div className="mt-4 pt-3 border-t border-white/10 space-y-3 animate-fadeIn">
             <div className="text-xs text-gray-500 font-medium mb-2">各项指标得分</div>
             {metricsDetail.map((metric, idx) => (
-              <div 
-                key={idx} 
+              <div
+                key={idx}
                 className={clsx(
-                  "space-y-1 p-2 -mx-2 rounded-lg transition-all",
+                  "space-y-1 p-2 rounded-lg transition-all",
                   onMetricClick && "cursor-pointer hover:bg-white/5"
                 )}
                 onClick={(e) => {
@@ -278,13 +285,13 @@ export function MetricCard({
                     {onMetricClick && <span className="ml-1 text-gray-600">→</span>}
                   </span>
                   <span className={clsx('font-medium', getMetricValueColor(metric))}>
-                    {metric.value}{metric.unit} 
+                    {metric.value}{metric.unit}
                     <span className="text-gray-500 ml-1">({Number.isInteger(metric.score) ? metric.score : metric.score.toFixed(1)}分)</span>
                   </span>
                 </div>
-                <Progress 
-                  percent={Math.min(100, metric.score)} 
-                  size="small" 
+                <Progress
+                  percent={Math.min(100, metric.score)}
+                  size="small"
                   showInfo={false}
                   strokeColor={getMetricProgressColor(metric)}
                   trailColor="rgba(255,255,255,0.05)"

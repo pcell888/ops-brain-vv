@@ -64,8 +64,8 @@ const defaultAnomalies: AnomalyItem[] = [
   },
 ];
 
-export function AnomalyList({ 
-  anomalies, 
+export function AnomalyList({
+  anomalies,
   diagnosisId,
   hasSolutions = false,
   anomalyIdsWithSolutions,
@@ -76,7 +76,7 @@ export function AnomalyList({
   onGenerateSolution,
 }: AnomalyListProps) {
   const navigate = useNavigate();
-  
+
   // 有 diagnosisId 时只用真实数据，避免用占位 id(1/2/3) 请求详情导致 404；无 diagnosisId 时可用默认数据展示
   const displayAnomalies =
     diagnosisId && (!anomalies || anomalies.length === 0)
@@ -145,8 +145,8 @@ export function AnomalyList({
 
   if (displayAnomalies.length === 0) {
     return (
-      <Empty 
-        description="暂无异常指标，运营状况良好！" 
+      <Empty
+        description="暂无异常指标，运营状况良好！"
         image={Empty.PRESENTED_IMAGE_SIMPLE}
       />
     );
@@ -178,15 +178,15 @@ export function AnomalyList({
           <div
             className={clsx(
               'relative w-1.5 h-14 rounded-full',
-              anomaly.severity === 'severe' 
-                ? 'bg-gradient-to-b from-rose-400 to-rose-600' 
+              anomaly.severity === 'severe'
+                ? 'bg-gradient-to-b from-rose-400 to-rose-600'
                 : 'bg-gradient-to-b from-amber-400 to-amber-600'
             )}
           />
 
           {/* 信息 */}
           <div className="relative flex-1 min-w-0">
-            <div className="font-semibold text-white text-base mb-1.5 truncate">
+            <div className="font-semibold text-gray-500 text-base mb-1.5 truncate">
               {anomaly.name}
             </div>
             <div className="text-sm text-gray-500 leading-relaxed mb-2">
@@ -211,7 +211,11 @@ export function AnomalyList({
 
           {/* 差距 */}
           <Tag
-            color={anomaly.severity === 'severe' ? 'red' : 'orange'}
+            style={{
+              backgroundColor: anomaly.severity === 'severe' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(245, 158, 11, 0.2)',
+              color: anomaly.severity === 'severe' ? '#ef4444' : '#f59e0b',
+              border: 'none'
+            }}
             className="relative !m-0 !px-3 !py-1 !text-xs !font-semibold !flex !items-center !gap-1"
           >
             ↓ 差距 {anomaly.gap}%
@@ -219,9 +223,9 @@ export function AnomalyList({
 
           {/* 操作 */}
           <div className="relative flex gap-2">
-            <Button 
-              size="small" 
-              className="!px-3 group-hover:!border-blue-500/50 group-hover:!text-blue-400"
+            <Button
+              size="small"
+              style={{ color: 'rgba(10, 67, 255, 1)', backgroundColor: 'rgba(10, 67, 255, 0.08)', border: 'none' }}
               onClick={(e) => {
                 e.stopPropagation();
                 handleViewDetail(anomaly.id);

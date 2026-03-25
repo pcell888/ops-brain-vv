@@ -102,7 +102,7 @@ export default function DiagnosisReportsPage() {
       key: 'diagnosis_id',
       width: 140,
       render: (id: string) => (
-        <span className="font-mono text-xs text-gray-400">
+        <span className="font-mono text-xs text-muted">
           {id.substring(0, 8)}...
         </span>
       ),
@@ -120,7 +120,7 @@ export default function DiagnosisReportsPage() {
         
         return (
           <div className="space-y-1">
-            <Tag icon={config.icon} color={config.color}>
+            <Tag icon={config.icon} style={{ backgroundColor: config.color === 'success' ? 'rgba(82, 196, 26, 0.2)' : config.color === 'processing' ? 'rgba(16, 142, 233, 0.2)' : config.color === 'error' ? 'rgba(245, 34, 45, 0.2)' : 'rgba(0, 0, 0, 0.2)', color: config.color === 'success' ? '#52c41a' : config.color === 'processing' ? '#108ee9' : config.color === 'error' ? '#f5222d' : '#000000', border: 'none' }}>
               {config.text}
             </Tag>
             {isRunning && (
@@ -136,15 +136,15 @@ export default function DiagnosisReportsPage() {
                   }}
                 />
                 {record.message && (
-                  <div className="text-xs text-gray-500 truncate" title={record.message}>
-                    {record.message}
-                  </div>
+                  <div className="text-xs text-muted truncate" title={record.message}>
+                  {record.message}
+                </div>
                 )}
               </div>
             )}
             {isFailed && errorMessage && (
               <Tooltip title={errorMessage} placement="topLeft">
-                <div className="text-xs text-red-400 truncate max-w-[180px] cursor-help">
+                <div className="text-xs text-accent-rose truncate max-w-[180px] cursor-help">
                   {errorMessage}
                 </div>
               </Tooltip>
@@ -160,13 +160,13 @@ export default function DiagnosisReportsPage() {
       width: 120,
       render: (score: number | null) => {
         if (score === null || score === undefined) {
-          return <span className="text-gray-500">-</span>;
+          return <span className="text-muted">-</span>;
         }
-        const color = score >= 80 ? 'text-emerald-400' : score >= 60 ? 'text-amber-400' : 'text-rose-400';
+        const color = score >= 80 ? 'text-accent-emerald' : score >= 60 ? 'text-accent-amber' : 'text-accent-rose';
         return (
           <span className={`font-bold text-lg ${color}`}>
             {score.toFixed(0)}
-            <span className="text-xs text-gray-500 ml-1">分</span>
+            <span className="text-xs text-muted ml-1">分</span>
           </span>
         );
       },
@@ -178,17 +178,17 @@ export default function DiagnosisReportsPage() {
       width: 120,
       render: (count: number | undefined, record: DiagnosisListItem) => {
         if (record.status !== 'completed') {
-          return <span className="text-gray-500">-</span>;
+          return <span className="text-muted">-</span>;
         }
         if (count === 0) {
           return (
-            <Tag color="success" icon={<CheckCircleOutlined />}>
+            <Tag icon={<CheckCircleOutlined />} style={{ backgroundColor: 'rgba(82, 196, 26, 0.2)', color: '#52c41a', border: 'none' }}>
               无异常
             </Tag>
           );
         }
         return (
-          <Tag color="warning" icon={<WarningOutlined />}>
+          <Tag icon={<WarningOutlined />} style={{ backgroundColor: 'rgba(250, 173, 20, 0.2)', color: '#faad14', border: 'none' }}>
             {count} 个异常
           </Tag>
         );
@@ -201,7 +201,23 @@ export default function DiagnosisReportsPage() {
       width: 100,
       render: (type: string) => {
         const config = triggerTypeConfig[type] || { text: type, color: 'default' };
-        return <Tag color={config.color}>{config.text}</Tag>;
+        const getBackgroundColor = (color: string) => {
+          switch (color) {
+            case 'blue': return 'rgba(24, 144, 255, 0.2)';
+            case 'cyan': return 'rgba(0, 176, 255, 0.2)';
+            case 'purple': return 'rgba(120, 69, 193, 0.2)';
+            default: return 'rgba(0, 0, 0, 0.2)';
+          }
+        };
+        const getTextColor = (color: string) => {
+          switch (color) {
+            case 'blue': return '#1890ff';
+            case 'cyan': return '#00b0ff';
+            case 'purple': return '#7845c1';
+            default: return '#000000';
+          }
+        };
+        return <Tag style={{ backgroundColor: getBackgroundColor(config.color), color: getTextColor(config.color), border: 'none' }}>{config.text}</Tag>;
       },
     },
     {
@@ -210,7 +226,7 @@ export default function DiagnosisReportsPage() {
       key: 'created_at',
       width: 160,
       render: (date: string) => (
-        <span className="text-gray-400">
+        <span className="text-secondary">
           {dayjs(date).format('YYYY-MM-DD HH:mm:ss')}
         </span>
       ),
@@ -246,13 +262,13 @@ export default function DiagnosisReportsPage() {
       {/* 页面标题 */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg shadow-cyan-500/20">
+          {/* <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg shadow-cyan-500/20 text-white">
               <FileSearchOutlined />
             </span>
             诊断历史
-          </h1>
-          <p className="text-gray-400 mt-2 text-sm">
+          </h1> */}
+          <p className="text-[#303133] mt-2 text-sm">
             查看历史诊断报告，追踪企业运营健康度变化趋势
           </p>
         </div>
@@ -261,13 +277,13 @@ export default function DiagnosisReportsPage() {
           <div className="flex items-center gap-1.5 text-xs">
             {connected ? (
               <>
-                <WifiOutlined className="text-emerald-400" />
-                <span className="text-emerald-400">实时连接</span>
+                <WifiOutlined className="text-accent-emerald" />
+                <span className="text-accent-emerald">实时连接</span>
               </>
             ) : (
               <>
-                <DisconnectOutlined className="text-gray-500" />
-                <span className="text-gray-500">离线</span>
+                <DisconnectOutlined className="text-muted" />
+                <span className="text-muted">离线</span>
               </>
             )}
           </div>

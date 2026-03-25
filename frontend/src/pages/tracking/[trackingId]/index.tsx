@@ -214,7 +214,7 @@ export default function TrackingDetailPage() {
       legend: {
         type: 'scroll',
         top: 8,
-        textStyle: { color: '#cbd5e1' },
+        textStyle: { color: '#303133' },
       },
       grid: {
         left: 40,
@@ -226,13 +226,13 @@ export default function TrackingDetailPage() {
         type: 'category',
         boundaryGap: false,
         data: xAxisLabels,
-        axisLabel: { color: '#94a3b8' },
-        axisLine: { lineStyle: { color: '#334155' } },
+        axisLabel: { color: '#606266' },
+        axisLine: { lineStyle: { color: '#dcdfe6' } },
       },
       yAxis: {
         type: 'value',
-        axisLabel: { color: '#94a3b8' },
-        splitLine: { lineStyle: { color: 'rgba(148,163,184,0.2)' } },
+        axisLabel: { color: '#606266' },
+        splitLine: { lineStyle: { color: 'rgba(220,224,227,0.5)' } },
       },
       series,
     };
@@ -377,13 +377,13 @@ export default function TrackingDetailPage() {
     <div className='space-y-5'>
       <div className='flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between'>
         <div>
-          <h1 className='flex items-center gap-3 text-2xl font-bold text-white'>
-            <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 text-lg shadow-lg shadow-purple-500/20'>
+          <h1 className='flex items-center gap-3 text-2xl font-bold text-[#303133] text-primary'>
+            <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 text-lg shadow-lg shadow-purple-500/20 text-[#fff]'>
               <LineChartOutlined />
             </span>
             效果追踪
           </h1>
-          <p className='mt-2 text-sm text-gray-400'>追踪状态、快照趋势与效果分析总览</p>
+          <p className='mt-2 text-sm text-secondary text-[#303133]'>追踪状态、快照趋势与效果分析总览</p>
         </div>
         <div className='flex flex-col items-stretch gap-3 lg:items-end'>
           {diagnosisItems.length > 0 && (
@@ -411,6 +411,7 @@ export default function TrackingDetailPage() {
                   onClick={handleSnapshot}
                   loading={takeSnapshot.isPending}
                   disabled={!canOperate}
+                  style={{ color: !canOperate ? '#303133' : undefined }}
                 >
                   采集快照
                 </Button>
@@ -428,6 +429,11 @@ export default function TrackingDetailPage() {
                   onClick={handleStop}
                   loading={cancelTracking.isPending}
                   disabled={!canOperate}
+                  style={
+                    !canOperate
+                      ? { color: '#303133' }
+                      : { background: '#FF4D4F', border: 'none', color: '#fff' }
+                  }
                 >
                   停止
                 </Button>
@@ -438,14 +444,14 @@ export default function TrackingDetailPage() {
       </div>
 
       <div className='grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4'>
-        <Card className='border-slate-700/60 bg-slate-900/75'>
+        <Card className='border-gray-200 bg-[#F0F1F9]'>
           <div className='flex items-center gap-3'>
-            <span className='flex h-10 w-10 items-center justify-center rounded-xl border border-blue-400/30 bg-blue-500/12 text-blue-300'>
+            <span className='flex h-10 w-10 items-center justify-center rounded-xl border border-blue-200 bg-blue-50 text-blue-600'>
               <DashboardOutlined />
             </span>
             <div>
-              <div className='text-xs text-slate-400 mb-1'>追踪状态</div>
-              <span className='inline-flex items-center gap-1 rounded-md border border-blue-500/35 bg-blue-500/10 px-2 py-[2px] text-xs text-blue-300 leading-none'>
+              <div className='text-xs text-secondary mb-1'>追踪状态</div>
+              <span className='inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-[2px] text-xs text-blue-600 leading-none'>
                 {statusDotIcon}
                 {statusText}
               </span>
@@ -453,38 +459,38 @@ export default function TrackingDetailPage() {
           </div>
         </Card>
 
-        <Card className='border-slate-700/60 bg-slate-900/75'>
+        <Card className='border-gray-200 bg-[#F0F1F9]'>
           <div className='flex items-center gap-3'>
-            <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-300'>
+            <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600'>
               <TrophyOutlined />
             </span>
             <div>
-              <div className='text-xs text-slate-400'>当前评分</div>
-              <div className='text-[32px] font-semibold leading-none text-slate-100'>{score} 分</div>
+              <div className='text-xs text-secondary'>当前评分</div>
+              <div className='text-[32px] font-semibold leading-none text-primary'>{score} 分</div>
             </div>
           </div>
         </Card>
 
-        <Card className='border-slate-700/60 bg-slate-900/75'>
+        <Card className='border-gray-200 bg-[#F0F1F9]'>
           <div className='flex items-center gap-3'>
-            <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/20 text-amber-300'>
+            <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600'>
               <CameraOutlined />
             </span>
             <div>
-              <div className='text-xs text-slate-400'>快照数量</div>
-              <div className='text-[32px] font-semibold leading-none text-amber-300'>{summary.snapshot_count ?? 0} 个</div>
+              <div className='text-xs text-secondary'>快照数量</div>
+              <div className='text-[32px] font-semibold leading-none text-amber-600'>{summary.snapshot_count ?? 0} 个</div>
             </div>
           </div>
         </Card>
 
-        <Card className='border-slate-700/60 bg-slate-900/75'>
+        <Card className='border-gray-200 bg-[#F0F1F9]'>
           <div className='flex items-center gap-3'>
-            <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/20 text-purple-300'>
+            <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-purple-50 text-purple-600'>
               <ClockCircleOutlined />
             </span>
             <div>
-              <div className='text-xs text-slate-400'>追踪时长</div>
-              <div className='text-[32px] font-semibold leading-none text-purple-300'>
+              <div className='text-xs text-secondary'>追踪时长</div>
+              <div className='text-[32px] font-semibold leading-none text-purple-600'>
                 {totalDays ? `${days} / ${totalDays} 天` : `${days} 天`}
               </div>
             </div>
@@ -494,25 +500,25 @@ export default function TrackingDetailPage() {
 
       <Card
         title={(
-          <span className='flex items-center gap-2 text-slate-100'>
-            <EyeOutlined className='text-sky-400' />
+          <span className='flex items-center gap-2 text-primary'>
+            <EyeOutlined className='text-sky-600' />
             基本信息
           </span>
         )}
-        className='border-slate-700/60 bg-slate-900/75'
+        className='border-gray-200 bg-[#F0F1F9]'
       >
-        <div className='overflow-hidden rounded-lg border border-slate-700/60 bg-slate-900/40'>
-          <div className='grid grid-cols-12 border-b border-slate-700/60'>
-            <div className='col-span-2 bg-slate-800/80 px-4 py-2.5 text-slate-400 text-sm'>方案名称</div>
-            <div className='col-span-10 px-4 py-2.5 text-slate-100 text-sm'>{summary.solution_name || '-'}</div>
+        <div className='overflow-hidden rounded-lg border border-gray-200 bg-gray-50'>
+          <div className='grid grid-cols-12 border-b border-gray-200'>
+            <div className='col-span-2 bg-gray-100 px-4 py-2.5 text-secondary text-sm'>方案名称</div>
+            <div className='col-span-10 px-4 py-2.5 text-primary text-sm'>{summary.solution_name || '-'}</div>
           </div>
           <div className='grid grid-cols-12'>
-            <div className='col-span-2 bg-slate-800/80 px-4 py-2.5 text-slate-400 text-sm'>开始时间</div>
-            <div className='col-span-4 px-4 py-2.5 text-slate-100 text-sm'>
+            <div className='col-span-2 bg-gray-100 px-4 py-2.5 text-secondary text-sm'>开始时间</div>
+            <div className='col-span-4 px-4 py-2.5 text-primary text-sm'>
               {summary.started_at ? dayjs(summary.started_at).format('YYYY-MM-DD HH:mm') : '-'}
             </div>
-            <div className='col-span-2 border-l border-slate-700/60 bg-slate-800/80 px-4 py-2.5 text-slate-400 text-sm'>最近快照</div>
-            <div className='col-span-4 px-4 py-2.5 text-slate-100 text-sm'>
+            <div className='col-span-2 border-l border-gray-200 bg-gray-100 px-4 py-2.5 text-secondary text-sm'>最近快照</div>
+            <div className='col-span-4 px-4 py-2.5 text-primary text-sm'>
               {summary.last_snapshot_at ? dayjs(summary.last_snapshot_at).format('YYYY-MM-DD HH:mm') : '-'}
             </div>
           </div>
@@ -522,48 +528,48 @@ export default function TrackingDetailPage() {
       <div className='grid grid-cols-1 gap-4 xl:grid-cols-2'>
         <Card
           title={(
-            <span className='flex items-center gap-2 text-slate-100'>
-              <LineChartOutlined className='text-cyan-400' />
+            <span className='flex items-center gap-2 text-primary'>
+              <LineChartOutlined className='text-cyan-600' />
               效果分析
             </span>
           )}
-          className='border-slate-700/60 bg-slate-900/75'
+          className='border-gray-200 bg-[#F0F1F9]'
         >
           <div className='mb-4 grid grid-cols-3 gap-2'>
             <div>
-              <div className='text-slate-400 text-sm'>整体效果评分</div>
-              <div className='text-[40px] leading-none font-semibold text-amber-400'>{score}分</div>
+              <div className='text-secondary text-sm'>整体效果评分</div>
+              <div className='text-[40px] leading-none font-semibold text-amber-600'>{score}分</div>
             </div>
             <div>
-              <div className='text-slate-400 text-sm'>目标达成率</div>
-              <div className='text-[36px] leading-none font-semibold text-slate-100'>{targetRate}%</div>
+              <div className='text-secondary text-sm'>目标达成率</div>
+              <div className='text-[36px] leading-none font-semibold text-primary'>{targetRate}%</div>
             </div>
             <div>
-              <div className='text-slate-400 text-sm'>改善指标数</div>
-              <div className='text-[36px] leading-none font-semibold text-emerald-400'>{improvedCount}个</div>
+              <div className='text-secondary text-sm'>改善指标数</div>
+              <div className='text-[36px] leading-none font-semibold text-emerald-600'>{improvedCount}个</div>
             </div>
           </div>
 
-          <div className='space-y-2 text-sm text-slate-200'>
-            <div className='text-slate-300'>分析建议</div>
+          <div className='space-y-2 text-sm text-primary'>
+            <div className='text-secondary'>分析建议</div>
             {analysisSuggestions.map((item) => (
               <div key={item}>💡 {item}</div>
             ))}
           </div>
 
-          <div className='mt-4 rounded-md border border-amber-800/20 bg-rose-950/30 px-3 py-2 text-rose-200 text-sm'>
+          <div className='mt-4 rounded-md border border-amber-200 bg-rose-50 px-3 py-2 text-rose-600 text-sm'>
             {riskHint}
           </div>
         </Card>
 
         <Card
           title={(
-            <span className='flex items-center gap-2 text-slate-100'>
-              <LineChartOutlined className='text-emerald-400' />
+            <span className='flex items-center gap-2 text-primary'>
+              <LineChartOutlined className='text-emerald-600' />
               指标趋势
             </span>
           )}
-          className='border-slate-700/60 bg-slate-900/75'
+          className='border-gray-200 bg-[#F0F1F9]'
         >
           {(trends.timestamps?.length ?? 0) > 0 && Object.keys(trends.indicators ?? {}).length > 0 ? (
             <ReactECharts option={trendChartOption} style={{ height: 320, width: '100%' }} />
@@ -575,15 +581,22 @@ export default function TrackingDetailPage() {
 
       <Card
         title={(
-          <span className='flex items-center gap-2 text-slate-100'>
-            <CameraOutlined className='text-fuchsia-400' />
+          <span className='flex items-center gap-2 text-primary'>
+            <CameraOutlined className='text-fuchsia-600' />
             快照记录
-            <Tag color='purple' className='ml-1'>
+            <Tag
+              style={{
+                backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                color: '#3b82f6',
+                border: 'none'
+              }}
+              className="relative !ml-1 !px-3 !py-1 !text-xs !font-semibold !flex !items-center !gap-1"
+            >
               {snapshotItems.length} 条
             </Tag>
           </span>
         )}
-        className='border-slate-700/60 bg-slate-900/75'
+        className='border-gray-200 bg-[#F0F1F9]'
       >
         {snapshotItems.length === 0 ? (
           <Empty description='暂无快照记录' />
@@ -615,19 +628,26 @@ export default function TrackingDetailPage() {
                   ? 'default'
                   : 'processing';
               return (
-                <div key={snapshot.snapshot_id} className='rounded-lg border border-slate-700/60 bg-slate-900/40 p-3'>
+                <div key={snapshot.snapshot_id} className='rounded-lg border border-gray-200 bg-gray-50 p-3'>
                   <div className='flex items-start justify-between gap-3'>
                     <div>
-                      <div className='flex items-center gap-2 text-sm font-medium text-slate-100'>
+                      <div className='flex items-center gap-2 text-sm font-medium text-primary'>
                         {dayjs(snapshot.snapshot_at).format('YYYY-MM-DD HH:mm')}
-                        <Tag color={typeColor} className='m-0'>
+                        <Tag
+                          style={{
+                            backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                            color: '#3b82f6',
+                            border: 'none'
+                          }}
+                          className="relative !m-0 !px-3 !py-1 !text-xs !font-semibold !flex !items-center !gap-1"
+                        >
                           {typeLabel}
                         </Tag>
                       </div>
                     </div>
                     <div className='text-right'>
-                      <div className='text-xs text-slate-400'>评分</div>
-                      <div className='text-xl font-semibold text-rose-300'>
+                      <div className='text-xs text-secondary'>评分</div>
+                      <div className='text-xl font-semibold text-rose-600'>
                         {snapshot.health_score == null ? '-' : `${Number(snapshot.health_score).toFixed(0)}分`}
                       </div>
                     </div>
@@ -636,7 +656,15 @@ export default function TrackingDetailPage() {
                   {indicatorChanges.length > 0 && (
                     <div className='mt-2 flex flex-wrap gap-2'>
                       {indicatorChanges.map((change) => (
-                        <Tag key={`${snapshot.snapshot_id}-${change.indicator_code}`} color='blue'>
+                        <Tag
+                          key={`${snapshot.snapshot_id}-${change.indicator_code}`}
+                          style={{
+                            backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                            color: '#3b82f6',
+                            border: 'none'
+                          }}
+                          className="relative !m-0 !px-3 !py-1 !text-xs !font-semibold !flex !items-center !gap-1"
+                        >
                           {change.name}: {Number(change.value).toFixed(2)}{change.unit || ''}
                         </Tag>
                       ))}

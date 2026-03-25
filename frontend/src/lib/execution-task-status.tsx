@@ -23,7 +23,7 @@ export function ExecutionTaskStatusTag({ status }: { status: string }) {
     text: status || '—',
   };
   return (
-    <Tag icon={cfg.icon} color={cfg.color}>
+    <Tag icon={cfg.icon} style={{ backgroundColor: cfg.color === 'default' ? 'rgba(107, 114, 128, 0.2)' : cfg.color === 'processing' ? 'rgba(23, 162, 184, 0.2)' : cfg.color === 'success' ? 'rgba(16, 185, 129, 0.2)' : cfg.color === 'error' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(107, 114, 128, 0.2)', color: cfg.color === 'default' ? '#6b7280' : cfg.color === 'processing' ? '#17a2b8' : cfg.color === 'success' ? '#10b981' : cfg.color === 'error' ? '#ef4444' : '#6b7280', border: 'none' }}>
       {cfg.text}
     </Tag>
   );

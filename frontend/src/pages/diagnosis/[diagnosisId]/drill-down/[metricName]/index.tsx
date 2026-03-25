@@ -190,7 +190,8 @@ export default function DrillDownPage() {
       {/* 页面标题 */}
       <div className="flex items-center gap-4">
         <Button 
-          icon={<ArrowLeftOutlined />} 
+          icon={<ArrowLeftOutlined />}
+          style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }} 
           onClick={handleBack}
           className="!flex !items-center"
         />

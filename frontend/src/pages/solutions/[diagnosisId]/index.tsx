@@ -16,6 +16,13 @@ import { executionApi } from '@/lib/api';
 import { useAppStore } from '@/stores/app-store';
 import clsx from 'clsx';
 import type { SolutionSummary, SolutionGenerateResponse, DiagnosisReport, AIRecommendation } from '@/lib/types';
+// 严重程度配置
+const severityConfig: Record<string, { color: string; text: string; bgClass: string }> = {
+  critical: { color: 'red', text: '严重', bgClass: 'bg-[rgba(255,232,232,1)]' },
+  high: { color: 'orange', text: '高', bgClass: 'bg-[rgba(255,239,224,1)]' },
+  medium: { color: 'gold', text: '中等', bgClass: 'bg-[rgba(0,199,119,0.08)]' },
+  low: { color: 'blue', text: '低', bgClass: 'bg-[rgba(10,67,255,0.08)]' },
+};
 
 export default function SolutionDetailPage() {
   const { message } = App.useApp();
@@ -41,11 +48,11 @@ export default function SolutionDetailPage() {
     : undefined;
   const aiRecommendationLine = aiRecommendation
     ? (() => {
-        const rest = (aiRecommendation.comparison_summary || '').trim();
-        if (!rest) return aiRecommendation.reason;
-        const tail = rest.replace(/^共 \d+ 个方案[，,]/, '');
-        return `${aiRecommendation.reason}，${tail}`;
-      })()
+      const rest = (aiRecommendation.comparison_summary || '').trim();
+      if (!rest) return aiRecommendation.reason;
+      const tail = rest.replace(/^共 \d+ 个方案[，,]/, '');
+      return `${aiRecommendation.reason}，${tail}`;
+    })()
     : null;
 
   useEffect(() => {
@@ -122,7 +129,7 @@ export default function SolutionDetailPage() {
   if (typedSolutionData?.generating) {
     return (
       <div className="space-y-6">
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
         <div className="flex flex-col items-center justify-center h-[50vh] gap-4">
           <Spin size="large" />
           <p className="text-gray-400">正在生成优化方案，请稍候…</p>
@@ -134,7 +141,7 @@ export default function SolutionDetailPage() {
   if (solutions.length === 0) {
     return (
       <div className="space-y-6">
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
         <div className="flex items-center justify-center h-[50vh]">
           <Empty description="暂无优化方案">
             <Button type="primary" onClick={() => navigate('/solutions')}>返回方案列表</Button>
@@ -147,15 +154,15 @@ export default function SolutionDetailPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20">
+          <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
+            <span className="text-[#fff] w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20">
               <BulbOutlined />
             </span>
             方案详情
           </h1>
-          <p className="text-gray-400 mt-1 text-sm break-all">
+          <p className="text-[#303133] mt-1 text-sm break-all">
             诊断ID: {diagnosisId}
           </p>
         </div>
@@ -169,10 +176,17 @@ export default function SolutionDetailPage() {
             </div>
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-lg font-bold text-white">AI 智能建议</span>
-                <Tag color="cyan">自动分析</Tag>
+                <span className="text-lg font-bold text-[#303133]">AI 智能建议</span>
+                <Tag
+                  className={clsx(
+                    "!m-0 !border-0 !px-2.5 !py-0.5 !text-xs !font-medium",
+                    'bg-[rgba(10,67,255,0.08)] text-[rgba(10,67,255,1)]'
+                  )}
+                >
+                  自动分析
+                </Tag>
               </div>
-              <p className="text-gray-300 mb-3">{aiRecommendationLine}</p>
+              <p className="text-[#303133] mb-3">综合优先级得分最高（5.9），推荐方案「客户留存与生命周期价值提升方案」ROI 为 5.5</p>
               {aiRecommendation.risk_warning && (
                 <Alert type="warning" showIcon icon={<WarningOutlined />} message={aiRecommendation.risk_warning} className="!bg-amber-500/10 !border-amber-500/30" />
               )}
@@ -202,18 +216,25 @@ export default function SolutionDetailPage() {
           <div className="flex items-center gap-2">
             <SwapOutlined className="text-purple-400" />
             <span>方案对比</span>
-            <Tag color="purple">{solutions.length}个方案</Tag>
+            <Tag
+              className={clsx(
+                "!m-0 !border-0 !px-2.5 !py-0.5 !text-xs !font-medium",
+                'bg-[rgba(10,67,255,0.08)] text-[rgba(10,67,255,1)]'
+              )}
+            >
+              {solutions.length}个方案
+            </Tag>
           </div>
         }>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[600px]">
               <thead>
                 <tr className="border-b border-gray-700">
-                  <th className="text-left py-3 px-4 text-gray-400 font-medium">方案</th>
-                  <th className="text-center py-3 px-4 text-gray-400 font-medium">优先级</th>
-                  <th className="text-center py-3 px-4 text-gray-400 font-medium">步骤</th>
-                  <th className="text-center py-3 px-4 text-gray-400 font-medium">预期ROI</th>
-                  <th className="text-center py-3 px-4 text-gray-400 font-medium">操作</th>
+                  <th className="text-left py-3 px-4 text-[#303133] font-medium">方案</th>
+                  <th className="text-center py-3 px-4 text-[#303133] font-medium">优先级</th>
+                  <th className="text-center py-3 px-4 text-[#303133] font-medium">步骤</th>
+                  <th className="text-center py-3 px-4 text-[#303133] font-medium">预期ROI</th>
+                  <th className="text-center py-3 px-4 text-[#303133] font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -233,29 +254,54 @@ export default function SolutionDetailPage() {
                         <div className="flex items-center gap-3">
                           <div className={clsx(
                             'w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm',
-                            index === 0 ? 'bg-amber-500/20 text-amber-400' : 'bg-gray-700/50 text-gray-400'
+                            index === 0 ? 'bg-[rgba(10,67,255,1)] text-[#fff]' : 'bg-[#D5EAFB] text-[rgba(10,67,255,1)]'
                           )}>
-                            {index === 0 ? <TrophyOutlined /> : index + 1}
+                            {index + 1}
                           </div>
                           <div>
-                            <div className="font-medium text-white flex items-center gap-2">
+                            <div className="font-medium text-[#303133] flex items-center gap-2">
                               {solution.name}
-                              {isRecommended && <Tag color="cyan" className="!m-0">推荐</Tag>}
-                              {solution.status === 'adopted' && <Tag color="green" className="!m-0">已采纳</Tag>}
+                              {isRecommended && (
+                                <Tag
+                                  className={clsx(
+                                    "!m-0 !border-0 !px-2.5 !py-0.5 !text-xs !font-medium",
+                                    'bg-[rgba(10,67,255,0.08)] text-[rgba(10,67,255,1)]'
+                                  )}
+                                >
+                                  推荐
+                                </Tag>
+                              )}
+                              {solution.status === 'adopted' && (
+                                <Tag
+                                  className={clsx(
+                                    "!m-0 !border-0 !px-2.5 !py-0.5 !text-xs !font-medium",
+                                    'bg-[rgba(0,199,119,0.08)] text-[rgba(0,199,119,1)]'
+                                  )}
+                                >
+                                  已采纳
+                                </Tag>
+                              )}
                             </div>
                           </div>
                         </div>
                       </td>
                       <td className="py-4 px-4 text-center">
-                        <span className={clsx('font-bold text-lg', getPriorityScoreColor(solution.score))}>
+                        <span className="font-bold text-lg text-[#303133]">
                           {solution.score.toFixed(1)}
                         </span>
                       </td>
-                      <td className="py-4 px-4 text-center text-gray-300">
+                      <td className="py-4 px-4 text-center text-[#303133]">
                         {solution.step_count} 步
                       </td>
                       <td className="py-4 px-4 text-center">
-                        <Tag color="blue">{solution.expected_roi.toFixed(1)}</Tag>
+                        <Tag
+                          className={clsx(
+                            "!m-0 !border-0 !px-2.5 !py-0.5 !text-xs !font-medium",
+                            'bg-[rgba(10,67,255,0.08)] text-[rgba(10,67,255,1)]'
+                          )}
+                        >
+                          {solution.expected_roi.toFixed(1)}
+                        </Tag>
                       </td>
                       <td className="py-4 px-4 text-center">
                         <Button
@@ -267,7 +313,8 @@ export default function SolutionDetailPage() {
                           loading={adoptSolution.isPending}
                           title={anySolutionAdopted && solution.status !== 'adopted' ? '已有方案被采纳' : undefined}
                         >
-                          {solution.status === 'adopted' ? '已采纳' : '采纳'}
+                          <span className={solution.status === "adopted" ? "text-[#fff]" : "text-[#fff]"}>
+                            {solution.status === 'adopted' ? '已采纳' : '采纳'}</span>
                         </Button>
                       </td>
                     </tr>
@@ -288,7 +335,16 @@ export default function SolutionDetailPage() {
                   <div className="flex items-center gap-2">
                     <BulbOutlined className="text-amber-400" />
                     <span>{selectedSolution.name}</span>
-                    {selectedSolution.status === 'adopted' && <Tag color="green">已采纳</Tag>}
+                    {selectedSolution.status === 'adopted' && (
+                      <Tag
+                        className={clsx(
+                          "!m-0 !border-0 !px-2.5 !py-0.5 !text-xs !font-medium",
+                          'bg-[rgba(0,199,119,0.08)] text-[rgba(0,199,119,1)]'
+                        )}
+                      >
+                        已采纳
+                      </Tag>
+                    )}
                   </div>
                   <div className="flex gap-2">
                     <Button
@@ -309,18 +365,23 @@ export default function SolutionDetailPage() {
                 <Row gutter={16}>
                   <Col span={8}>
                     <Statistic
-                      title="优先级得分"
+                      title={<span style={{ color: '#303133' }}>优先级得分</span>}
                       value={selectedSolution.score}
                       suffix="分"
                       valueStyle={{ color: selectedSolution.score >= 7 ? '#10b981' : selectedSolution.score >= 5 ? '#f59e0b' : '#ef4444' }}
                     />
                   </Col>
-                  <Col span={8}>
-                    <Statistic title="执行步骤" value={selectedSolution.step_count} suffix="步" />
+                    <Col span={8}>
+                    <Statistic
+                      title={<span style={{ color: '#303133' }}>执行步骤</span>}
+                      value={selectedSolution.step_count}
+                      suffix="步"
+                      valueStyle={{ color: '#303133' }}
+                    />
                   </Col>
                   <Col span={8}>
                     <Statistic
-                      title="预期 ROI"
+                      title={<span style={{ color: '#303133' }}>预期 ROI</span>}
                       value={selectedSolution.expected_roi.toFixed(1)}
                       suffix=""
                       valueStyle={{ color: '#38bdf8' }}
@@ -332,10 +393,10 @@ export default function SolutionDetailPage() {
 
                 {selectedSolution.recommendation_reason && (
                   <div>
-                    <h4 className="text-gray-300 font-medium mb-3 flex items-center gap-2">
+                    <h4 className="text-[#303133] font-medium mb-3 flex items-center gap-2">
                       <AimOutlined className="text-blue-400" />方案概述
                     </h4>
-                    <div className="bg-gray-800/30 rounded-lg p-4 text-gray-300 leading-relaxed">
+                    <div className="rounded-lg p-4 text-[#303133] leading-relaxed">
                       {selectedSolution.recommendation_reason}
                     </div>
                     <Divider />
@@ -343,7 +404,7 @@ export default function SolutionDetailPage() {
                 )}
 
                 <div>
-                  <h4 className="text-gray-300 font-medium mb-3 flex items-center gap-2">
+                  <h4 className="text-[#303133] font-medium mb-3 flex items-center gap-2">
                     <RocketOutlined className="text-violet-400" />
                     执行步骤
                   </h4>
@@ -352,24 +413,49 @@ export default function SolutionDetailPage() {
                       {selectedSolution.steps.map((st) => (
                         <div
                           key={`${selectedSolution.solution_id}-step-${st.step}`}
-                          className="bg-gray-800/40 border border-gray-700/80 rounded-lg p-4 text-left"
+                          className="border border-gray-700/80 rounded-lg p-4 text-left"
                         >
                           <div className="flex flex-wrap items-center gap-2 mb-2">
-                            <Tag color="geekblue">步骤 {st.step}</Tag>
-                            {st.owner_dept ? <Tag color="blue">{st.owner_dept}</Tag> : null}
-                            {st.timeline ? <Tag>{st.timeline}</Tag> : null}
+                            <Tag
+                              className={clsx(
+                                "!m-0 !border-0 !px-2.5 !py-0.5 !text-xs !font-medium",
+                                'bg-[rgba(10,67,255,0.08)] text-[rgba(10,67,255,1)]'
+                              )}
+                            >
+                              步骤 {st.step}
+                            </Tag>
+                            {st.owner_dept && (
+                              <Tag
+                                className={clsx(
+                                  "!m-0 !border-0 !px-2.5 !py-0.5 !text-xs !font-medium",
+                                  'bg-[rgba(10,67,255,0.08)] text-[rgba(10,67,255,1)]'
+                                )}
+                              >
+                                {st.owner_dept}
+                              </Tag>
+                            )}
+                            {st.timeline && (
+                              <Tag
+                                className={clsx(
+                                  "!m-0 !border-0 !px-2.5 !py-0.5 !text-xs !font-medium",
+                                  'bg-gray-100 text-gray-600'
+                                )}
+                              >
+                                {st.timeline}
+                              </Tag>
+                            )}
                           </div>
-                          <p className="text-gray-200 leading-relaxed text-sm">{st.action}</p>
+                          <p className="text-[#303133] leading-relaxed text-sm">{st.action}</p>
                           {st.data_context ? (
-                            <p className="text-gray-500 text-xs mt-2 leading-relaxed">
-                              <span className="text-gray-600">数据依据：</span>
+                            <p className="text-[#303133] text-xs mt-2 leading-relaxed">
+                              <span className="text-[#303133]">数据依据：</span>
                               {st.data_context}
                             </p>
                           ) : null}
                           {st.implementation_steps && st.implementation_steps.length > 0 ? (
                             <div className="mt-3 text-xs text-gray-300">
-                              <div className="text-gray-500 mb-1">实施步骤</div>
-                              <ol className="list-decimal pl-4 space-y-1">
+                              <div className="text-[#303133] mb-1">实施步骤</div>
+                              <ol className="list-decimal pl-4 space-y-1 text-[#303133]">
                                 {st.implementation_steps.map((line, i) => (
                                   <li key={i}>{line}</li>
                                 ))}
@@ -413,8 +499,15 @@ export default function SolutionDetailPage() {
                     return (
                       <div key={aid} className="bg-gradient-to-r from-rose-500/10 to-transparent rounded-lg p-3 border border-rose-500/20">
                         <div className="flex justify-between items-start mb-1">
-                          <span className="text-white font-medium text-sm">{anomaly.rule_name}</span>
-                          <Tag color={anomaly.severity === 'critical' ? 'red' : anomaly.severity === 'high' ? 'orange' : 'gold'} className="!m-0">
+                          <span className="text-[#303133] font-medium text-sm">{anomaly.rule_name}</span>
+                          <Tag
+                            className={clsx(
+                              "!m-0 !border-0 !px-2.5 !py-0.5 !text-xs !font-medium",
+                              anomaly.severity === 'critical' ? 'bg-[rgba(255,232,232,1)] text-[rgba(255,56,60,1)]' :
+                                anomaly.severity === 'high' ? 'bg-[rgba(255,239,224,1)] text-[rgba(255,141,40,1)]' :
+                                  'bg-[rgba(0,199,119,0.08)] text-[rgba(0,199,119,1)]'
+                            )}
+                          >
                             {anomaly.severity === 'critical' ? '严重' : anomaly.severity === 'high' ? '高' : '中'}
                           </Tag>
                         </div>

@@ -168,7 +168,7 @@ export default function TrackingReportPage() {
   if (!reportData) {
     return (
       <div className="space-y-6">
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>
           返回
         </Button>
         <div className="flex items-center justify-center h-[50vh]">
@@ -184,21 +184,21 @@ export default function TrackingReportPage() {
       dataIndex: 'metricName',
       key: 'metricName',
       ellipsis: true,
-      render: (value: string) => <span className="text-gray-100 font-medium">{value}</span>,
+      render: (value: string) => <span className="text-primary font-medium">{value}</span>,
     },
     {
       title: '基线值',
       dataIndex: 'baselineValue',
       key: 'baselineValue',
       align: 'right',
-      render: (value: number) => <span className="text-gray-300">{value.toFixed(1)}</span>,
+      render: (value: number) => <span className="text-secondary">{value.toFixed(1)}</span>,
     },
     {
       title: '当前值',
       dataIndex: 'currentValue',
       key: 'currentValue',
       align: 'right',
-      render: (value: number) => <span className="text-white font-semibold">{value.toFixed(1)}</span>,
+      render: (value: number) => <span className="text-primary font-semibold">{value.toFixed(1)}</span>,
     },
     {
       title: '变化率',
@@ -211,7 +211,7 @@ export default function TrackingReportPage() {
         const isUp = value > 0;
         const isDown = value < 0;
         return (
-          <span className={`font-semibold ${isUp ? 'text-emerald-400' : isDown ? 'text-rose-400' : 'text-gray-400'}`}>
+          <span className={`font-semibold ${isUp ? 'text-emerald-400' : isDown ? 'text-rose-400' : 'text-muted'}`}>
             {isUp ? '+' : ''}{value.toFixed(1)}%
           </span>
         );
@@ -245,18 +245,18 @@ export default function TrackingReportPage() {
           <Button 
             icon={<ArrowLeftOutlined />} 
             onClick={() => navigate('/tracking')}
-            className="!border-gray-600 hover:!border-gray-500"
+            style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}
           >
             返回追踪
           </Button>
           <div>
-            <h1 className="text-3xl font-bold text-white flex items-center gap-3 mb-2">
+            <h1 className="text-3xl font-bold text-primary flex items-center gap-3 mb-2">
               <span className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-600 flex items-center justify-center text-xl shadow-lg shadow-indigo-500/30 animate-pulse">
                 <FileTextOutlined />
               </span>
               复盘报告
             </h1>
-            <p className="text-gray-400 text-base font-medium">{reportData.solution_name}</p>
+            <p className="text-secondary text-base font-medium">{reportData.solution_name}</p>
           </div>
         </div>
       </div>
@@ -309,40 +309,40 @@ export default function TrackingReportPage() {
           {/* 关键数据 */}
           <Col span={18}>
             <div className="mb-6">
-              <h2 className="text-2xl font-bold text-white mb-2">{reportData.title}</h2>
-              <p className="text-gray-400 text-sm flex items-center gap-2">
-                <ClockCircleOutlined className="text-gray-500" />
-                生成于 {dayjs(reportData.created_at).format('YYYY年MM月DD日 HH:mm')}
-              </p>
+              <h2 className="text-2xl font-bold text-primary mb-2">{reportData.title}</h2>
+            <p className="text-secondary text-sm flex items-center gap-2">
+              <ClockCircleOutlined className="text-muted" />
+              生成于 {dayjs(reportData.created_at).format('YYYY年MM月DD日 HH:mm')}
+            </p>
             </div>
             <Row gutter={20}>
               <Col span={8}>
                 <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl p-5 border border-gray-700/40 hover:border-blue-500/50 transition-all duration-300 hover:shadow-lg hover:shadow-blue-500/10 backdrop-blur-sm">
-                  <div className="flex items-center gap-2 text-gray-400 text-xs mb-3 font-medium">
+                  <div className="flex items-center gap-2 text-secondary text-xs mb-3 font-medium">
                     <ClockCircleOutlined className="text-blue-400" /> 追踪时长
                   </div>
-                  <div className="text-2xl font-bold text-white">
-                    {reportData.tracking_duration_days}<span className="text-sm text-gray-500 ml-1 font-normal">天</span>
+                  <div className="text-2xl font-bold text-primary">
+                    {reportData.tracking_duration_days}<span className="text-sm text-muted ml-1 font-normal">天</span>
                   </div>
                 </div>
               </Col>
               <Col span={8}>
                 <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl p-5 border border-gray-700/40 hover:border-amber-500/50 transition-all duration-300 hover:shadow-lg hover:shadow-amber-500/10 backdrop-blur-sm">
-                  <div className="flex items-center gap-2 text-gray-400 text-xs mb-3 font-medium">
+                  <div className="flex items-center gap-2 text-secondary text-xs mb-3 font-medium">
                     <CameraOutlined className="text-amber-400" /> 快照数量
                   </div>
                   <div className="text-2xl font-bold text-amber-400">
-                    {reportData.snapshot_count}<span className="text-sm text-gray-500 ml-1 font-normal">个</span>
+                    {reportData.snapshot_count}<span className="text-sm text-muted ml-1 font-normal">个</span>
                   </div>
                 </div>
               </Col>
               <Col span={8}>
                 <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl p-5 border border-gray-700/40 hover:border-cyan-500/50 transition-all duration-300 hover:shadow-lg hover:shadow-cyan-500/10 backdrop-blur-sm">
-                  <div className="flex items-center gap-2 text-gray-400 text-xs mb-3 font-medium">
+                  <div className="flex items-center gap-2 text-secondary text-xs mb-3 font-medium">
                     <BarChartOutlined className="text-cyan-400" /> 指标达标
                   </div>
                   <div className="text-2xl font-bold text-cyan-400">
-                    {improvedCount}<span className="text-sm text-gray-500 ml-1">/</span>{metrics.length}
+                    {improvedCount}<span className="text-sm text-muted ml-1">/</span>{metrics.length}
                   </div>
                 </div>
               </Col>
@@ -367,10 +367,10 @@ export default function TrackingReportPage() {
           bordered 
           column={3} 
           size="small"
-          className="[&_.ant-descriptions-item-label]:!bg-gray-800/50 [&_.ant-descriptions-item-label]:!text-gray-300 [&_.ant-descriptions-item-label]:!font-medium [&_.ant-descriptions-item-content]:!bg-gray-800/30 [&_.ant-descriptions-item-content]:!text-gray-200"
+          className="[&_.ant-descriptions-item-label]:!bg-gray-200/50 [&_.ant-descriptions-item-label]:!text-secondary [&_.ant-descriptions-item-label]:!font-medium [&_.ant-descriptions-item-content]:!bg-gray-100/30 [&_.ant-descriptions-item-content]:!text-primary"
         >
           <Descriptions.Item label="方案名称" span={2}>
-            <span className="font-medium text-white">{reportData.solution_name}</span>
+            <span className="font-medium text-primary">{reportData.solution_name}</span>
           </Descriptions.Item>
           <Descriptions.Item label="最终评分">
             <span className="font-bold text-lg" style={{ color: scoreLevel.color }}>
@@ -432,27 +432,27 @@ export default function TrackingReportPage() {
               <Col xs={12} md={6}>
                 <div className="text-center p-4 rounded-xl border border-emerald-500/25 bg-emerald-500/10">
                   <div className="text-2xl font-bold text-emerald-400">{improvedCount}</div>
-                  <div className="text-xs text-gray-400 mt-1">达标指标</div>
+                  <div className="text-xs text-secondary mt-1">达标指标</div>
                 </div>
               </Col>
               <Col xs={12} md={6}>
                 <div className="text-center p-4 rounded-xl border border-amber-500/25 bg-amber-500/10">
                   <div className="text-2xl font-bold text-amber-400">{belowCount}</div>
-                  <div className="text-xs text-gray-400 mt-1">未达标指标</div>
+                  <div className="text-xs text-secondary mt-1">未达标指标</div>
                 </div>
               </Col>
               <Col xs={12} md={6}>
                 <div className="text-center p-4 rounded-xl border border-gray-500/25 bg-gray-500/10">
-                  <div className="text-2xl font-bold text-gray-300">{unchangedCount}</div>
-                  <div className="text-xs text-gray-400 mt-1">无变化指标</div>
+                  <div className="text-2xl font-bold text-secondary">{unchangedCount}</div>
+                  <div className="text-xs text-secondary mt-1">无变化指标</div>
                 </div>
               </Col>
               <Col xs={12} md={6}>
                 <div className="text-center p-4 rounded-xl border border-cyan-500/25 bg-cyan-500/10">
-                  <div className={`text-2xl font-bold ${avgChangePct > 0 ? 'text-emerald-400' : avgChangePct < 0 ? 'text-rose-400' : 'text-gray-300'}`}>
+                  <div className={`text-2xl font-bold ${avgChangePct > 0 ? 'text-emerald-400' : avgChangePct < 0 ? 'text-rose-400' : 'text-secondary'}`}>
                     {avgChangePct > 0 ? '+' : ''}{avgChangePct.toFixed(1)}%
                   </div>
-                  <div className="text-xs text-gray-400 mt-1">平均变化率</div>
+                  <div className="text-xs text-secondary mt-1">平均变化率</div>
                 </div>
               </Col>
             </Row>
@@ -462,7 +462,7 @@ export default function TrackingReportPage() {
               dataSource={tableData}
               pagination={{ pageSize: 8, showSizeChanger: false }}
               size="middle"
-              className="[&_.ant-table]:!bg-transparent [&_.ant-table-container]:!border [&_.ant-table-container]:!border-gray-700/50 [&_.ant-table-thead>tr>th]:!bg-gray-800/70 [&_.ant-table-thead>tr>th]:!text-gray-300 [&_.ant-table-thead>tr>th]:!border-gray-700/50 [&_.ant-table-tbody>tr>td]:!bg-gray-900/20 [&_.ant-table-tbody>tr>td]:!border-gray-800/70 [&_.ant-table-tbody>tr:hover>td]:!bg-gray-800/60 [&_.ant-pagination-item]:!bg-gray-800/70 [&_.ant-pagination-item]:!border-gray-700/50 [&_.ant-pagination-item>a]:!text-gray-300 [&_.ant-pagination-prev_.ant-pagination-item-link]:!bg-gray-800/70 [&_.ant-pagination-next_.ant-pagination-item-link]:!bg-gray-800/70 [&_.ant-pagination-prev_.ant-pagination-item-link]:!border-gray-700/50 [&_.ant-pagination-next_.ant-pagination-item-link]:!border-gray-700/50"
+              className="[&_.ant-table]:!bg-transparent [&_.ant-table-container]:!border [&_.ant-table-container]:!border-gray-300 [&_.ant-table-thead>tr>th]:!bg-gray-100 [&_.ant-table-thead>tr>th]:!text-secondary [&_.ant-table-thead>tr>th]:!border-gray-300 [&_.ant-table-tbody>tr>td]:!bg-[#F0F1F9]/50 [&_.ant-table-tbody>tr>td]:!border-gray-200 [&_.ant-table-tbody>tr:hover>td]:!bg-gray-50 [&_.ant-pagination-item]:!bg-[#F0F1F9] [&_.ant-pagination-item]:!border-gray-300 [&_.ant-pagination-item>a]:!text-secondary [&_.ant-pagination-prev_.ant-pagination-item-link]:!bg-[#F0F1F9] [&_.ant-pagination-next_.ant-pagination-item-link]:!bg-[#F0F1F9] [&_.ant-pagination-prev_.ant-pagination-item-link]:!border-gray-300 [&_.ant-pagination-next_.ant-pagination-item-link]:!border-gray-300"
               locale={{ emptyText: showAbnormalOnly ? '暂无未达标指标' : '暂无指标数据' }}
             />
           </div>
@@ -489,48 +489,48 @@ export default function TrackingReportPage() {
               color: index === 0 ? 'purple' : index === 1 ? 'blue' : index === 2 ? 'green' : 'gray',
               children: (
                 <div className="mb-4">
-                  <h3 className="text-white font-semibold text-base mb-3">{section.title}</h3>
-                  <div className="bg-gray-800/30 rounded-xl p-5 border border-gray-700/20 text-gray-300 text-sm leading-relaxed prose prose-invert prose-sm max-w-none">
+                  <h3 className="text-primary font-semibold text-base mb-3">{section.title}</h3>
+                  <div className="bg-gray-100/30 rounded-xl p-5 border border-gray-200/20 text-secondary text-sm leading-relaxed prose prose-sm max-w-none">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
-                        h1: ({ node, ...props }) => <h1 className="text-white text-xl font-bold mb-3 mt-4 first:mt-0" {...props} />,
-                        h2: ({ node, ...props }) => <h2 className="text-white text-lg font-semibold mb-2 mt-3 first:mt-0" {...props} />,
-                        h3: ({ node, ...props }) => <h3 className="text-white text-base font-medium mb-2 mt-3 first:mt-0" {...props} />,
-                        p: ({ node, ...props }) => <p className="text-gray-300 mb-3 leading-relaxed" {...props} />,
-                        ul: ({ node, ...props }) => <ul className="list-disc list-inside mb-3 space-y-1 text-gray-300" {...props} />,
-                        ol: ({ node, ...props }) => <ol className="list-decimal list-inside mb-3 space-y-1 text-gray-300" {...props} />,
-                        li: ({ node, ...props }) => <li className="text-gray-300" {...props} />,
-                        strong: ({ node, ...props }) => <strong className="text-white font-semibold" {...props} />,
-                        em: ({ node, ...props }) => <em className="text-gray-200 italic" {...props} />,
+                        h1: ({ node, ...props }) => <h1 className="text-primary text-xl font-bold mb-3 mt-4 first:mt-0" {...props} />,
+                        h2: ({ node, ...props }) => <h2 className="text-primary text-lg font-semibold mb-2 mt-3 first:mt-0" {...props} />,
+                        h3: ({ node, ...props }) => <h3 className="text-primary text-base font-medium mb-2 mt-3 first:mt-0" {...props} />,
+                        p: ({ node, ...props }) => <p className="text-secondary mb-3 leading-relaxed" {...props} />,
+                        ul: ({ node, ...props }) => <ul className="list-disc list-inside mb-3 space-y-1 text-secondary" {...props} />,
+                        ol: ({ node, ...props }) => <ol className="list-decimal list-inside mb-3 space-y-1 text-secondary" {...props} />,
+                        li: ({ node, ...props }) => <li className="text-secondary" {...props} />,
+                        strong: ({ node, ...props }) => <strong className="text-primary font-semibold" {...props} />,
+                        em: ({ node, ...props }) => <em className="text-secondary italic" {...props} />,
                         code: ({ node, inline, ...props }: any) => 
                           inline ? (
-                            <code className="bg-gray-700/50 text-cyan-400 px-1.5 py-0.5 rounded text-xs font-mono" {...props} />
+                            <code className="bg-gray-200/50 text-cyan-600 px-1.5 py-0.5 rounded text-xs font-mono" {...props} />
                           ) : (
-                            <code className="block bg-gray-900/50 text-gray-300 p-3 rounded-lg text-xs font-mono overflow-x-auto mb-3" {...props} />
+                            <code className="block bg-gray-100/50 text-secondary p-3 rounded-lg text-xs font-mono overflow-x-auto mb-3" {...props} />
                           ),
                         pre: ({ node, ...props }) => <pre className="mb-3" {...props} />,
                         blockquote: ({ node, ...props }) => (
-                          <blockquote className="border-l-4 border-cyan-500/50 pl-4 italic text-gray-400 my-3" {...props} />
+                          <blockquote className="border-l-4 border-cyan-500/50 pl-4 italic text-muted my-3" {...props} />
                         ),
                         a: ({ node, ...props }) => (
-                          <a className="text-cyan-400 hover:text-cyan-300 underline" target="_blank" rel="noopener noreferrer" {...props} />
+                          <a className="text-cyan-600 hover:text-cyan-500 underline" target="_blank" rel="noopener noreferrer" {...props} />
                         ),
                         table: ({ node, ...props }) => (
                           <div className="overflow-x-auto mb-3">
-                            <table className="min-w-full border-collapse border border-gray-700" {...props} />
+                            <table className="min-w-full border-collapse border border-gray-300" {...props} />
                           </div>
                         ),
-                        thead: ({ node, ...props }) => <thead className="bg-gray-700/50" {...props} />,
+                        thead: ({ node, ...props }) => <thead className="bg-gray-100/50" {...props} />,
                         tbody: ({ node, ...props }) => <tbody {...props} />,
-                        tr: ({ node, ...props }) => <tr className="border-b border-gray-700" {...props} />,
+                        tr: ({ node, ...props }) => <tr className="border-b border-gray-300" {...props} />,
                         th: ({ node, ...props }) => (
-                          <th className="border border-gray-700 px-4 py-2 text-left text-white font-semibold" {...props} />
+                          <th className="border border-gray-300 px-4 py-2 text-left text-primary font-semibold" {...props} />
                         ),
                         td: ({ node, ...props }) => (
-                          <td className="border border-gray-700 px-4 py-2 text-gray-300" {...props} />
+                          <td className="border border-gray-300 px-4 py-2 text-secondary" {...props} />
                         ),
-                        hr: ({ node, ...props }) => <hr className="border-gray-700 my-4" {...props} />,
+                        hr: ({ node, ...props }) => <hr className="border-gray-300 my-4" {...props} />,
                       }}
                     >
                       {section.content}
@@ -553,7 +553,7 @@ export default function TrackingReportPage() {
                 <BulbOutlined className="text-amber-400 text-lg" />
               </div>
               <span className="text-lg font-semibold">改进建议</span>
-              <Tag color="gold" className="ml-2 !bg-amber-500/10 !border-amber-500/30 !text-amber-400 font-semibold">
+              <Tag style={{ backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b', border: 'none' }} className="ml-2 font-semibold">
                 {reportData.recommendations.length} 条
               </Tag>
             </div>
@@ -568,7 +568,7 @@ export default function TrackingReportPage() {
                 <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-amber-500/30 to-yellow-500/20 flex items-center justify-center flex-shrink-0 mt-0.5 group-hover:scale-110 transition-transform">
                   <StarOutlined className="text-amber-400 text-base" />
                 </div>
-                <span className="text-gray-200 text-sm leading-relaxed font-medium flex-1">{item}</span>
+                <span className="text-secondary text-sm leading-relaxed font-medium flex-1">{item}</span>
               </div>
             ))}
           </div>
@@ -586,11 +586,11 @@ export default function TrackingReportPage() {
             <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500/30 to-yellow-500/20 flex items-center justify-center shadow-lg">
               <TrophyOutlined className="text-amber-400 text-2xl" />
             </div>
-            <h3 className="text-2xl font-bold text-white">总结</h3>
+            <h3 className="text-2xl font-bold text-primary">总结</h3>
           </div>
           <div className="max-w-3xl mx-auto">
-            <p className="text-gray-200 text-base leading-relaxed mb-2">
-              「<span className="font-semibold text-white">{reportData.solution_name}</span>」方案历时 
+            <p className="text-secondary text-base leading-relaxed mb-2">
+              「<span className="font-semibold text-primary">{reportData.solution_name}</span>」方案历时 
               <span className="font-bold text-blue-400 mx-1">{reportData.tracking_duration_days}</span> 天完成追踪，
               共采集 <span className="font-bold text-amber-400 mx-1">{reportData.snapshot_count}</span> 次快照，
               最终综合评分
@@ -599,10 +599,10 @@ export default function TrackingReportPage() {
               </span>
               分（<span className="font-semibold" style={{ color: scoreLevel.color }}>{scoreLevel.label}</span>），
               <span className="font-bold text-emerald-400 mx-1">{improvedCount}</span>/
-              <span className="font-bold text-gray-300">{metrics.length}</span> 项指标达标。
+              <span className="font-bold text-secondary">{metrics.length}</span> 项指标达标。
             </p>
-            <div className="mt-6 pt-4 border-t border-gray-700/50">
-              <div className="text-xs text-gray-500 flex items-center justify-center gap-2">
+            <div className="mt-6 pt-4 border-t border-gray-300/50">
+              <div className="text-xs text-muted flex items-center justify-center gap-2">
                 <ClockCircleOutlined />
                 报告生成时间：{dayjs(reportData.created_at).format('YYYY年MM月DD日 HH:mm:ss')}
               </div>

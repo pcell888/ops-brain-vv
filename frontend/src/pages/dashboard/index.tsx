@@ -1,8 +1,8 @@
 
 
 import { Card, Row, Col, Button, Tag, Spin, Empty, App, Progress, Tooltip } from 'antd';
-import { 
-  ThunderboltOutlined, 
+import {
+  ThunderboltOutlined,
   CalendarOutlined,
   LoadingOutlined,
   SyncOutlined,
@@ -13,8 +13,8 @@ import { HealthScoreRing } from '@/components/diagnosis/health-score-ring';
 import { RadarChart } from '@/components/diagnosis/radar-chart';
 import { MetricCard, type MetricDetail } from '@/components/diagnosis/metric-card';
 import { AnomalyList } from '@/components/diagnosis/anomaly-list';
-import { 
-  useLatestDiagnosisReport, 
+import {
+  useLatestDiagnosisReport,
   useStartDiagnosis,
   useCancelDiagnosis,
   useWebSocket,
@@ -155,19 +155,6 @@ function getAnalysisPeriodLabel(days?: number): string {
   return '近90天'; // 默认与设置一致
 }
 
-function normalizeAutoDiagnosisMode(value?: string): 'auto' | 'manual' {
-  return value === 'manual' ? 'manual' : value ? 'auto' : 'manual';
-}
-
-function getAutoDiagnosisLabel(mode: 'auto' | 'manual'): string {
-  return mode === 'auto' ? '自动' : '手动';
-}
-
-function getNextDiagnosisTime(): string {
-  const now = dayjs();
-  return now.add(1, 'week').startOf('week').add(1, 'day').hour(2).minute(0).format('MM月DD日 HH:mm');
-}
-
 export default function DashboardPage() {
   const { message } = App.useApp();
   const navigate = useNavigate();
@@ -185,13 +172,46 @@ export default function DashboardPage() {
   const industry = (enterpriseDetail as { industry?: string } | undefined)?.industry || 'general';
   const analysisPeriodDays = (enterpriseDetail as { config?: { analysis_period_days?: number } } | undefined)?.config?.analysis_period_days;
   const analysisPeriodLabel = getAnalysisPeriodLabel(analysisPeriodDays);
-  const autoDiagnosisMode = normalizeAutoDiagnosisMode(
-    (enterpriseDetail as { config?: { auto_diagnosis_frequency?: string } } | undefined)?.config?.auto_diagnosis_frequency
-  );
-  
-  const { 
-    data: report, 
-    isLoading, 
+  const autoDiagnosisFrequency = (enterpriseDetail as { config?: { auto_diagnosis_frequency?: string } } | undefined)?.config?.auto_diagnosis_frequency || 'manual';
+
+  // 频率标签映射
+  const frequencyLabelMap: Record<string, string> = {
+    daily: '每日',
+    weekly: '每周',
+    monthly: '每月',
+    manual: '手动',
+    auto: '自动',
+  };
+
+  function getFrequencyLabel(frequency: string): string {
+    return frequencyLabelMap[frequency] || '未设置';
+  }
+
+  // 计算下次诊断时间
+  function getNextDiagnosisTime(frequency: string): string {
+    if (frequency === 'manual') {
+      return '仅手动';
+    }
+    if (frequency === 'auto') {
+      return '自动调度';
+    }
+
+    const now = dayjs();
+    switch (frequency) {
+      case 'daily':
+        return now.add(1, 'day').hour(2).minute(0).format('MM月DD日 HH:mm');
+      case 'weekly':
+        return now.add(1, 'week').startOf('week').add(1, 'day').hour(2).minute(0).format('MM月DD日 HH:mm');
+      case 'monthly':
+        return now.add(1, 'month').date(1).hour(2).minute(0).format('MM月DD日 HH:mm');
+      default:
+        return '未设置';
+    }
+  }
+
+  const {
+    data: report,
+    isLoading,
     latestDiagnosisId,
     lastDiagnosisDate,
     // 从列表获取的初始状态（进入页面时）
@@ -212,8 +232,8 @@ export default function DashboardPage() {
   const startDiagnosis = useStartDiagnosis();
 
   // 使用统一的维度配置 hook
-  const { 
-    dimensionNameMap, 
+  const {
+    dimensionNameMap,
     dimensionFirstMetricMap,
     metricNameMap,
     getDimensionDisplayName,
@@ -226,7 +246,7 @@ export default function DashboardPage() {
   const enabledDimensionNames = useMemo(() => {
     return new Set(allDimensions.filter((d: DimensionConfig) => d.enabled).map((d: DimensionConfig) => d.name));
   }, [allDimensions]);
-  
+
   // 判断是否所有维度都被禁用（维度已加载但无启用的维度）
   const allDimensionsDisabled = !isDimensionsLoading && allDimensions.length > 0 && enabledDimensionNames.size === 0;
 
@@ -309,15 +329,15 @@ export default function DashboardPage() {
         message: latestDiagnosisMessage || '处理中...',
       };
     }
-    
+
     return null;
   }, [diagnosisTasks, latestDiagnosisStatus, latestDiagnosisProgress, latestDiagnosisMessage, latestDiagnosisId]);
 
   const isDiagnosing = !!runningTask;
-  
+
   // 检查最新诊断是否失败
   const isLatestFailed = latestDiagnosisStatus === 'failed';
-  
+
   // 获取当前诊断阶段信息
   const currentStage = useMemo(() => {
     if (!runningTask?.message) return null;
@@ -332,7 +352,7 @@ export default function DashboardPage() {
       message.warning('请先选择企业');
       return;
     }
-    
+
     if (isDiagnosing) {
       message.info('诊断任务正在执行中，请稍候');
       return;
@@ -342,7 +362,7 @@ export default function DashboardPage() {
       message.warning('当前没有启用的诊断维度，请先在设置中启用至少一个维度');
       return;
     }
-    
+
     try {
       const result = await startDiagnosis.mutateAsync({
         enterprise_id: enterpriseId,
@@ -467,7 +487,7 @@ export default function DashboardPage() {
   const { data: solutionData } = useSolutionList(report ? (latestDiagnosisId ?? null) : null);
   const typedSolutionData = solutionData as SolutionGenerateResponse | undefined;
   const hasSolutions = (typedSolutionData?.solutions?.length || 0) > 0;
-  
+
   // 计算已有方案的异常 ID 集合
   const anomalyIdsWithSolutions = useMemo(() => {
     const ids = new Set<string>();
@@ -476,21 +496,21 @@ export default function DashboardPage() {
     });
     return ids;
   }, [typedSolutionData]);
-  
+
   // 生成方案
   const generateSolutions = useGenerateSolutions();
   // 检测活跃的后台生成任务（仅在有报告时请求，无报告时不展示异常/生成状态）
   const { isGenerating: isBackgroundGenerating } = useGenerationTask(report ? (latestDiagnosisId ?? null) : null);
   // 从企业配置读取方案排序策略（设置页维护）
   const rankingStrategy = (enterpriseDetail as { config?: { solution_sort_strategy?: string } } | undefined)?.config?.solution_sort_strategy || 'balanced';
-  
+
   // 处理生成方案
   const handleGenerateSolution = async (anomalyId: string) => {
     if (!enterpriseId || !latestDiagnosisId) {
       message.warning('请先完成诊断');
       return;
     }
-    
+
     try {
       const result = await generateSolutions.mutateAsync({
         enterprise_id: enterpriseId,
@@ -498,14 +518,14 @@ export default function DashboardPage() {
         anomaly_ids: [anomalyId],
         ranking_strategy: rankingStrategy,
       });
-      
+
       // 检查是否生成了方案
       const solutionCount = (result as { solution_count?: number })?.solution_count || 0;
       if (solutionCount === 0) {
         message.error('未能生成任何方案。可能没有匹配的方案模板，请稍后重试。');
         return;
       }
-      
+
       message.success('方案生成成功，正在跳转到详情页...');
       navigate(`/solutions/${latestDiagnosisId}?anomaly_id=${anomalyId}`);
     } catch (error: any) {
@@ -580,7 +600,7 @@ export default function DashboardPage() {
   const DiagnosisProgressBar = () => {
     if (!isDiagnosing && !isCancelling) return null;
     const cancelLoading = cancelDiagnosis.isPending || isCancelling;
-    
+
     return (
       <div className="bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-blue-500/10 border border-blue-500/30 rounded-xl p-5 mb-6 animate-pulse-slow">
         <div className="flex items-center justify-between mb-3">
@@ -589,14 +609,14 @@ export default function DashboardPage() {
               {isCancelling ? '⏹' : (currentStage?.icon || '⏳')}
             </div>
             <div>
-              <span className="text-blue-300 font-semibold text-base">
+              <span className="text-[#303133] font-semibold text-base">
                 {isCancelling ? '取消中…' : (currentStage?.label || '诊断任务执行中')}
               </span>
-              <p className="text-gray-400 text-sm mt-0.5 max-w-md truncate">
+              <p className="text-[#303133] text-sm mt-0.5 max-w-md truncate">
                 {isCancelling ? '后台正在停止任务，请稍候' : (runningTask?.message || '处理中...')}
               </p>
               {!isCancelling && (
-                <p className="text-gray-500 text-xs mt-1">
+                <p className="text-[#303133] text-xs mt-1">
                   {wsConnected ? '实时通道已连接' : '实时通道未连接，使用轮询兜底'}
                 </p>
               )}
@@ -604,7 +624,7 @@ export default function DashboardPage() {
           </div>
           <div className="flex items-center gap-2">
             {!isCancelling && (
-              <Tag icon={<SyncOutlined spin />} color="processing" className="!px-3 !py-1 !text-sm">
+              <Tag style={{ backgroundColor: 'rgba(23, 162, 184, 0.2)', color: '#17a2b8', border: 'none' }} className="!px-3 !py-1 !text-sm">
                 {runningTask?.progress || 0}%
               </Tag>
             )}
@@ -612,13 +632,15 @@ export default function DashboardPage() {
               size="small"
               disabled={cancelLoading}
               onClick={handleCancelDiagnosis}
+              color="danger"
+              style={{ background: '#FF4D4F', border: 'none' }}
             >
               {cancelLoading ? '取消中…' : '取消诊断'}
             </Button>
           </div>
         </div>
-        <Progress 
-          percent={runningTask?.progress || 0} 
+        <Progress
+          percent={runningTask?.progress || 0}
           status="active"
           strokeColor={{
             '0%': '#3b82f6',
@@ -630,8 +652,8 @@ export default function DashboardPage() {
           size={{ height: 8 }}
         />
         {report && (
-          <p className="text-gray-500 text-xs mt-3 flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-gray-500" />
+          <p className="text-muted text-xs mt-3 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-muted" />
             下方显示的是上次诊断结果，新结果将在完成后自动更新
           </p>
         )}
@@ -642,26 +664,26 @@ export default function DashboardPage() {
   // 诊断失败/取消提示组件
   const DiagnosisFailedAlert = () => {
     if (!isLatestFailed || isDiagnosing) return null;
-    
+
     const isCancelled = (latestDiagnosisMessage || '').includes('已取消');
     const errorMessage = latestDiagnosisMessage || '诊断执行失败，请检查数据源连接';
-    
+
     if (isCancelled) {
       return (
-        <div className="bg-gray-500/10 border border-gray-500/30 rounded-xl p-5 mb-6">
+        <div className="bg-gray-100 border border-gray-300 rounded-xl p-5 mb-6">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gray-500/50 flex items-center justify-center text-lg">
+            <div className="w-10 h-10 rounded-xl bg-gray-200 flex items-center justify-center text-lg">
               ⏹
             </div>
             <div className="flex-1">
-              <span className="text-gray-300 font-semibold text-base">诊断已取消</span>
-              <p className="text-gray-400 text-sm mt-1">可点击上方「立即诊断」重新开始</p>
+              <span className="text-secondary font-semibold text-base">诊断已取消</span>
+              <p className="text-secondary text-sm mt-1">可点击上方「立即诊断」重新开始</p>
             </div>
           </div>
         </div>
       );
     }
-    
+
     return (
       <div className="bg-gradient-to-r from-red-500/10 via-rose-500/10 to-red-500/10 border border-red-500/30 rounded-xl p-5 mb-6">
         <div className="flex items-center gap-3">
@@ -669,11 +691,11 @@ export default function DashboardPage() {
             ❌
           </div>
           <div className="flex-1">
-            <span className="text-red-300 font-semibold text-base">上次诊断执行失败</span>
-            <p className="text-gray-300 text-sm mt-1 break-words">
+            <span className="text-accent-rose font-semibold text-base">上次诊断执行失败</span>
+            <p className="text-secondary text-sm mt-1 break-words">
               {errorMessage}
             </p>
-            <p className="text-gray-400 text-xs mt-1">
+            <p className="text-muted text-xs mt-1">
               提示：请检查 mock-subsystem 服务是否正常运行，修复后点击上方「立即诊断」重试
             </p>
           </div>
@@ -688,37 +710,37 @@ export default function DashboardPage() {
       <div className="space-y-6">
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-              <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-blue-500/20">
-                📊
-              </span>
-              运营健康度仪表盘
-            </h1>
+            {/* <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-blue-500/20 text-white">
+              📊
+            </span>
+            运营健康度仪表盘
+          </h1> */}
             <div className="flex items-center gap-4 mt-2">
-              <p className="text-gray-400 text-sm">
+              <p className="text-[#303133] text-sm">
                 基于{analysisPeriodLabel}数据，AI智能分析企业运营状况
               </p>
-              {autoDiagnosisMode === 'auto' ? (
-                <Tooltip title={`下次自动诊断：${getNextDiagnosisTime()}`}>
-                  <Tag 
-                    color="blue" 
+              {autoDiagnosisFrequency !== 'manual' ? (
+                <Tooltip title={`下次自动诊断：${getNextDiagnosisTime(autoDiagnosisFrequency)}`}>
+                  <Tag
+                    style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6', border: 'none' }}
                     className="cursor-pointer hover:opacity-80"
                     onClick={() => navigate('/settings?tab=general')}
                   >
                     <SyncOutlined className="mr-1" />
-                    诊断方式：{getAutoDiagnosisLabel(autoDiagnosisMode)}
+                    自动诊断：{getFrequencyLabel(autoDiagnosisFrequency)}
                   </Tag>
                 </Tooltip>
               ) : (
-                <Tag color="default">
+                <Tag style={{ backgroundColor: 'rgba(107, 114, 128, 0.2)', color: '#6b7280', border: 'none' }}>
                   <CalendarOutlined className="mr-1" />
-                  诊断方式：{getAutoDiagnosisLabel(autoDiagnosisMode)}
+                  仅手动诊断
                 </Tag>
               )}
             </div>
           </div>
-          <Button 
-            type="primary" 
+          <Button
+            type="primary"
             icon={isDiagnosing ? <SyncOutlined spin /> : <ThunderboltOutlined />}
             loading={startDiagnosis.isPending}
             disabled={isDiagnosing}
@@ -727,17 +749,17 @@ export default function DashboardPage() {
             {isDiagnosing ? '诊断中...' : '立即诊断'}
           </Button>
         </div>
-        
+
         {/* 诊断进度条 */}
         <DiagnosisProgressBar />
-        
+
         {/* 诊断失败提示 */}
         <DiagnosisFailedAlert />
-        
+
         {!isDiagnosing && !isLatestFailed && (
           <div className="flex items-center justify-center h-[50vh]">
-            <Empty 
-              description="暂无诊断数据，请点击「立即诊断」开始首次诊断" 
+            <Empty
+              description="暂无诊断数据，请点击「立即诊断」开始首次诊断"
             />
           </div>
         )}
@@ -750,45 +772,46 @@ export default function DashboardPage() {
       {/* 页面标题 */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-blue-500/20">
+          {/* <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-blue-500/20 text-white">
               📊
             </span>
             运营健康度仪表盘
-          </h1>
+          </h1> */}
           <div className="flex items-center gap-4 mt-2">
-            <p className="text-gray-400 text-sm">
+            <p className="text-[#303133] text-sm">
               基于{analysisPeriodLabel}数据，AI智能分析企业运营状况
             </p>
-            {autoDiagnosisMode === 'auto' ? (
-              <Tooltip title={`下次自动诊断：${getNextDiagnosisTime()}`}>
-                <Tag 
-                  color="blue" 
+            {autoDiagnosisFrequency !== 'manual' ? (
+              <Tooltip title={`下次自动诊断：${getNextDiagnosisTime(autoDiagnosisFrequency)}`}>
+                <Tag
+                  style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6', border: 'none' }}
                   className="cursor-pointer hover:opacity-80"
                   onClick={() => navigate('/settings?tab=general')}
                 >
                   <SyncOutlined className="mr-1" />
-                  诊断方式：{getAutoDiagnosisLabel(autoDiagnosisMode)}
+                  自动诊断：{getFrequencyLabel(autoDiagnosisFrequency)}
                 </Tag>
               </Tooltip>
             ) : (
-              <Tag color="default">
+              <Tag style={{ backgroundColor: 'rgba(107, 114, 128, 0.2)', color: '#6b7280', border: 'none' }}>
                 <CalendarOutlined className="mr-1" />
-                诊断方式：{getAutoDiagnosisLabel(autoDiagnosisMode)}
+                仅手动诊断
               </Tag>
             )}
           </div>
         </div>
         <div className="flex gap-3">
-          <Button icon={<CalendarOutlined />} className="!flex !items-center !gap-2">
+          <Button type="primary" icon={<CalendarOutlined />} className="!flex !items-center !gap-2" style={{ backgroundColor: '#fff', color: '#3B82F6 ', border: '1px solid #3B82F6', boxShadow: 'none' }}>
             上次诊断: {formatLastDiagnosisDate()}
           </Button>
-          <Button 
-            type="primary" 
+          <Button
+            type="primary"
             icon={isDiagnosing ? <SyncOutlined spin /> : <ThunderboltOutlined />}
             loading={startDiagnosis.isPending}
             disabled={isDiagnosing}
             onClick={handleStartDiagnosis}
+            style={{ backgroundColor: '#0A43FF', borderColor: '#0A43FF' }}
           >
             {isDiagnosing ? '诊断中...' : '立即诊断'}
           </Button>
@@ -806,13 +829,13 @@ export default function DashboardPage() {
         <Col span={10}>
           <Card className="h-full">
             <div className="text-center py-2">
-              <h3 className="text-base font-semibold mb-6 text-gray-300 flex items-center justify-center gap-2">
+              <h3 className="text-base font-semibold mb-6 text-primary flex items-center justify-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-gradient-to-r from-blue-500 to-purple-500" />
                 综合健康度
               </h3>
               <HealthScoreRing score={report.health_score.total_score} />
               <div className="mt-6">
-                <Tag color="green" className="!px-4 !py-1.5 !text-sm !font-medium !rounded-lg">
+                <Tag color="green" className="!px-4 !py-1.5 !text-sm !font-medium !rounded-lg !bg-[#F0F1F9] !border !border-gray-200">
                   {trendText}
                 </Tag>
               </div>
@@ -821,12 +844,23 @@ export default function DashboardPage() {
                   .slice(0, 3)
                   .map(d => {
                     const change = d.score - 70; // 简化的变化计算
+                    // 根据分数设置颜色
+                    let scoreColor = '';
+                    if (d.score < 40) {
+                      scoreColor = 'text-[rgba(255,56,60,1)]';
+                    } else if (d.score < 60) {
+                      scoreColor = 'text-[rgba(255,141,40,1)]';
+                    } else if (d.score < 80) {
+                      scoreColor = 'text-[rgba(10,67,255,1)]';
+                    } else {
+                      scoreColor = 'text-[rgba(0,199,119,1)]';
+                    }
                     return (
-                      <span 
+                      <span
                         key={d.dimension}
-                        className={change >= 0 ? 'text-emerald-400 flex items-center gap-1' : 'text-rose-400 flex items-center gap-1'}
+                        className={`${scoreColor} flex items-center gap-1`}
                       >
-                        <span className="text-xs">{change >= 0 ? '▲' : '▼'}</span> 
+                        <span className="text-xs">{change >= 0 ? '▲' : '▼'}</span>
                         {getMetricTitle(d.dimension).slice(0, 2)} {change >= 0 ? '+' : ''}{change.toFixed(0)}%
                       </span>
                     );
@@ -837,7 +871,7 @@ export default function DashboardPage() {
         </Col>
         <Col span={14}>
           <Card className="h-full">
-            <h3 className="text-base font-semibold mb-2 text-gray-300 flex items-center gap-2">
+            <h3 className="text-base font-semibold mb-2 text-primary flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500" />
               {radarData.length > 0 ? `${radarData.length}维度对比分析` : '多维度对比分析'}
             </h3>
@@ -850,7 +884,7 @@ export default function DashboardPage() {
       <Row gutter={[16, 16]}>
         {metricCards.length > 0 ? (
           metricCards.map((card, index) => (
-            <Col 
+            <Col
               key={card.dimension || index}
               xs={24} sm={12} md={8} lg={metricCards.length <= 4 ? 6 : 4}
             >
@@ -891,7 +925,7 @@ export default function DashboardPage() {
       </Row>
 
       {/* 异常指标预警 */}
-      <Card 
+      <Card
         title={
           <div className="flex items-center gap-3">
             <span className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400">
@@ -903,7 +937,7 @@ export default function DashboardPage() {
                 诊断中...
               </Tag>
             ) : (
-              <Tag color="red" className="!m-0 !ml-2 !px-3 !py-0.5 !text-xs !font-semibold">
+              <Tag style={{ backgroundColor: 'rgba(239, 68, 68, 0.12)', color: '#ef4444', border: 'none' }} className="!m-0 !ml-2 !px-3 !py-0.5 !text-xs !font-semibold">
                 {anomalies.length}项需要关注
               </Tag>
             )}
@@ -916,6 +950,7 @@ export default function DashboardPage() {
               size="small"
               icon={<ThunderboltOutlined />}
               onClick={() => navigate(`/solutions/${latestDiagnosisId}`)}
+              style={{ backgroundColor: 'rgba(10, 67, 255, 1)', color: '#fff ', border: 'none' }}
             >
               查看优化方案
             </Button>
@@ -923,20 +958,20 @@ export default function DashboardPage() {
         }
       >
         {isDiagnosing ? (
-          <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-            <SyncOutlined spin className="text-3xl text-blue-400 mb-4" />
+          <div className="flex flex-col items-center justify-center py-12 text-secondary">
+            <SyncOutlined spin className="text-3xl text-accent-blue mb-4" />
             <p className="text-base">正在重新分析异常指标...</p>
-            <p className="text-sm text-gray-500 mt-1">诊断完成后将显示最新的异常预警</p>
+            <p className="text-sm text-muted mt-1">诊断完成后将显示最新的异常预警</p>
           </div>
         ) : (
-            <AnomalyList 
-              anomalies={anomalies}
-              diagnosisId={latestDiagnosisId}
-              hasSolutions={hasSolutions}
-              anomalyIdsWithSolutions={anomalyIdsWithSolutions}
-              generatingAnomalyId={isBackgroundGenerating || generateSolutions.isPending ? '__all__' : null}
-              onGenerateSolution={handleGenerateSolution}
-            />
+          <AnomalyList
+            anomalies={anomalies}
+            diagnosisId={latestDiagnosisId}
+            hasSolutions={hasSolutions}
+            anomalyIdsWithSolutions={anomalyIdsWithSolutions}
+            generatingAnomalyId={isBackgroundGenerating || generateSolutions.isPending ? '__all__' : null}
+            onGenerateSolution={handleGenerateSolution}
+          />
         )}
       </Card>
     </div>
