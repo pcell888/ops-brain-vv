@@ -22,6 +22,8 @@ _DATE_PATTERNS = (
     re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})"),
     re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})"),
 )
+_RELATIVE_DAY_PATTERN = re.compile(r"^\s*(\d+)\s*(?:天|day|days)?(?:内)?\s*$", re.IGNORECASE)
+_RELATIVE_HOUR_PATTERN = re.compile(r"^\s*(\d+)\s*(?:小时|小時|h|hr|hour|hours)(?:内)?\s*$", re.IGNORECASE)
 
 
 def _merge_task_ids(local_tasks: list[dict], created: list[dict] | None) -> list[dict]:
@@ -77,12 +79,14 @@ def _build_tasks_from_rule_specs(specs: list[dict], dept_info: dict) -> list[dic
             impl_list = [str(x).strip() for x in impl if str(x).strip()][:30]
         else:
             impl_list = []
+        deadline_text, deadline_at = _resolve_deadline_fields(s.get("timeline"))
         tasks.append({
             "task_name": s.get("task_name", "优化任务"),
             "description": s.get("task_name", ""),
             "assignee_user_id": uid,
             "assignee_dept_id": dept_id,
-            "deadline": s.get("timeline"),
+            "deadline": deadline_text,
+            "deadline_at": deadline_at,
             "priority": "medium",
             "related_resources": {
                 "implementation_steps": impl_list,
@@ -144,12 +148,14 @@ def _build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
             desc_parts.append(f"【数据依据】{data_ctx}")
         desc_parts.append(action)
         impl = _step_impl_steps(step)
+        deadline_text, deadline_at = _resolve_deadline_fields(step.get("timeline"))
         tasks.append({
             "task_name": action,
             "description": " ".join(desc_parts),
             "assignee_user_id": assignee_user_id,
             "assignee_dept_id": assignee_dept_id,
-            "deadline": step.get("timeline"),
+            "deadline": deadline_text,
+            "deadline_at": deadline_at,
             "priority": plan.get("priority_level", "medium"),
             "related_resources": {
                 "implementation_steps": impl,
@@ -165,6 +171,7 @@ def _build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
             "assignee_user_id": None,
             "assignee_dept_id": None,
             "deadline": None,
+            "deadline_at": None,
             "priority": plan.get("priority_level", "medium"),
             "related_resources": {
                 "implementation_steps": [],
@@ -213,6 +220,37 @@ def _parse_deadline_date(value: object) -> datetime | None:
     return None
 
 
+def _resolve_deadline_fields(value: object) -> tuple[str | None, str | None]:
+    """将 timeline/deadline 文案转换为保留文案 + 绝对截止时间。"""
+    if value is None:
+        return None, None
+    text = str(value).strip()
+    if not text:
+        return None, None
+
+    hm = _RELATIVE_HOUR_PATTERN.match(text)
+    if hm:
+        hours = int(hm.group(1))
+        normalized_text = f"{hours}小时内"
+        deadline_at = (datetime.now(CN_TZ) + timedelta(hours=hours)).replace(microsecond=0).isoformat()
+        return normalized_text, deadline_at
+
+    m = _RELATIVE_DAY_PATTERN.match(text)
+    if m:
+        days = int(m.group(1))
+        normalized_text = text if "天" in text else f"{days}天内"
+        deadline_at = (datetime.now(CN_TZ) + timedelta(days=days)).replace(microsecond=0).isoformat()
+        return normalized_text, deadline_at
+
+    parsed = _parse_deadline_date(text)
+    if parsed is None:
+        return text, None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=CN_TZ)
+    deadline_at = parsed.astimezone(CN_TZ).replace(microsecond=0).isoformat()
+    return text, deadline_at
+
+
 def _resolve_review_due_date(all_tasks: list[dict], delay_days: int) -> datetime.date:
     """
     复盘到期日：
@@ -221,7 +259,7 @@ def _resolve_review_due_date(all_tasks: list[dict], delay_days: int) -> datetime
     """
     latest: datetime | None = None
     for t in all_tasks:
-        d = _parse_deadline_date(t.get("deadline"))
+        d = _parse_deadline_date(t.get("deadline_at") or t.get("deadline"))
         if d is None:
             continue
         if latest is None or d > latest:
@@ -272,6 +310,25 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
 
     # ── 5.2.3 按异常指标补全规定动作 ──
     anomalies = state.get("anomalies") or []
+    rule_message_specs = [
+        (a.get("indicator_code"), (INDICATOR_PUSH_RULES.get(a.get("indicator_code")) or {}).get("message"))
+        for a in anomalies
+        if a.get("indicator_code")
+    ]
+    matched_message_rules = [ind for ind, msg in rule_message_specs if msg]
+    exec_push_enabled = get_settings().exec_push_rule_tasks
+    logger.info(
+        "执行阶段规则推送开关: exec_push_rule_tasks=%s, anomalies=%d, matched_message_rules=%d, indicators=%s",
+        exec_push_enabled,
+        len(anomalies),
+        len(matched_message_rules),
+        matched_message_rules,
+    )
+    if matched_message_rules and not exec_push_enabled:
+        logger.info(
+            "已跳过定向人群推送（exec_push_rule_tasks=false）: indicators=%s",
+            matched_message_rules,
+        )
     rule_tasks: list[dict] = []
     seen_task_name: set[str] = set()
     for a in anomalies:
@@ -284,7 +341,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
             if name and name not in seen_task_name:
                 seen_task_name.add(name)
                 rule_tasks.append(t)
-    if rule_tasks and get_settings().exec_push_rule_tasks:
+    if rule_tasks and exec_push_enabled:
         try:
             result = await mcp_call("task-server", "create_execution_tasks", {
                 "tenant_id": tenant_id,
@@ -308,7 +365,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
         except Exception as e:
             logger.warning("5.2.3 规则任务推送失败: %s", e)
 
-    if get_settings().exec_push_rule_tasks:
+    if exec_push_enabled:
         seen_coupon_ind: set[str] = set()
         seen_message_key: set[tuple[str, str]] = set()
         for a in anomalies:

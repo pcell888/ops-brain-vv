@@ -73,10 +73,12 @@ async def statistics(
 async def list_records(
     storeId: str | None = Query(None, alias="storeId"),
     filterType: str | None = Query(None, alias="filterType"),
-    page: int = Query(1, alias="page"),
+    page: int | None = Query(None, alias="page"),
+    pageNo: int | None = Query(None, alias="pageNo"),
     pageSize: int = Query(20, alias="pageSize"),
 ):
     """客户记录列表，支持分页与筛选。"""
+    current_page = pageNo or page or 1
     try:
         conditions = ["cr.del_status=0"]
         params = []
@@ -105,7 +107,7 @@ async def list_records(
                 f"SELECT cr.client_record_id AS id, cr.name, cr.phone, "
                 f'cr.tags, cr.last_order_days AS "lastOrderDays" '
                 f"FROM client_record cr WHERE {where}{order_clause} LIMIT %s OFFSET %s",
-                params + [pageSize, (page - 1) * pageSize],
+                params + [pageSize, (current_page - 1) * pageSize],
             )
             rows = await cur.fetchall()
             for r in rows:

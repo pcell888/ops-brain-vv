@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 def _uri_to_conninfo(uri: str) -> str:
+    uri = uri.strip()
+    if len(uri) >= 2 and uri[0] == uri[-1] and uri[0] in ("'", '"'):
+        uri = uri[1:-1].strip()
     parsed = urlparse(uri)
     if parsed.scheme not in ("postgresql", "postgres", "postgresql+asyncpg"):
         return uri
@@ -37,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tenant_registry (
     api_base_url    VARCHAR(256) NOT NULL,
     auth_type       VARCHAR(16) DEFAULT 'token',
     auth_credential TEXT NOT NULL,
+    platform_auth_credential TEXT,
     industry_code   VARCHAR(32),
     status          SMALLINT DEFAULT 1,
     config          JSONB DEFAULT '{}',
@@ -128,9 +132,10 @@ CREATE TABLE IF NOT EXISTS ai_exec_task (
     assignee_account_id VARCHAR(32),
     assignee_dept_id    VARCHAR(32),
     deadline            VARCHAR(200),
+    deadline_at         TIMESTAMPTZ,
     priority            VARCHAR(20),
     status              VARCHAR(20) DEFAULT 'pending',
-    related_resources   JSONB DEFAULT '[]',
+    related_resources   JSONB DEFAULT '{}',
     created_at          TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS ix_ai_exec_task_thread ON ai_exec_task (thread_id);
@@ -218,6 +223,9 @@ async def ensure_tenant_registry():
         async with await AsyncConnection.connect(conninfo) as conn:
             async with conn.cursor() as cur:
                 await cur.execute(TENANT_REGISTRY_DDL)
+                await cur.execute(
+                    "ALTER TABLE tenant_registry ADD COLUMN IF NOT EXISTS platform_auth_credential TEXT"
+                )
                 await cur.execute(SEED_PLATFORM)
                 await cur.execute(SEED_WLWQ_LOCAL)
                 if settings.wlwq_business_api_base:
@@ -289,6 +297,12 @@ async def ensure_ai_exec_task():
                     stmt = stmt.strip()
                     if stmt:
                         await cur.execute(stmt)
+                await cur.execute(
+                    "ALTER TABLE ai_exec_task ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ"
+                )
+                await cur.execute(
+                    "ALTER TABLE ai_exec_task ALTER COLUMN related_resources SET DEFAULT '{}'::jsonb"
+                )
                 # 历史数据：已派发仍占 pending 的行与采纳后自动执行语义对齐
                 await cur.execute(
                     """

@@ -12,6 +12,7 @@ from src.core.config import CN_TZ, get_settings
 from src.core.calculator import resolve_active_indicators
 from src.core.pending_review_repo import get_due_reviews
 from src.core.snapshot_repo import save_snapshot, get_last_snapshot_time
+from src.core.tenant_config import get_tenant_config
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +77,10 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
         state.values.get("selected_indicators"),
     )
 
-    now = now_cn.strftime("%Y-%m-%d")
-    start = (now_cn - timedelta(days=30)).strftime("%Y-%m-%d")
+    tenant_config = await get_tenant_config(tenant_id)
+    lookback_days = int(tenant_config.get("analysis_period_days") or settings.diagnosis_lookback_days)
+    now = now_cn.strftime("%Y-%m-%d %H:%M:%S")
+    start = (now_cn - timedelta(days=lookback_days)).strftime("%Y-%m-%d %H:%M:%S")
     common_args = {
         "tenant_id": tenant_id,
         "store_id": store_id,

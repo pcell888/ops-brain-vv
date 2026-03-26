@@ -27,11 +27,12 @@ class Settings(BaseSettings):
     credential_encrypt_key: str = ""
 
     diagnosis_lookback_days: int = 90
+    # 租户解析 Redis 缓存 TTL（秒）。<=0 时不读写 Redis，每次从 PG 加载（鉴权与 base_url 即时生效，QPS 高时慎用）
     tenant_cache_ttl: int = 600
     benchmark_cache_ttl: int = 600
 
     # 为 True 时启用旧版双轨：先按 5.2.3 单独落库 rule_5.2.3 任务并执行规则券/消息；为 False（默认）时仅采纳方案落库
-    exec_push_rule_tasks: bool = False
+    exec_push_rule_tasks: bool = True
 
     # 方案执行后延迟多少天再执行效果追踪复盘（0 = 立即执行，不延迟）
     effect_track_delay_days: int = 7

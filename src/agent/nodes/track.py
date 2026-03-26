@@ -19,6 +19,7 @@ from src.core.effect_review_repo import save_effect_tracking, save_review_report
 from src.core.snapshot_repo import list_snapshots
 from src.core.solution_knowledge_repo import save_effective_plan
 from src.core.tracking_names import resolve_solution_name
+from src.core.tenant_config import get_tenant_config
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +109,12 @@ async def track_effects_node(state: DiagnosisState) -> dict:
 
     tenant_id = state["tenant_id"]
     store_id = state["store_id"]
+    settings = get_settings()
+    tenant_config = await get_tenant_config(tenant_id)
+    lookback_days = int(tenant_config.get("analysis_period_days") or settings.diagnosis_lookback_days)
     _now = datetime.now(CN_TZ)
-    now = _now.strftime("%Y-%m-%d")
-    start = (_now - timedelta(days=30)).strftime("%Y-%m-%d")
+    now = _now.strftime("%Y-%m-%d %H:%M:%S")
+    start = (_now - timedelta(days=lookback_days)).strftime("%Y-%m-%d %H:%M:%S")
 
     common_args = {
         "tenant_id": tenant_id,

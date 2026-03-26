@@ -6,7 +6,10 @@ import pytest
 
 from src.core.calculator import (
     ALL_DIMENSIONS,
+    DRILL_ITEM_FIELDS,
     INDICATOR_META,
+    camel_to_snake,
+    filter_drill_row_by_allowed_fields,
     list_available_indicators,
     rebalance_weights,
     resolve_active_indicators,
@@ -52,3 +55,43 @@ def test_rebalance_weights():
     w = rebalance_weights({"crm", "marketing"})
     assert abs(sum(w.values()) - 1.0) < 1e-6
     assert set(w.keys()) == {"crm", "marketing"}
+
+
+def test_camel_to_snake():
+    assert camel_to_snake("serviceOrderId") == "service_order_id"
+    assert camel_to_snake("orderSN") == "order_sn"
+    assert camel_to_snake("createTime") == "create_time"
+    assert camel_to_snake("order_sn") == "order_sn"
+    assert camel_to_snake("id") == "id"
+
+
+def test_filter_drill_row_camel_case_compatible():
+    allowed = DRILL_ITEM_FIELDS["service_completion_rate"]
+    raw = {
+        "serviceOrderId": "2035909650134208512",
+        "orderSn": "2035909650121625600",
+        "orderStatus": 5,
+        "createTime": "2026-03-23T10:41:01.000+08:00",
+        "finishTime": None,
+        "extraIgnored": 1,
+    }
+    got = filter_drill_row_by_allowed_fields(raw, allowed)
+    assert got == {
+        "service_order_id": "2035909650134208512",
+        "order_sn": "2035909650121625600",
+        "order_status": 5,
+        "create_time": "2026-03-23T10:41:01.000+08:00",
+        "finish_time": None,
+    }
+
+
+def test_filter_drill_row_snake_case_unchanged():
+    allowed = DRILL_ITEM_FIELDS["service_completion_rate"]
+    raw = {
+        "service_order_id": "x",
+        "order_sn": "y",
+        "order_status": 1,
+        "create_time": "t",
+        "finish_time": None,
+    }
+    assert filter_drill_row_by_allowed_fields(raw, allowed) == raw

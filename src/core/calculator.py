@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from typing import Any
 
 from .config import CN_TZ
 
@@ -25,7 +27,6 @@ INDICATOR_META: dict[str, dict] = {
     # 运营效率
     "service_completion_rate": {"name": "服务订单完成率", "dimension": "efficiency", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "未完成服务订单列表"},
     "avg_shipping_hours": {"name": "平均发货时效", "dimension": "efficiency", "direction": "lower_is_better", "unit": "小时", "drillable": True, "drill_desc": "发货时效明细"},
-    "task_on_time_rate": {"name": "任务按时完成率", "dimension": "efficiency", "direction": "higher_is_better", "unit": "%", "drillable": True, "drill_desc": "逾期任务列表"},
 }
 
 # 各指标钻取 items 中单条记录的约定字段（企业 API 返回 list/items 时应尽量符合）
@@ -37,7 +38,6 @@ DRILL_ITEM_FIELDS: dict[str, list[str]] = {
     # CRM — 跟进/审批明细
     "response_time_avg": ["examine_initiate_id", "content", "create_time", "finish_time", "user_name"],
     "follow_up_count": ["examine_initiate_id", "content", "create_time", "user_name"],
-    "task_on_time_rate": ["examine_initiate_id", "content", "create_time", "finish_time", "user_name"],
     # 营销
     "coupon_redemption_rate": ["account_coupon_id", "coupon_name", "phone", "use_status", "start_time", "end_time", "create_time"],
     "browse_to_order_rate": ["account_id", "browse_time", "order_count", "first_order_time"],
@@ -97,6 +97,36 @@ DRILL_FIELD_LABELS: dict[str, str] = {
     "shipping_hours": "发货时效(小时)",
 }
 
+
+def camel_to_snake(name: str) -> str:
+    """将 camelCase / PascalCase 转为 snake_case（与 Java/JavaScript 常见 JSON 字段兼容）。"""
+    if not name:
+        return name
+    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1)
+    return s2.lower()
+
+
+def filter_drill_row_by_allowed_fields(row: Any, allowed: list[str] | None) -> dict:
+    """按 DRILL_ITEM_FIELDS 白名单保留字段；键名可与白名单不一致（camelCase），输出统一为 snake_case。"""
+    if not isinstance(row, dict):
+        return {}
+    if not allowed:
+        return dict(row)
+    allowed_set = frozenset(allowed)
+    out: dict = {}
+    for k, v in row.items():
+        key = str(k)
+        if key in allowed_set:
+            canon = key
+        else:
+            canon = camel_to_snake(key)
+            if canon not in allowed_set:
+                continue
+        out[canon] = v
+    return out
+
+
 NOT_APPLICABLE_MAP: dict[str, set[str]] = {
     "service": {"avg_shipping_hours", "seckill_conversion_rate", "browse_to_order_rate"},
     "mall":    {"service_completion_rate"},
@@ -127,7 +157,6 @@ DEFAULT_BENCHMARKS: dict[str, dict[str, float]] = {
     "avg_customer_lifetime_value": {"avg_value": 1200.0, "excellent_value": 2500.0},
     "service_completion_rate": {"avg_value": 80.0, "excellent_value": 95.0},
     "avg_shipping_hours": {"avg_value": 18.0, "excellent_value": 6.0},
-    "task_on_time_rate": {"avg_value": 75.0, "excellent_value": 92.0},
 }
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import datetime
 
 import psycopg
 
@@ -43,16 +44,23 @@ async def save_exec_tasks(
                         deadline_str = deadline[:200]
                     else:
                         deadline_str = None
+                    deadline_at = t.get("deadline_at")
+                    deadline_at_dt = None
+                    if isinstance(deadline_at, str) and deadline_at.strip():
+                        try:
+                            deadline_at_dt = datetime.fromisoformat(deadline_at.replace("Z", "+00:00"))
+                        except ValueError:
+                            deadline_at_dt = None
                     related = t.get("related_resources")
-                    related_json = json.dumps(related if isinstance(related, (list, dict)) else [], ensure_ascii=False)
+                    related_json = json.dumps(related if isinstance(related, dict) else {}, ensure_ascii=False)
                     # 采纳方案后任务已推送业务侧，与 execute 节点一致：落库即为执行中（待人完成）
                     task_status = (t.get("status") or "running")[:20]
                     await cur.execute(
                         """
                         INSERT INTO ai_exec_task
                         (task_id, thread_id, tenant_id, store_id, plan_id, task_name, description,
-                         assignee_user_id, assignee_account_id, assignee_dept_id, deadline, priority, status, related_resources)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                         assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at, priority, status, related_resources)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                         ON CONFLICT (task_id) DO UPDATE SET
                             task_name = EXCLUDED.task_name,
                             description = EXCLUDED.description,
@@ -60,6 +68,7 @@ async def save_exec_tasks(
                             assignee_account_id = EXCLUDED.assignee_account_id,
                             assignee_dept_id = EXCLUDED.assignee_dept_id,
                             deadline = EXCLUDED.deadline,
+                            deadline_at = EXCLUDED.deadline_at,
                             priority = EXCLUDED.priority,
                             related_resources = EXCLUDED.related_resources
                         """,
@@ -75,6 +84,7 @@ async def save_exec_tasks(
                             str(t.get("assignee_account_id", ""))[:32],
                             str(t.get("assignee_dept_id", ""))[:32],
                             deadline_str,
+                            deadline_at_dt,
                             str(t.get("priority", ""))[:20],
                             task_status,
                             related_json,

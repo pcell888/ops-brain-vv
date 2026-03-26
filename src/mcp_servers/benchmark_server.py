@@ -37,7 +37,6 @@ DEFAULT_BENCHMARKS: dict[str, dict] = {
     "avg_customer_lifetime_value": {"avg_value": 1200.0, "median_value": 1000.0, "excellent_value": 2500.0},
     "service_completion_rate": {"avg_value": 80.0, "median_value": 78.0, "excellent_value": 95.0},
     "avg_shipping_hours": {"avg_value": 18.0, "median_value": 16.0, "excellent_value": 6.0},
-    "task_on_time_rate": {"avg_value": 75.0, "median_value": 72.0, "excellent_value": 92.0},
 }
 
 

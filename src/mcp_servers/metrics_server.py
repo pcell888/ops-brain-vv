@@ -12,9 +12,16 @@ from mcp.server import FastMCP
 
 from src.mcp_servers.tenant_router import TenantRouter
 from src.mcp_servers.biz_api_client import BizAPIClient
-from src.core.calculator import DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS
+from src.mcp_servers.biz_scope import effective_store_id_for_biz
+from src.core.calculator import DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS, filter_drill_row_by_allowed_fields
 
 logger = logging.getLogger(__name__)
+
+
+def _store_aware_params(tenant_id: str, store_id: str, start_date: str, end_date: str) -> dict:
+    """业务 API：始终带 `storeId`；全企业时为 `""`（禁止将 tenant_id 误作店铺 ID）。"""
+    sid = effective_store_id_for_biz(tenant_id, store_id)
+    return {"storeId": sid, "startDate": start_date, "endDate": end_date}
 
 server = FastMCP("metrics-server")
 router = TenantRouter()
@@ -33,7 +40,7 @@ async def get_crm_indicators(
     采集CRM共享维度指标。
     返回: lead_conversion_rate, response_time_avg, follow_up_count
     """
-    params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
+    params = _store_aware_params(tenant_id, store_id, start_date, end_date)
 
     clients_data, contracts_data, follows_data = await asyncio.gather(
         biz.get(tenant_id, "/client-record/statistics", params, auth_token=auth_token),
@@ -88,7 +95,7 @@ async def get_marketing_indicators(
     返回: coupon_redemption_rate, browse_to_order_rate, order_conversion_rate,
           seckill_conversion_rate
     """
-    params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
+    params = _store_aware_params(tenant_id, store_id, start_date, end_date)
 
     coupon_data, order_data, exposure_data, seckill_data = await asyncio.gather(
         biz.get(tenant_id, "/account-coupon/statistics", params, auth_token=auth_token),
@@ -159,7 +166,7 @@ async def get_retention_indicators(
     返回: repurchase_rate, refund_rate, churn_rate, positive_review_rate,
           avg_customer_lifetime_value
     """
-    params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
+    params = _store_aware_params(tenant_id, store_id, start_date, end_date)
 
     repurchase_data, refund_data, evaluate_data = await asyncio.gather(
         biz.get(tenant_id, "/store-order/repurchase-stats", params, auth_token=auth_token),
@@ -234,17 +241,14 @@ async def get_efficiency_indicators(
 ) -> dict:
     """
     采集运营效率维度指标。
-    返回: service_completion_rate, avg_shipping_hours, task_on_time_rate
+    返回: service_completion_rate, avg_shipping_hours
     """
-    params = {"storeId": store_id, "startDate": start_date, "endDate": end_date}
+    params = _store_aware_params(tenant_id, store_id, start_date, end_date)
 
-    approval_data, service_data, shipping_data = await asyncio.gather(
-        biz.get(tenant_id, "/examine-initiate/turnaround-stats", params, auth_token=auth_token),
+    service_data, shipping_data = await asyncio.gather(
         biz.get(tenant_id, "/service-order/completion-stats", params, auth_token=auth_token),
         biz.get(tenant_id, "/store-order/shipping-stats", params, auth_token=auth_token),
     )
-
-    task_on_time = approval_data.get("onTimeRate", 0)
 
     total_service = service_data.get("totalServiceOrders", 0)
     completed_service = service_data.get("completedOrders", 0)
@@ -269,12 +273,6 @@ async def get_efficiency_indicators(
                 "direction": "lower_is_better",
                 "raw_data": {"avg_shipping_hours": avg_shipping},
             },
-            "task_on_time_rate": {
-                "value": round(task_on_time, 2),
-                "unit": "%",
-                "direction": "higher_is_better",
-                "raw_data": {"on_time_rate": task_on_time},
-            },
         },
     }
 
@@ -294,11 +292,11 @@ async def drill_down_indicator(
     指标数据钻取 — 返回指标对应的明细数据列表，支持分页。
     支持全部指标 (indicator_code 见 INDICATOR_META)。
     """
-    params = {
-        "storeId": store_id,
+    params: dict = {
+        "storeId": effective_store_id_for_biz(tenant_id, store_id),
         "startDate": start_date,
         "endDate": end_date,
-        "page": page,
+        "pageNo": page,
         "pageSize": page_size,
     }
 
@@ -321,7 +319,6 @@ async def drill_down_indicator(
         # 运营效率
         "service_completion_rate": ("/service-order/completion-stats", {"detail": "true"}),
         "avg_shipping_hours": ("/store-order/shipping-stats", {"detail": "true"}),
-        "task_on_time_rate": ("/examine-initiate/turnaround-stats", {"filterType": "overdue"}),
         # 库存
     }
 
@@ -335,9 +332,7 @@ async def drill_down_indicator(
     raw_items = data.get("list", data.get("items", []))
     allowed = DRILL_ITEM_FIELDS.get(indicator_code)
     items = (
-        [{k: v for k, v in (it if isinstance(it, dict) else {}).items() if k in allowed} for it in raw_items]
-        if allowed
-        else raw_items
+        [filter_drill_row_by_allowed_fields(it, allowed) for it in raw_items] if allowed else raw_items
     )
     field_labels = {k: DRILL_FIELD_LABELS.get(k, k) for k in (allowed or [])}
     return {

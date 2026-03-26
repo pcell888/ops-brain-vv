@@ -11,9 +11,32 @@ from typing import Any
 
 import httpx
 
-from src.mcp_servers.tenant_router import TenantRouter
+from src.mcp_servers.tenant_router import TenantContext, TenantRouter
 
 logger = logging.getLogger(__name__)
+
+
+def _auth_source_label_ctx(ctx: TenantContext, auth_token: str | None) -> str:
+    """说明鉴权来源（不记录密钥明文）。默认来自 tenant_registry.auth_credential。"""
+    if auth_token:
+        return "Authorization=请求参数覆盖"
+    h = ctx.auth_headers
+    if (h.get("Authorization") or "").strip():
+        return "鉴权=tenant_registry.auth_credential(Authorization)"
+    if (h.get("X-Service-Signature") or "").strip():
+        return "鉴权=tenant_registry.auth_credential(HMAC)"
+    return "鉴权=未配置"
+
+
+def _full_request_url(
+    client: httpx.AsyncClient,
+    method: str,
+    path: str,
+    params: dict | None,
+    json_data: dict | None,
+) -> str:
+    req = client.build_request(method, path, params=params, json=json_data)
+    return str(req.url)
 
 
 class BizAPIError(Exception):
@@ -143,7 +166,6 @@ MOCK_DATA: dict[str, dict | list] = {
     "/store-refund-order/statistics": {"totalCompletedOrders": 2050, "refundOrders": 82},
     "/store-order-evaluate/statistics": {"totalReviews": 1680, "positiveReviews": 1462},
     # ── Metrics: 效率维度 ──
-    "/examine-initiate/turnaround-stats": {"onTimeRate": 78.5},
     "/service-order/completion-stats": {"totalServiceOrders": 360, "completedOrders": 306},
     "/store-order/shipping-stats": {"avgShippingHours": 14.2},
     # ── Benchmark ──
@@ -163,7 +185,6 @@ MOCK_DATA: dict[str, dict | list] = {
             "avg_customer_lifetime_value": {"avg_value": 1200, "median_value": 1000, "excellent_value": 2500},
             "service_completion_rate": {"avg_value": 80.0, "median_value": 78.0, "excellent_value": 95.0},
             "avg_shipping_hours": {"avg_value": 18.0, "median_value": 16.0, "excellent_value": 6.0},
-            "task_on_time_rate": {"avg_value": 75.0, "median_value": 72.0, "excellent_value": 92.0},
         },
     },
     "/store-class/list": [
@@ -256,31 +277,40 @@ class BizAPIClient:
         json_data: dict | None = None,
         auth_token: str | None = None,
     ) -> dict[str, Any]:
-        # 记录所有请求（包括GET）
+        ctx0 = await self.router.resolve(tenant_id)
+        base_url = ctx0.api_base_url.rstrip("/")
+        auth_label = _auth_source_label_ctx(ctx0, auth_token)
+
+        # 记录所有请求（包括GET）；base_url / 鉴权标签来自当次 resolve（重试时会再次 resolve）
         if method in ("POST", "PUT") and json_data is not None:
             logger.info(
-                "业务API请求: tenant=%s %s %s json=%s",
+                "业务API请求: tenant=%s base_url=%s %s %s %s json=%s",
                 tenant_id,
+                base_url,
+                auth_label,
                 method,
                 path,
                 json.dumps(json_data, ensure_ascii=False),
             )
         else:
             logger.info(
-                "业务API请求: tenant=%s %s %s params=%s",
+                "业务API请求: tenant=%s base_url=%s %s %s %s params=%s",
                 tenant_id,
+                base_url,
+                auth_label,
                 method,
                 path,
                 params,
             )
 
         async def _do():
-            client = await self.router.get_client(tenant_id)
-            extra_headers = {}
+            ctx_try = await self.router.resolve(tenant_id)
+            client_try = await self.router.get_client(tenant_id, ctx=ctx_try)
+            req_headers = dict(ctx_try.auth_headers)
             if auth_token:
-                extra_headers["Authorization"] = auth_token
+                req_headers["Authorization"] = auth_token
             return await self._request(
-                client, method, path, params=params, json_data=json_data, extra_headers=extra_headers
+                client_try, method, path, params=params, json_data=json_data, headers=req_headers
             )
 
         last_exception = None
@@ -290,8 +320,9 @@ class BizAPIClient:
                 result = await asyncio.wait_for(_do(), timeout=self._REQUEST_TIMEOUT)
                 elapsed = time.time() - start_time
                 logger.info(
-                    "业务API响应成功: tenant=%s %s %s 耗时=%.2fs 尝试=%d/%d",
+                    "业务API响应成功: tenant=%s base_url=%s %s %s 耗时=%.2fs 尝试=%d/%d",
                     tenant_id,
+                    base_url,
                     method,
                     path,
                     elapsed,
@@ -303,8 +334,9 @@ class BizAPIClient:
                 elapsed = time.time() - start_time
                 last_exception = e
                 logger.warning(
-                    "业务API请求超时: tenant=%s %s %s 耗时=%.2fs 超时限制=%ss 尝试=%d/%d",
+                    "业务API请求超时: tenant=%s base_url=%s %s %s 耗时=%.2fs 超时限制=%ss 尝试=%d/%d",
                     tenant_id,
+                    base_url,
                     method,
                     path,
                     elapsed,
@@ -318,8 +350,9 @@ class BizAPIClient:
                 # 4xx错误不重试
                 if 400 <= e.response.status_code < 500:
                     logger.error(
-                        "业务API客户端错误(不重试): tenant=%s %s %s 状态码=%s 耗时=%.2fs",
+                        "业务API客户端错误(不重试): tenant=%s base_url=%s %s %s 状态码=%s 耗时=%.2fs",
                         tenant_id,
+                        base_url,
                         method,
                         path,
                         e.response.status_code,
@@ -327,8 +360,9 @@ class BizAPIClient:
                     )
                     raise
                 logger.warning(
-                    "业务API服务端错误: tenant=%s %s %s 状态码=%s 耗时=%.2fs 尝试=%d/%d",
+                    "业务API服务端错误: tenant=%s base_url=%s %s %s 状态码=%s 耗时=%.2fs 尝试=%d/%d",
                     tenant_id,
+                    base_url,
                     method,
                     path,
                     e.response.status_code,
@@ -340,8 +374,9 @@ class BizAPIClient:
                 elapsed = time.time() - start_time
                 last_exception = e
                 logger.warning(
-                    "业务API请求异常: tenant=%s %s %s 耗时=%.2fs 错误=%s 尝试=%d/%d",
+                    "业务API请求异常: tenant=%s base_url=%s %s %s 耗时=%.2fs 错误=%s 尝试=%d/%d",
                     tenant_id,
+                    base_url,
                     method,
                     path,
                     elapsed,
@@ -356,8 +391,9 @@ class BizAPIClient:
 
         # 所有重试都失败
         logger.error(
-            "业务API请求最终失败: tenant=%s %s %s 重试次数=%d",
+            "业务API请求最终失败: tenant=%s base_url=%s %s %s 重试次数=%d",
             tenant_id,
+            base_url,
             method,
             path,
             self._MAX_RETRIES,
@@ -371,33 +407,36 @@ class BizAPIClient:
         path: str,
         params: dict | None = None,
         json_data: dict | None = None,
-        extra_headers: dict | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         url = path
+        full_url = _full_request_url(client, method, path, params, json_data)
+        base_url = str(client.base_url).rstrip("/")
         try:
-            headers = dict(client.headers)
-            if extra_headers:
-                headers.update(extra_headers)
-            resp = await client.request(method, url, params=params, json=json_data, headers=headers)
+            resp = await client.request(
+                method, url, params=params, json=json_data, headers=dict(headers or {})
+            )
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             logger.error(
-                "业务API HTTP错误: %s %s 状态码=%s 响应=%s",
+                "业务API HTTP错误: base_url=%s %s %s 状态码=%s 响应=%s",
+                base_url,
                 method,
-                url,
+                full_url,
                 e.response.status_code,
                 e.response.text[:500],
             )
             raise BizAPIError(e.response.status_code, e.response.text[:500], str(url))
         except httpx.RequestError as e:
-            logger.error("业务API请求异常: %s %s 错误=%s", method, url, str(e))
+            logger.error("业务API请求异常: base_url=%s %s %s 错误=%s", base_url, method, full_url, str(e))
             raise BizAPIError(0, str(e), str(url))
 
         body = resp.json()
         logger.debug(
-            "业务API响应: %s %s 状态码=%s 响应体=%s",
+            "业务API响应: base_url=%s %s %s 状态码=%s 响应体=%s",
+            base_url,
             method,
-            url,
+            full_url,
             resp.status_code,
             json.dumps(body, ensure_ascii=False)[:500],
         )
@@ -406,9 +445,10 @@ class BizAPIClient:
             if body["code"] not in (0, 200, "0", "200"):
                 error_msg = body.get("msg", "unknown error")
                 logger.error(
-                    "业务API业务错误: %s %s code=%s msg=%s",
+                    "业务API业务错误: base_url=%s %s %s code=%s msg=%s",
+                    base_url,
                     method,
-                    url,
+                    full_url,
                     body["code"],
                     error_msg,
                 )

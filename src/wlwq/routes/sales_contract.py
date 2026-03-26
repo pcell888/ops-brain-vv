@@ -70,10 +70,12 @@ async def statistics(
 @router.get("/list")
 async def list_contracts(
     clientRecordId: str | None = Query(None, alias="clientRecordId"),
-    page: int = Query(1, alias="page"),
+    page: int | None = Query(None, alias="page"),
+    pageNo: int | None = Query(None, alias="pageNo"),
     pageSize: int = Query(20, alias="pageSize"),
 ):
     """合同列表。"""
+    current_page = pageNo or page or 1
     try:
         conditions = ["del_status=0"]
         params = []
@@ -89,7 +91,7 @@ async def list_contracts(
             total = ((await cur.fetchone()) or {}).get("cnt", 0)
             await cur.execute(
                 f"SELECT sales_contract_id AS id, amount, status FROM sales_contract WHERE {where} LIMIT %s OFFSET %s",
-                params + [pageSize, (page - 1) * pageSize],
+                params + [pageSize, (current_page - 1) * pageSize],
             )
             rows = await cur.fetchall()
     except Exception:

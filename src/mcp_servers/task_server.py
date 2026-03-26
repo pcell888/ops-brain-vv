@@ -11,6 +11,7 @@ from mcp.server import FastMCP
 
 from src.mcp_servers.tenant_router import TenantRouter
 from src.mcp_servers.biz_api_client import BizAPIClient
+from src.mcp_servers.biz_scope import effective_store_id_for_biz
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +32,10 @@ async def create_execution_tasks(
 
     tasks 结构:
     [{"task_name", "description", "assignee_user_id", "assignee_dept_id",
-      "deadline", "priority", "related_resources"}]
+      "deadline", "deadline_at", "priority", "related_resources"}]
     """
-    payload = {
-        "storeId": store_id,
-        "planId": plan_id,
-        "tasks": tasks,
-    }
+    sid = effective_store_id_for_biz(tenant_id, store_id)
+    payload = {"storeId": sid, "planId": plan_id, "tasks": tasks}
     data = await biz.post(tenant_id, "/ai-diagnosis/exec-task/batch-create", payload)
 
     return {
@@ -57,14 +55,16 @@ async def create_approval_flow(
     approver_user_id: int,
 ) -> dict:
     """发起方案审批流程（复用现有OA审批）。"""
-    data = await biz.post(tenant_id, "/examine-initiate/create", {
-        "storeId": store_id,
+    sid = effective_store_id_for_biz(tenant_id, store_id)
+    body = {
+        "storeId": sid,
         "title": title,
         "content": content,
         "approverUserId": approver_user_id,
         "bizType": "ai_diagnosis",
         "bizId": plan_id,
-    })
+    }
+    data = await biz.post(tenant_id, "/examine-initiate/create", body)
     return {"approval_id": data.get("id", ""), "status": "pending"}
 
 
@@ -100,22 +100,25 @@ async def create_coupon_campaign(
     {"coupon_name", "coupon_type", "full_price", "reduce_price",
      "target_customers", "start_time", "end_time"}
     """
-    coupon_data = await biz.post(tenant_id, "/coupon/create", {
-        "storeId": store_id,
+    sid = effective_store_id_for_biz(tenant_id, store_id)
+    create_body = {
+        "storeId": sid,
         "couponName": campaign_config.get("coupon_name"),
         "couponType": campaign_config.get("coupon_type", 1),
         "fullPrice": campaign_config.get("full_price"),
         "reducePrice": campaign_config.get("reduce_price"),
         "startTime": campaign_config.get("start_time"),
         "endTime": campaign_config.get("end_time"),
-    })
+    }
+    coupon_data = await biz.post(tenant_id, "/coupon/create", create_body)
     coupon_id = coupon_data.get("id", coupon_data.get("couponId", ""))
 
-    distribute_data = await biz.post(tenant_id, "/coupon/distribute", {
-        "storeId": store_id,
+    dist_body = {
+        "storeId": sid,
         "couponId": coupon_id,
         "targetCustomers": campaign_config.get("target_customers", "all"),
-    })
+    }
+    distribute_data = await biz.post(tenant_id, "/coupon/distribute", dist_body)
 
     return {
         "coupon_id": coupon_id,
@@ -131,10 +134,10 @@ async def create_seckill_activity(
     activity_config: dict,
 ) -> dict:
     """创建秒杀活动（方案执行动作之一）。"""
-    data = await biz.post(tenant_id, "/seckill-apply/create", {
-        "storeId": store_id,
-        **activity_config,
-    })
+    sid = effective_store_id_for_biz(tenant_id, store_id)
+    body = dict(activity_config)
+    body["storeId"] = sid
+    data = await biz.post(tenant_id, "/seckill-apply/create", body)
     return {"activity_id": data.get("id", ""), "status": "created"}
 
 

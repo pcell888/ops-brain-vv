@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── API Request / Response ──────────────────────────────────────
@@ -28,6 +28,13 @@ class DiagnosisRequest(BaseModel):
         default=None,
         description="前端透传的鉴权 token，用于访问 wlwq API",
     )
+
+    @model_validator(mode="after")
+    def normalize_store_id_vs_tenant(self):
+        """勿将 tenant_id 与店铺 ID 混用：相等时视为未选店（全企业）。"""
+        if self.store_id and self.store_id == self.tenant_id:
+            return self.model_copy(update={"store_id": ""})
+        return self
 
 
 class DiagnosisStartResponse(BaseModel):
@@ -176,8 +183,9 @@ class ExecTask(BaseModel):
     assignee_user_id: int | None = None
     assignee_dept_id: int | None = None
     deadline: str | None = None
+    deadline_at: str | None = None
     priority: Literal["high", "medium", "low"] = "medium"
-    related_resources: list[str] = Field(default_factory=list)
+    related_resources: dict = Field(default_factory=dict)
     status: str = "pending"
 
 

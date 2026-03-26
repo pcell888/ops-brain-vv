@@ -6,14 +6,19 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Body, Query, HTTPException
+from fastapi import APIRouter, Body, Query, HTTPException, Request
 from pydantic import BaseModel
 
 from src.api.constants import API_PREFIX
 from src.core.models import DiagnosisRequest, DiagnosisStartResponse
 from src.core.config import CN_TZ
 from src.core.calculator import list_available_indicators
-from src.core.calculator import DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS, INDICATOR_META
+from src.core.calculator import (
+    DRILL_ITEM_FIELDS,
+    DRILL_FIELD_LABELS,
+    INDICATOR_META,
+    filter_drill_row_by_allowed_fields,
+)
 from src.core.diagnosis_report_repo import list_reports, get_report as get_report_from_db
 from src.core.tenant_config import get_tenant_config
 from src.api.deps import (
@@ -32,6 +37,7 @@ from src.api.routes.compat_ws import (
 from src.agent.tools import set_progress_sender, clear_progress_sender
 from src.mcp_servers.tenant_router import TenantRouter
 from src.mcp_servers.biz_api_client import BizAPIClient, BizAPIError
+from src.api.token_sync import resolve_biz_auth_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/diagnosis", tags=["诊断"])
@@ -141,7 +147,6 @@ _DRILL_ENDPOINT_MAP: dict[str, tuple[str, dict]] = {
     "avg_customer_lifetime_value": ("/store-order/repurchase-stats", {"detail": "true"}),
     "service_completion_rate": ("/service-order/completion-stats", {"detail": "true"}),
     "avg_shipping_hours": ("/store-order/shipping-stats", {"detail": "true"}),
-    "task_on_time_rate": ("/examine-initiate/turnaround-stats", {"filterType": "overdue"}),
 }
 
 
@@ -158,11 +163,12 @@ async def _query_drill_data_from_wlwq(
     if endpoint_conf is None:
         return [], 0
     endpoint, extra_params = endpoint_conf
+    # enterprise_id 仅用于租户路由；全企业钻取传 storeId=""（与业务约定一致）
     params = {
-        "storeId": enterprise_id,
+        "storeId": "",
         "startDate": start_at.strftime("%Y-%m-%d %H:%M:%S"),
         "endDate": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "page": page,
+        "pageNo": page,
         "pageSize": page_size,
     }
     params.update(extra_params)
@@ -181,7 +187,7 @@ async def _query_drill_data_from_wlwq(
 
     allowed = DRILL_ITEM_FIELDS.get(metric_code)
     if allowed:
-        items = [{k: v for k, v in (it if isinstance(it, dict) else {}).items() if k in allowed} for it in raw_items]
+        items = [filter_drill_row_by_allowed_fields(it, allowed) for it in raw_items]
     else:
         items = raw_items
     total = data.get("total", len(items)) if isinstance(data, dict) else len(items)
@@ -448,6 +454,7 @@ async def _get_report_snapshot(thread_id: str) -> dict | None:
     summary="启动诊断流程",
 )
 async def start_diagnosis(
+    http_request: Request,
     request: DiagnosisRequest | CompatStartDiagnosisRequest = Body(...),
 ):
     """启动诊断流程，同时兼容新版与旧版前端请求/响应结构。"""
@@ -457,6 +464,10 @@ async def start_diagnosis(
             store_id="",
             trigger_type=_normalize_trigger_type(request.trigger_type),
             selected_dimensions=request.dimensions,
+        )
+        token_header = http_request.headers.get("Token")
+        compat_request = compat_request.model_copy(
+            update={"auth_token": resolve_biz_auth_token(token_header, compat_request.auth_token)}
         )
         thread_id, already_running, task = await _create_diagnosis_task(compat_request)
 
@@ -494,6 +505,10 @@ async def start_diagnosis(
             health_score=_extract_health_score_value(report),
         )
 
+    token_header = http_request.headers.get("Token")
+    request = request.model_copy(
+        update={"auth_token": resolve_biz_auth_token(token_header, request.auth_token)}
+    )
     thread_id, already_running, _ = await _create_diagnosis_task(request)
     return DiagnosisStartResponse(
         thread_id=thread_id,

@@ -10,6 +10,7 @@ from src.agent.tools import mcp_call, emit_progress, unwrap_mcp_json_value
 from src.core.calculator import extract_indicator_codes, resolve_active_indicators, NOT_APPLICABLE_MAP
 from src.core.config import CN_TZ, get_settings
 from src.core.tenant_config import get_tenant_config
+from src.mcp_servers.biz_scope import effective_store_id_for_biz
 
 DIMENSION_TOOL_MAP: dict[str, str] = {
     "crm": "get_crm_indicators",
@@ -28,7 +29,8 @@ DIMENSION_STATE_KEY: dict[str, str] = {
 
 async def collect_data_node(state: DiagnosisState) -> dict:
     tenant_id = state["tenant_id"]
-    store_id = state["store_id"]
+    raw_store = state.get("store_id") or ""
+    store_id = effective_store_id_for_biz(tenant_id, raw_store)
     auth_token = state.get("auth_token")
 
     active_dims, active_inds = resolve_active_indicators(
@@ -40,8 +42,8 @@ async def collect_data_node(state: DiagnosisState) -> dict:
     tenant_config = await get_tenant_config(tenant_id)
     lookback_days = tenant_config.get("analysis_period_days") or settings.diagnosis_lookback_days
     _now = datetime.now(CN_TZ)
-    end_date = _now.strftime("%Y-%m-%d")
-    start_date = (_now - timedelta(days=int(lookback_days))).strftime("%Y-%m-%d")
+    end_date = _now.strftime("%Y-%m-%d %H:%M:%S")
+    start_date = (_now - timedelta(days=int(lookback_days))).strftime("%Y-%m-%d %H:%M:%S")
 
     scope_label = "全企业" if not store_id else f"店铺 {store_id}"
     emit_progress(
@@ -140,5 +142,8 @@ async def collect_data_node(state: DiagnosisState) -> dict:
                 if code in raw:
                     raw[code]["not_applicable"] = True
         output[DIMENSION_STATE_KEY[dim]] = dim_data
+
+    if store_id != raw_store:
+        output["store_id"] = store_id
 
     return output

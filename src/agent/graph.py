@@ -75,6 +75,9 @@ _checkpointer_cm = None
 
 def _postgres_uri_to_conninfo(uri: str) -> str:
     """将 postgresql:// 或 postgresql+asyncpg:// URL 转为 psycopg conninfo。"""
+    uri = uri.strip()
+    if len(uri) >= 2 and uri[0] == uri[-1] and uri[0] in ("'", '"'):
+        uri = uri[1:-1].strip()
     parsed = urlparse(uri)
     if parsed.scheme not in ("postgresql", "postgres", "postgresql+asyncpg"):
         return uri

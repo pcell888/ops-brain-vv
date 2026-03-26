@@ -51,17 +51,22 @@ async def save_report(
 
 
 async def get_report(thread_id: str) -> dict | None:
-    """按 thread_id 查询报告。"""
+    """按 thread_id 查询报告。同时返回 DB 列中的 tenant_id / store_id，兜底填充缺失字段。"""
     try:
         async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    "SELECT report FROM ai_diagnosis_report WHERE thread_id = %s",
+                    "SELECT tenant_id, store_id, report FROM ai_diagnosis_report WHERE thread_id = %s",
                     (thread_id,),
                 )
                 row = await cur.fetchone()
                 if row and row.get("report"):
-                    return row["report"] if isinstance(row["report"], dict) else dict(row["report"])
+                    report = row["report"] if isinstance(row["report"], dict) else dict(row["report"])
+                    if not report.get("tenant_id") and row.get("tenant_id"):
+                        report["tenant_id"] = row["tenant_id"]
+                    if not report.get("store_id") and row.get("store_id"):
+                        report["store_id"] = row["store_id"]
+                    return report
                 return None
     except Exception as e:
         logger.warning("查询诊断报告失败: %s", e)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.constants import API_PREFIX
@@ -12,6 +12,7 @@ from src.api.routes import diagnosis, solutions, sys_config, track, review, ws, 
 from src.api.routes import compat_enterprises, compat_diagnosis, compat_dimensions, compat_solutions, compat_ws, compat_execution, compat_tracking
 from src.agent.tools import close_all_sessions as close_mcp_sessions
 from src.api.deps import get_graph_app, reset_graph_app
+from src.api.token_sync import sync_request_tokens_dependency
 from src.core.db_init import (
     ensure_tenant_registry,
     ensure_ai_diagnosis_report,
@@ -44,21 +45,23 @@ app.add_middleware(
 )
 
 api_router = APIRouter(prefix=API_PREFIX)
-api_router.include_router(diagnosis.router)
-api_router.include_router(solutions.router)
-api_router.include_router(track.router)
-api_router.include_router(review.router)
-api_router.include_router(sys_config.router)
+_token_sync_dep = [Depends(sync_request_tokens_dependency)]
+
+api_router.include_router(diagnosis.router, dependencies=_token_sync_dep)
+api_router.include_router(solutions.router, dependencies=_token_sync_dep)
+api_router.include_router(track.router, dependencies=_token_sync_dep)
+api_router.include_router(review.router, dependencies=_token_sync_dep)
+api_router.include_router(sys_config.router, dependencies=_token_sync_dep)
 api_router.include_router(ws.router)
-api_router.include_router(mcp.router)
+api_router.include_router(mcp.router, dependencies=_token_sync_dep)
 
 # 前端兼容层路由（优先匹配，放在原始路由之后即可，因为路径不冲突）
-api_router.include_router(compat_enterprises.router)
-api_router.include_router(compat_diagnosis.router)
-api_router.include_router(compat_dimensions.router)
-api_router.include_router(compat_solutions.router)
-api_router.include_router(compat_execution.router)
-api_router.include_router(compat_tracking.router)
+api_router.include_router(compat_enterprises.router, dependencies=_token_sync_dep)
+api_router.include_router(compat_diagnosis.router, dependencies=_token_sync_dep)
+api_router.include_router(compat_dimensions.router, dependencies=_token_sync_dep)
+api_router.include_router(compat_solutions.router, dependencies=_token_sync_dep)
+api_router.include_router(compat_execution.router, dependencies=_token_sync_dep)
+api_router.include_router(compat_tracking.router, dependencies=_token_sync_dep)
 api_router.include_router(compat_ws.router)
 
 app.include_router(api_router)

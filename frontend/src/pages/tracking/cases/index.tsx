@@ -63,7 +63,6 @@ const indicatorNameMap: Record<string, string> = {
   avg_customer_lifetime_value: '客户终身价值',
   service_completion_rate: '服务完成率',
   avg_shipping_hours: '平均发货时长',
-  task_on_time_rate: '任务按时完成率',
 };
 
 function getIndustryLabel(industry: string): string {

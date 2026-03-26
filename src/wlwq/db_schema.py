@@ -40,11 +40,12 @@ CREATE TABLE IF NOT EXISTS ai_diagnosis_task (
   assignee_account_id VARCHAR(32),
   assignee_dept_id VARCHAR(32),
   deadline VARCHAR(200),
+  deadline_at TIMESTAMPTZ,
   priority VARCHAR(20),
   status VARCHAR(20) DEFAULT 'pending',
   progress NUMERIC(5,2),
   remark TEXT,
-  related_resources JSONB,
+  related_resources JSONB DEFAULT '{}',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -438,6 +439,18 @@ async def ensure_wlwq_tables():
         try:
             await conn.execute(
                 "ALTER TABLE ai_diagnosis_task ALTER COLUMN deadline TYPE VARCHAR(200) USING (deadline::text)"
+            )
+        except Exception:
+            pass
+        try:
+            await conn.execute(
+                "ALTER TABLE ai_diagnosis_task ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ"
+            )
+        except Exception:
+            pass
+        try:
+            await conn.execute(
+                "ALTER TABLE ai_diagnosis_task ALTER COLUMN related_resources SET DEFAULT '{}'::jsonb"
             )
         except Exception:
             pass

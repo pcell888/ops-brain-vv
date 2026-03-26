@@ -11,6 +11,7 @@ from mcp.server import FastMCP
 
 from src.mcp_servers.tenant_router import TenantRouter
 from src.mcp_servers.biz_api_client import BizAPIClient
+from src.mcp_servers.biz_scope import effective_store_id_for_biz
 
 logger = logging.getLogger(__name__)
 
@@ -214,17 +215,15 @@ async def send_customer_targeted_message(
     target_segment: churn_risk | no_repurchase_90d | coupon_expiring_soon | low_conversion
     wlwq 需实现 POST /message-remind/targeted 或由本工具先拉取客户列表再 batch-create。
     """
-    data = await biz.post(
-        tenant_id,
-        "/message-remind/targeted",
-        {
-            "storeId": store_id,
-            "targetSegment": target_segment,
-            "title": title,
-            "content": content,
-            "type": message_type,
-        },
-    )
+    sid = effective_store_id_for_biz(tenant_id, store_id)
+    body = {
+        "storeId": sid,
+        "targetSegment": target_segment,
+        "title": title,
+        "content": content,
+        "type": message_type,
+    }
+    data = await biz.post(tenant_id, "/message-remind/targeted", body)
     return {"sent_count": data.get("sent_count", 0), "status": "sent", **data}
 
 

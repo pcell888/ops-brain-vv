@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from fastapi import APIRouter, Body
 
 from src.wlwq.database import get_pool
@@ -19,11 +20,21 @@ def _gen_task_id():
     return f"task_{uuid.uuid4().hex[:12]}"
 
 
+def _parse_deadline_at(task: dict) -> datetime | None:
+    raw = task.get("deadline_at") or task.get("deadlineAt")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return None
+
+
 @router.post("/batch-create")
 async def batch_create(body: dict = Body(...)):
     """
     批量创建执行任务。body: storeId, planId, tasks[].
-    tasks: [{task_name, description?, assignee_user_id?, assignee_account_id?, assignee_dept_id?, deadline?, priority?, related_resources?}]
+    tasks: [{task_name, description?, assignee_user_id?, assignee_account_id?, assignee_dept_id?, deadline?, priority?, related_resources?(object)}]
     """
     tasks = body.get("tasks", [])
     store_id = str(body.get("storeId", ""))[:32]
@@ -44,12 +55,13 @@ async def batch_create(body: dict = Body(...)):
                     deadline_str = deadline[:200] if deadline else None
             else:
                 deadline_str = (deadline[:200] if isinstance(deadline, str) else None) if deadline else None
+            deadline_at_dt = _parse_deadline_at(t)
             await conn.execute(
                 """
                 INSERT INTO ai_diagnosis_task
                 (task_id, tenant_id, store_id, plan_id, task_name, description,
-                 assignee_user_id, assignee_account_id, assignee_dept_id, deadline, priority, related_resources)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at, priority, related_resources)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 """,
                 task_id,
                 tenant_id,
@@ -61,8 +73,9 @@ async def batch_create(body: dict = Body(...)):
                 str(t.get("assignee_account_id", ""))[:32],
                 str(t.get("assignee_dept_id", ""))[:32],
                 deadline_str,
+                deadline_at_dt,
                 str(t.get("priority", ""))[:20],
-                json.dumps(t.get("related_resources") if isinstance(t.get("related_resources"), (list, dict)) else []),
+                json.dumps(t.get("related_resources") if isinstance(t.get("related_resources"), dict) else {}),
             )
             created.append({"task_id": task_id, **t})
     return _ok({"tasks": created, "count": len(created)})

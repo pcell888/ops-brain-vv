@@ -662,7 +662,6 @@ async def compat_drill_down(
         "avg_customer_lifetime_value": ("store_order", "create_time"),
         "service_completion_rate": ("store_order", "create_time"),
         "avg_shipping_hours": ("store_order", "pay_time"),
-        "task_on_time_rate": ("examine_initiate", "create_time"),
     }
 
     table_info = _INDICATOR_TABLE_MAP.get(metric_name)
