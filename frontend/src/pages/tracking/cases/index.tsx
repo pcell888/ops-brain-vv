@@ -63,6 +63,7 @@ const indicatorNameMap: Record<string, string> = {
   avg_customer_lifetime_value: '客户终身价值',
   service_completion_rate: '服务完成率',
   avg_shipping_hours: '平均发货时长',
+  task_on_time_rate: '任务按时完成率',
 };
 
 function getIndustryLabel(industry: string): string {
@@ -139,14 +140,22 @@ export default function CasesPage() {
       title: '方案名称',
       dataIndex: 'plan_name',
       key: 'plan_name',
-      render: (planName: string) => <span className='font-medium text-white'>{planName || '未命名方案'}</span>,
+      render: (planName: string) => <span className='font-medium text-[#303133]'>{planName || '未命名方案'}</span>,
     },
     {
       title: '行业',
       dataIndex: 'industry',
       key: 'industry',
       width: 110,
-      render: (industry: string) => <Tag color='blue'>{getIndustryLabel(industry || 'general')}</Tag>,
+      render: (industry: string) => {
+        const getBackgroundColor = () => 'rgba(24, 144, 255, 0.2)';
+        const getTextColor = () => '#1890ff';
+        return (
+          <Tag style={{ backgroundColor: getBackgroundColor(), color: getTextColor(), border: 'none' }}>
+            {getIndustryLabel(industry || 'general')}
+          </Tag>
+        );
+      },
     },
     {
       title: '目标指标',
@@ -158,14 +167,32 @@ export default function CasesPage() {
         if (!indicators.length) {
           return <span className='text-gray-500 text-sm'>未记录</span>;
         }
+        const getBackgroundColor = (color: string) => {
+          switch (color) {
+            case 'purple': return 'rgba(120, 69, 193, 0.2)';
+            case 'default': return 'rgba(0, 0, 0, 0.2)';
+            default: return 'rgba(120, 69, 193, 0.2)';
+          }
+        };
+        const getTextColor = (color: string) => {
+          switch (color) {
+            case 'purple': return '#7845c1';
+            case 'default': return '#000000';
+            default: return '#7845c1';
+          }
+        };
         return (
           <div className='flex flex-wrap gap-1'>
             {indicators.slice(0, 3).map((code) => (
-              <Tag key={code} color='purple'>
+              <Tag key={code} style={{ backgroundColor: getBackgroundColor('purple'), color: getTextColor('purple'), border: 'none' }}>
                 {getIndicatorLabel(code)}
               </Tag>
             ))}
-            {indicators.length > 3 && <Tag color='default'>+{indicators.length - 3}</Tag>}
+            {indicators.length > 3 && (
+              <Tag style={{ backgroundColor: getBackgroundColor('default'), color: getTextColor('default'), border: 'none' }}>
+                +{indicators.length - 3}
+              </Tag>
+            )}
           </div>
         );
       },
@@ -222,18 +249,18 @@ export default function CasesPage() {
     <div className='space-y-6'>
       <div className='flex justify-between items-center'>
         <div>
-          <h1 className='text-2xl font-bold text-white flex items-center gap-3'>
-            <span className='w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20'>
+          {/* <h1 className='text-2xl font-bold text-[#303133] flex items-center gap-3'>
+            <span className='w-10 h-10 text-white rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20'>
               <BookOutlined />
             </span>
             案例库
-          </h1>
-          <p className='text-gray-400 mt-2 text-sm'>
+          </h1> */}
+          <p className='text-[#303133] mt-2 text-sm'>
             浏览效果追踪沉淀下来的真实案例与指标结果
           </p>
         </div>
         <div className='flex gap-3'>
-          <Button icon={<FilterOutlined />} onClick={() => setShowFilters(!showFilters)}>
+          <Button icon={<FilterOutlined />} style={{ backgroundColor: '#ffffff', color: '#000000', border: '1px solid #d9d9d9' }} onClick={() => setShowFilters(!showFilters)}>
             {showFilters ? '收起筛选' : '展开筛选'}
           </Button>
         </div>
@@ -276,7 +303,7 @@ export default function CasesPage() {
               />
             </Col>
             <Col span={4} className='flex gap-2'>
-              <Button onClick={resetFilters}>重置</Button>
+              <Button onClick={resetFilters} style={{ backgroundColor: '#ffffff', color: '#000000', border: '1px solid #d9d9d9' }}>重置</Button>
               <Button type='primary' icon={<SearchOutlined />} onClick={() => refetch()}>
                 搜索
               </Button>

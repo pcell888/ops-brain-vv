@@ -103,6 +103,19 @@ async def _build_running_item(thread_id: str) -> dict | None:
     }
 
 
+def _extract_error_message(values: dict, diagnosis_id: str) -> str:
+    """从状态值/缓存中提取失败消息，兜底返回通用文案。"""
+    cached = progress_cache.get(diagnosis_id) or {}
+    cached_message = str(cached.get("message") or "").strip()
+    if cached_message:
+        return cached_message
+    msgs = values.get("progress_messages") or []
+    for m in reversed(msgs if isinstance(msgs, list) else []):
+        if isinstance(m, dict) and m.get("content"):
+            return str(m["content"])
+    return "诊断执行失败"
+
+
 # ── /diagnosis/list ─────────────────────────────────────────────
 
 
@@ -190,7 +203,7 @@ async def compat_diagnosis_list(
                     report_ready = True
                     health_score_val = report.get("health_score")
                     anomaly_count = len(report.get("anomalies") or [])
-                elif is_task_running or state.next:
+                elif is_task_running:
                     status = "running"
                     msgs = values.get("progress_messages") or []
                     if msgs:
@@ -203,14 +216,14 @@ async def compat_diagnosis_list(
                     else:
                         message = "诊断执行中..."
                         progress = 0
+                elif state.next:
+                    status = "failed"
+                    error_message = _extract_error_message(values, thread_id)
+                    message = error_message
                 else:
                     status = "failed"
-                    msgs = values.get("progress_messages") or []
-                    for m in reversed(msgs):
-                        if isinstance(m, dict) and m.get("content"):
-                            error_message = str(m["content"])
-                            message = error_message
-                            break
+                    error_message = _extract_error_message(values, thread_id)
+                    message = error_message
             except Exception:
                 if is_task_running:
                     status = "running"
@@ -573,6 +586,15 @@ async def compat_diagnosis_status(diagnosis_id: str):
         }
 
     if state and state.next:
+        if not is_running:
+            err = _extract_error_message(values if isinstance(values, dict) else {}, diagnosis_id)
+            return {
+                "diagnosis_id": diagnosis_id,
+                "status": "failed",
+                "progress": 0,
+                "message": err,
+                "health_score": None,
+            }
         msgs = values.get("progress_messages") or [] if isinstance(values, dict) else []
         msg = "诊断执行中..."
         progress = 0
@@ -592,11 +614,12 @@ async def compat_diagnosis_status(diagnosis_id: str):
         }
 
     if task is not None and task.done():
+        err = _extract_error_message(values if isinstance(values, dict) else {}, diagnosis_id)
         return {
             "diagnosis_id": diagnosis_id,
             "status": "failed",
             "progress": 0,
-            "message": "诊断执行失败",
+            "message": err,
             "health_score": None,
         }
 

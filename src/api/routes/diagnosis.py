@@ -175,9 +175,27 @@ async def _query_drill_data_from_wlwq(
     try:
         data = await _biz.get(enterprise_id, endpoint, params)
     except BizAPIError as e:
-        raise HTTPException(status_code=502, detail=f"wlwq接口调用失败: {e.message}") from e
+        logger.error(
+            "指标钻取调用业务接口失败: metric=%s enterprise_id=%s endpoint=%s status=%s url=%s error=%s",
+            metric_code,
+            enterprise_id,
+            endpoint,
+            e.status_code,
+            e.url,
+            e.message,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=502, detail="调用业务侧接口失败，请稍后重试") from e
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"wlwq接口调用异常: {str(e)}") from e
+        logger.error(
+            "指标钻取调用业务接口异常: metric=%s enterprise_id=%s endpoint=%s error=%s",
+            metric_code,
+            enterprise_id,
+            endpoint,
+            str(e),
+            exc_info=True,
+        )
+        raise HTTPException(status_code=502, detail="调用业务侧接口异常，请稍后重试") from e
 
     raw_items = data.get("list") if isinstance(data, dict) else None
     if raw_items is None and isinstance(data, dict):
@@ -342,6 +360,11 @@ async def _run_diagnosis_with_stream(
         return
     except Exception as e:
         logger.error("诊断流程异常: %s", e, exc_info=True)
+        progress_cache[thread_id] = {
+            "message": f"诊断流程出错: {str(e)}",
+            "percent": 0,
+            "timestamp": datetime.now(CN_TZ).isoformat(),
+        }
         await manager.send_progress(
             thread_id,
             {
@@ -426,7 +449,6 @@ async def _create_diagnosis_task(
 
         def _on_done(_):
             running_tasks.pop(thread_id, None)
-            progress_cache.pop(thread_id, None)
             unregister_thread(thread_id)
 
         task.add_done_callback(_on_done)

@@ -161,7 +161,7 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
   const { currentEnterprise } = useAppStore();
   const enterpriseId = currentEnterprise?.id || null;
-  const { connected: wsConnected } = useWebSocket(enterpriseId);
+  useWebSocket(enterpriseId);
   const { tasks: diagnosisTasks } = useDiagnosisTaskStatus(enterpriseId);
 
   const { data: enterpriseDetail } = useQuery({
@@ -600,6 +600,9 @@ export default function DashboardPage() {
   const DiagnosisProgressBar = () => {
     if (!isDiagnosing && !isCancelling) return null;
     const cancelLoading = cancelDiagnosis.isPending || isCancelling;
+    const stageLabel = currentStage?.label || '诊断任务执行中';
+    const detailMessage = isCancelling ? '后台正在停止任务，请稍候' : (runningTask?.message || '处理中...');
+    const shouldShowDetailMessage = detailMessage.trim() !== stageLabel.trim();
 
     return (
       <div className="bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-blue-500/10 border border-blue-500/30 rounded-xl p-5 mb-6 animate-pulse-slow">
@@ -610,14 +613,11 @@ export default function DashboardPage() {
             </div>
             <div>
               <span className="text-[#303133] font-semibold text-base">
-                {isCancelling ? '取消中…' : (currentStage?.label || '诊断任务执行中')}
+                {isCancelling ? '取消中…' : stageLabel}
               </span>
-              <p className="text-[#303133] text-sm mt-0.5 max-w-md truncate">
-                {isCancelling ? '后台正在停止任务，请稍候' : (runningTask?.message || '处理中...')}
-              </p>
-              {!isCancelling && (
-                <p className="text-[#303133] text-xs mt-1">
-                  {wsConnected ? '实时通道已连接' : '实时通道未连接，使用轮询兜底'}
+              {shouldShowDetailMessage && (
+                <p className="text-[#303133] text-sm mt-0.5 max-w-md truncate">
+                  {detailMessage}
                 </p>
               )}
             </div>
@@ -651,12 +651,6 @@ export default function DashboardPage() {
           showInfo={false}
           size={{ height: 8 }}
         />
-        {report && (
-          <p className="text-muted text-xs mt-3 flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-muted" />
-            下方显示的是上次诊断结果，新结果将在完成后自动更新
-          </p>
-        )}
       </div>
     );
   };

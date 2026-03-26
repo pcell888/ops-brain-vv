@@ -1,5 +1,6 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig } from 'axios';
+import { message } from 'antd';
 
 /**
  * 说明：
@@ -25,6 +26,19 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 }) as DataAxiosInstance;
+
+let lastErrorToastAt = 0;
+let lastErrorToastText = '';
+
+function showApiErrorToast(text: string) {
+  if (typeof window === 'undefined') return;
+  const now = Date.now();
+  // 避免轮询接口在短时间内重复刷屏
+  if (text === lastErrorToastText && now - lastErrorToastAt < 2000) return;
+  lastErrorToastAt = now;
+  lastErrorToastText = text;
+  message.error(text);
+}
 
 // 请求拦截器
 api.interceptors.request.use(
@@ -65,10 +79,19 @@ api.interceptors.response.use(
           window.location.href = '/login';
         }
       }
-      
-      return Promise.reject(new Error(data?.message || data?.detail || '请求失败'));
+
+      const detail = data?.message || data?.detail || '';
+      const userMessage =
+        status >= 500
+          ? (detail || '服务暂时不可用，请稍后重试')
+          : status >= 400
+            ? (detail || '请求失败，请检查后重试')
+            : '请求失败';
+      showApiErrorToast(userMessage);
+      return Promise.reject(new Error(userMessage));
     }
-    
+
+    showApiErrorToast('网络异常，请检查连接后重试');
     return Promise.reject(error);
   }
 );

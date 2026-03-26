@@ -84,6 +84,7 @@ const indicatorNameMap: Record<string, string> = {
   avg_customer_lifetime_value: '客户终身价值',
   service_completion_rate: '服务完成率',
   avg_shipping_hours: '平均发货时长',
+  task_on_time_rate: '任务按时完成率',
 };
 
 function getIndustryLabel(industry: string): string {
@@ -133,11 +134,11 @@ export default function CaseDetailPage() {
   if (!caseDetail) {
     return (
       <div className='space-y-6'>
-        <Button icon={<ArrowLeftOutlined />} onClick={handleBack}>
+        <Button icon={<ArrowLeftOutlined />} style={{ backgroundColor: '#ffffff', color: '#000000', border: '1px solid #d9d9d9' }} onClick={handleBack}>
           返回
         </Button>
         <div className='flex items-center justify-center h-[50vh]'>
-          <Empty description='案例不存在或已被删除' />
+          <Empty description={<span className='text-[#303133]'>案例不存在或已被删除</span>} />
         </div>
       </div>
     );
@@ -164,19 +165,51 @@ export default function CaseDetailPage() {
     typeof item.before_value === 'number' && typeof item.after_value === 'number'
   ));
 
+  const getTagStyle = (color: string) => {
+    const getBackgroundColor = (color: string) => {
+      switch (color) {
+        case 'blue': return 'rgba(24, 144, 255, 0.2)';
+        case 'purple': return 'rgba(120, 69, 193, 0.2)';
+        case 'cyan': return 'rgba(0, 176, 255, 0.2)';
+        case 'green': return 'rgba(82, 196, 26, 0.2)';
+        case 'red': return 'rgba(245, 34, 45, 0.2)';
+        case 'gold': return 'rgba(250, 173, 20, 0.2)';
+        case 'geekblue': return 'rgba(51, 102, 255, 0.2)';
+        default: return 'rgba(0, 0, 0, 0.2)';
+      }
+    };
+    const getTextColor = (color: string) => {
+      switch (color) {
+        case 'blue': return '#1890ff';
+        case 'purple': return '#7845c1';
+        case 'cyan': return '#00b0ff';
+        case 'green': return '#52c41a';
+        case 'red': return '#f5222d';
+        case 'gold': return '#faad14';
+        case 'geekblue': return '#3366ff';
+        default: return '#000000';
+      }
+    };
+    return {
+      backgroundColor: getBackgroundColor(color),
+      color: getTextColor(color),
+      border: 'none'
+    };
+  };
+
   return (
     <div className='space-y-6'>
       <div className='flex justify-between items-center'>
         <div className='flex items-center gap-4'>
-          <Button icon={<ArrowLeftOutlined />} onClick={handleBack} />
+          <Button icon={<ArrowLeftOutlined />} style={{ backgroundColor: '#ffffff', color: '#000000', border: '1px solid #d9d9d9' }} onClick={handleBack} />
           <div>
-            <h1 className='text-2xl font-bold text-white flex items-center gap-3'>
-              <span className='w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20'>
+            <h1 className='text-2xl font-bold text-[#303133] flex items-center gap-3'>
+              <span className='w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20 text-white'>
                 <BookOutlined />
               </span>
               案例详情
             </h1>
-            <p className='text-gray-400 mt-1 text-sm'>{caseDetail.plan_name || '未命名方案'}</p>
+            <p className='text-[#303133] mt-1 text-sm'>{caseDetail.plan_name || '未命名方案'}</p>
           </div>
         </div>
       </div>
@@ -197,7 +230,7 @@ export default function CaseDetailPage() {
             <Statistic
               title='所属行业'
               value={getIndustryLabel(caseDetail.industry || 'general')}
-              valueStyle={{ fontSize: 18, color: '#fff' }}
+              valueStyle={{ fontSize: 18, color: '#303133' }}
             />
           </Col>
           <Col span={6}>
@@ -205,28 +238,28 @@ export default function CaseDetailPage() {
               title='目标指标数'
               value={targetIndicators.length}
               suffix='项'
-              valueStyle={{ fontSize: 18, color: '#fff' }}
+              valueStyle={{ fontSize: 18, color: '#303133' }}
             />
           </Col>
           <Col span={6}>
             <Statistic
               title='方案步骤数'
               value={planSteps.length || '-'}
-              valueStyle={{ fontSize: 18, color: '#fff' }}
+              valueStyle={{ fontSize: 18, color: '#303133' }}
             />
           </Col>
         </Row>
       </Card>
 
       <Card
-        title={(
-          <div className='flex items-center gap-2'>
-            <span className='w-6 h-6 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 text-sm'>
-              基
-            </span>
-            基本信息
-          </div>
-        )}
+        title={( 
+            <div className='flex items-center gap-2'>
+              <span className='w-6 h-6 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 text-sm'>
+                基
+              </span>
+              <span className='text-[#303133]'>基本信息</span>
+            </div>
+          )}
       >
         <Descriptions bordered column={2} size='small'>
           <Descriptions.Item label='方案名称' span={2}>
@@ -235,7 +268,7 @@ export default function CaseDetailPage() {
           <Descriptions.Item label='案例ID'>{caseDetail.case_id}</Descriptions.Item>
           <Descriptions.Item label='创建时间'>{dayjs(caseDetail.created_at).format('YYYY-MM-DD HH:mm')}</Descriptions.Item>
           <Descriptions.Item label='行业'>
-            <Tag color='blue'>{getIndustryLabel(caseDetail.industry || 'general')}</Tag>
+            <Tag style={getTagStyle('blue')}>{getIndustryLabel(caseDetail.industry || 'general')}</Tag>
           </Descriptions.Item>
           <Descriptions.Item label='方案ID'>{caseDetail.plan_id || '-'}</Descriptions.Item>
           <Descriptions.Item label='达成率'>
@@ -246,7 +279,7 @@ export default function CaseDetailPage() {
             <div className='flex flex-wrap gap-2'>
               {targetIndicators.length > 0
                 ? targetIndicators.map((code) => (
-                    <Tag key={code} color='purple'>
+                    <Tag key={code} style={getTagStyle('purple')}>
                       {getIndicatorLabel(code)}
                     </Tag>
                   ))
@@ -259,42 +292,42 @@ export default function CaseDetailPage() {
       <Row gutter={16}>
         <Col span={12}>
           <Card
-            title={(
-              <div className='flex items-center gap-2'>
-                <span className='w-6 h-6 rounded-lg bg-rose-500/10 flex items-center justify-center text-rose-400 text-sm'>
-                  述
-                </span>
-                方案说明
-              </div>
-            )}
+            title={( 
+            <div className='flex items-center gap-2'>
+              <span className='w-6 h-6 rounded-lg bg-rose-500/10 flex items-center justify-center text-rose-400 text-sm'>
+                述
+              </span>
+              <span className='text-[#303133]'>方案说明</span>
+            </div>
+          )}
             className='h-full'
           >
-            <p className='text-gray-300 leading-relaxed'>{solutionSummary}</p>
+            <p className='text-[#303133] leading-relaxed'>{solutionSummary}</p>
           </Card>
         </Col>
         <Col span={12}>
           <Card
-            title={(
-              <div className='flex items-center gap-2'>
-                <span className='w-6 h-6 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-sm'>
-                  执
-                </span>
-                执行信息
-              </div>
-            )}
+            title={( 
+            <div className='flex items-center gap-2'>
+              <span className='w-6 h-6 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-sm'>
+                执
+              </span>
+              <span className='text-[#303133]'>执行信息</span>
+            </div>
+          )}
             className='h-full'
           >
-            <div className='space-y-3 text-gray-300'>
+            <div className='space-y-3 text-[#303133]'>
               <div>
                 <div className='text-gray-400 text-xs mb-1'>实施步骤</div>
-                <div>{planSteps.length > 0 ? `${planSteps.length} 个步骤` : '暂无步骤信息'}</div>
+                <div className='text-[#303133]'>{planSteps.length > 0 ? `${planSteps.length} 个步骤` : '暂无步骤信息'}</div>
               </div>
               <div>
                 <div className='text-gray-400 text-xs mb-1'>自动动作</div>
                 <div className='flex flex-wrap gap-2'>
                   {autoActions.length > 0
                     ? autoActions.map((action) => (
-                        <Tag key={action} color='cyan'>
+                        <Tag key={action} style={getTagStyle('cyan')}>
                           {action}
                         </Tag>
                       ))
@@ -308,12 +341,12 @@ export default function CaseDetailPage() {
 
       {keyMetrics.length > 0 && (
         <Card
-          title={(
+          title={( 
             <div className='flex items-center gap-2'>
               <span className='w-6 h-6 rounded-lg bg-cyan-500/10 flex items-center justify-center text-cyan-400 text-sm'>
                 <RiseOutlined />
               </span>
-              关键指标改善
+              <span className='text-[#303133]'>关键指标改善</span>
             </div>
           )}
         >
@@ -324,13 +357,13 @@ export default function CaseDetailPage() {
               const deltaText = `${changePct > 0 ? '+' : ''}${changePct.toFixed(1)}%`;
               return (
                 <div key={metric.indicator_code} className='p-4 bg-gray-800/50 rounded-lg text-center'>
-                  <div className='text-gray-400 text-sm mb-2'>{getIndicatorLabel(metric.indicator_code)}</div>
+                  <div className='text-[#303133] text-sm mb-2'>{getIndicatorLabel(metric.indicator_code)}</div>
                   <div className='flex justify-center items-center gap-2'>
-                    <span className='text-gray-500'>{metric.before_value}</span>
-                    <span className='text-gray-600'>→</span>
-                    <span className='text-white font-bold'>{metric.after_value}</span>
+                    <span className='text-[#303133]'>{metric.before_value}</span>
+                    <span className='text-[#303133]'>→</span>
+                    <span className='text-[#303133] font-bold'>{metric.after_value}</span>
                   </div>
-                  <Tag color={isImproved ? 'green' : changePct === 0 ? 'default' : 'red'} className='!mt-2'>
+                  <Tag style={getTagStyle(isImproved ? 'green' : changePct === 0 ? 'default' : 'red')} className='!mt-2'>
                     {deltaText}
                   </Tag>
                 </div>
@@ -342,12 +375,12 @@ export default function CaseDetailPage() {
 
       {planSteps.length > 0 && (
         <Card
-          title={(
+          title={( 
             <div className='flex items-center gap-2'>
               <span className='w-6 h-6 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400 text-sm'>
                 步
               </span>
-              实施步骤
+              <span className='text-[#303133]'>实施步骤</span>
             </div>
           )}
         >
@@ -355,17 +388,17 @@ export default function CaseDetailPage() {
             items={planSteps.map((step, index) => ({
               color: 'blue',
               children: (
-                <div className='p-3 bg-gray-800/30 rounded-lg space-y-3'>
+                <div className='p-3 rounded-lg space-y-3'>
                   <div className='flex flex-wrap gap-2 items-center'>
-                    <span className='text-white font-medium'>步骤 {step.step || index + 1}</span>
-                    {step.owner_dept && <Tag color='gold'>{step.owner_dept}</Tag>}
-                    {step.timeline && <Tag color='geekblue'>{step.timeline}</Tag>}
+                    <span className='text-[#303133] font-medium'>步骤 {step.step || index + 1}</span>
+                    {step.owner_dept && <Tag style={getTagStyle('gold')}>{step.owner_dept}</Tag>}
+                    {step.timeline && <Tag style={getTagStyle('geekblue')}>{step.timeline}</Tag>}
                   </div>
-                  {step.action && <div className='text-gray-300 leading-relaxed'>{step.action}</div>}
+                  {step.action && <div className='text-[#303133] leading-relaxed'>{step.action}</div>}
                   {step.implementation_steps && step.implementation_steps.length > 0 && (
                     <ul className='space-y-2'>
                       {step.implementation_steps.map((item) => (
-                        <li key={item} className='flex items-start gap-2 text-gray-400'>
+                        <li key={item} className='flex items-start gap-2 text-[#303133]'>
                           <CheckCircleOutlined className='text-emerald-400 mt-0.5' />
                           <span>{item}</span>
                         </li>
@@ -381,18 +414,18 @@ export default function CaseDetailPage() {
 
       {expectedImprovements.length > 0 && (
         <Card
-          title={(
+          title={( 
             <div className='flex items-center gap-2'>
               <span className='w-6 h-6 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400 text-sm'>
                 <BulbOutlined />
               </span>
-              预期改善
+              <span className='text-[#303133]'>预期改善</span>
             </div>
           )}
         >
           <div className='flex flex-wrap gap-2'>
             {expectedImprovements.map(([code, value]) => (
-              <Tag key={code} color={value >= 0 ? 'green' : 'red'}>
+              <Tag key={code} style={getTagStyle(value >= 0 ? 'green' : 'red')}>
                 {getIndicatorLabel(code)}: {value > 0 ? '+' : ''}{value}
               </Tag>
             ))}
@@ -402,18 +435,18 @@ export default function CaseDetailPage() {
 
       {lessons.length > 0 && (
         <Card
-          title={(
+          title={( 
             <div className='flex items-center gap-2'>
               <span className='w-6 h-6 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400 text-sm'>
                 复
               </span>
-              经验教训
+              <span className='text-[#303133]'>经验教训</span>
             </div>
           )}
         >
           <ul className='space-y-2'>
             {lessons.map((lesson) => (
-              <li key={lesson} className='flex items-start gap-2 text-gray-300'>
+              <li key={lesson} className='flex items-start gap-2 text-[#303133]'>
                 <span className='text-purple-400 mt-0.5'>•</span>
                 <span>{lesson}</span>
               </li>

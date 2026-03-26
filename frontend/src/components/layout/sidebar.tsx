@@ -124,6 +124,8 @@ export function Sidebar() {
   const handleEnterpriseSelect = (enterprise: Enterprise) => {
     setCurrentEnterprise(enterprise);
     setIsModalOpen(false);
+    // 切换企业后自动跳转到dashboard
+    navigate('/dashboard');
   };
 
   // 下拉菜单项
@@ -168,10 +170,10 @@ export function Sidebar() {
               className="bg-gradient-to-br from-cyan-500 to-emerald-500"
               icon={<UserOutlined />}
             />
-            <span className="text-primary font-medium">
+            <span className="font-medium" style={{ color: '#303133' }}>
               {currentEnterprise?.name || '请选择企业'}
             </span>
-            <DownOutlined className="text-secondary text-xs" />
+            <DownOutlined style={{ color: '#303133', fontSize: '12px' }} />
           </Space>
         </Dropdown>
       </header>

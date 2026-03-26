@@ -49,19 +49,26 @@ export function useAnomalyDetail(diagnosisId: string | null, anomalyId: string |
   });
 }
 
-// 获取诊断状态
-export function useDiagnosisStatus(diagnosisId: string | null) {
+// 获取诊断状态（可选运行中轮询，避免切页回来后进度卡住）
+export function useDiagnosisStatus(
+  diagnosisId: string | null,
+  options?: {
+    enabled?: boolean;
+    pollWhenActive?: boolean;
+  }
+) {
+  const enabled = options?.enabled ?? true;
+  const pollWhenActive = options?.pollWhenActive ?? false;
   return useQuery<DiagnosisStatusResponse>({
     queryKey: ['diagnosis', 'status', diagnosisId],
     queryFn: () => diagnosisApi.getStatus(diagnosisId!),
-    enabled: !!diagnosisId,
+    enabled: !!diagnosisId && enabled,
+    refetchOnMount: true,
+    refetchOnWindowFocus: 'always',
     refetchInterval: (query) => {
-      // 如果诊断还在进行中，每2秒轮询一次
-      const data = query.state.data as DiagnosisStatusResponse | undefined;
-      if (data?.status === 'pending' || data?.status === 'running') {
-        return 2000;
-      }
-      return false;
+      if (!pollWhenActive) return false;
+      const s = (query.state.data as DiagnosisStatusResponse | undefined)?.status;
+      return s === 'running' || s === 'pending' ? 2000 : false;
     },
   });
 }
@@ -73,14 +80,6 @@ export function useDiagnosisList(enterpriseId: string | null, skip = 0, limit = 
     queryFn: () => diagnosisApi.list({ enterprise_id: enterpriseId!, skip, limit }),
     enabled: !!enterpriseId,
     staleTime: 0,
-    refetchOnMount: 'always',
-    refetchInterval: (query) => {
-      const items = (query.state.data as DiagnosisListResponse | undefined)?.items;
-      if (items?.some(i => i.status === 'running' || i.status === 'pending')) {
-        return 2000;
-      }
-      return false;
-    },
   });
 }
 
@@ -121,6 +120,11 @@ export function useLatestDiagnosisReport(enterpriseId: string | null) {
   const listQuery = useDiagnosisList(enterpriseId, 0, 1);
   const latestDiagnosis = listQuery.data?.items?.[0];
   const latestDiagnosisId = latestDiagnosis?.diagnosis_id;
+  const latestStatusQuery = useDiagnosisStatus(latestDiagnosisId ?? null, {
+    enabled: !!latestDiagnosisId,
+    pollWhenActive: latestDiagnosis?.status === 'running' || latestDiagnosis?.status === 'pending',
+  });
+  const runtimeStatus = latestStatusQuery.data;
 
   // 报告在 diagnose 落库后即有；整段任务完成前 status 仍为 running（含方案生成中）
   const reportReady =
@@ -132,13 +136,13 @@ export function useLatestDiagnosisReport(enterpriseId: string | null) {
   return {
     ...reportQuery,
     data: reportQuery.data as DiagnosisReport | undefined,
-    isLoading: listQuery.isLoading || (reportReady && reportQuery.isLoading),
+    isLoading: listQuery.isLoading || latestStatusQuery.isLoading || (reportReady && reportQuery.isLoading),
     latestDiagnosisId,
     lastDiagnosisDate: latestDiagnosis?.created_at,
     // 返回最新诊断的状态信息（用于进入页面时获取正在执行的任务状态）
-    latestDiagnosisStatus: latestDiagnosis?.status,
-    latestDiagnosisProgress: latestDiagnosis?.progress,
-    latestDiagnosisMessage: latestDiagnosis?.message,
+    latestDiagnosisStatus: runtimeStatus?.status ?? latestDiagnosis?.status,
+    latestDiagnosisProgress: runtimeStatus?.progress ?? latestDiagnosis?.progress,
+    latestDiagnosisMessage: runtimeStatus?.message ?? latestDiagnosis?.message,
     // 刷新列表的方法
     refetchList: listQuery.refetch,
   };

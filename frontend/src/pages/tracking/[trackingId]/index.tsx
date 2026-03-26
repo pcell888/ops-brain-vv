@@ -46,6 +46,7 @@ const indicatorNameMap: Record<string, string> = {
   avg_customer_lifetime_value: '客单终身价值',
   service_completion_rate: '服务完成率',
   avg_shipping_hours: '平均发货时长',
+  task_on_time_rate: '任务按时完成率',
 };
 
 const indicatorDirectionMap: Record<string, 'higher_is_better' | 'lower_is_better'> = {
@@ -311,13 +312,13 @@ export default function TrackingDetailPage() {
 
   if (!resolvedTrackingId) {
     const description = selectedDiagnosisId
-      ? '当前诊断暂无效果追踪数据，请在执行中产生追踪记录或切换历史诊断'
-      : '暂无效果追踪数据，请先选择历史诊断';
+      ? <span className='text-[#303133]'>当前诊断暂无效果追踪数据，请在执行中产生追踪记录或切换历史诊断</span>
+      : <span className='text-[#303133]'>暂无效果追踪数据，请先选择历史诊断</span>;
     return <Empty description={description} />;
   }
 
   if (isError || !summary) {
-    return <Empty description='追踪记录不存在或无法加载' />;
+    return <Empty description={<span className='text-[#303133]'>追踪记录不存在或无法加载</span>} />;
   }
 
   const statusText = statusTextMap[summary.status] || summary.status || '-';
@@ -376,12 +377,12 @@ export default function TrackingDetailPage() {
     <div className='space-y-5'>
       <div className='flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between'>
         <div>
-          <h1 className='flex items-center gap-3 text-2xl font-bold text-[#303133] text-primary'>
+          {/* <h1 className='flex items-center gap-3 text-2xl font-bold text-[#303133] text-primary'>
             <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 text-lg shadow-lg shadow-purple-500/20 text-[#fff]'>
               <LineChartOutlined />
             </span>
             效果追踪
-          </h1>
+          </h1> */}
           <p className='mt-2 text-sm text-secondary text-[#303133]'>追踪状态、快照趋势与效果分析总览</p>
         </div>
         <div className='flex flex-col items-stretch gap-3 lg:items-end'>
@@ -410,7 +411,7 @@ export default function TrackingDetailPage() {
                   onClick={handleSnapshot}
                   loading={takeSnapshot.isPending}
                   disabled={!canOperate}
-                  style={{ color: !canOperate ? '#303133' : undefined }}
+                  style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}
                 >
                   采集快照
                 </Button>

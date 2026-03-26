@@ -107,6 +107,7 @@ const METRIC_DIRECTION: Record<string, 'higher_is_better' | 'lower_is_better'> =
   avg_customer_lifetime_value: 'higher_is_better',
   service_completion_rate: 'higher_is_better',
   avg_shipping_hours: 'lower_is_better',
+  task_on_time_rate: 'higher_is_better',
 };
 
 /** 当前值相对行业均值是否处于「不利」一侧（低于均值且越高越好，或高于均值且越低越好） */
