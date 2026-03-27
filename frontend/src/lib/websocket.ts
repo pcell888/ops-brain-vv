@@ -12,7 +12,7 @@ export interface TaskStatusMessage {
   status: TaskStatus;
   progress: number;
   message: string | null;
-  data: Record<string, unknown> | null;
+  data: (Record<string, unknown> & { level?: 'info' | 'warning' | 'error' }) | null;
 }
 
 export interface HeartbeatMessage {

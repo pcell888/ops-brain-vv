@@ -79,14 +79,19 @@ export default function DrillDownPage() {
   
   // 动态生成表格列
   const generateColumns = (): ColumnsType<Record<string, unknown>> => {
-    if (!drillData?.data || drillData.data.length === 0) {
+    const columns: ColumnsType<Record<string, unknown>> = [];
+    let keys: string[] = [];
+    
+    if (drillData?.field_labels && Object.keys(drillData.field_labels).length > 0) {
+      keys = Object.keys(drillData.field_labels);
+    } else if (drillData?.data && drillData.data.length > 0) {
+      const sampleRow = drillData.data[0] as Record<string, unknown>;
+      keys = Object.keys(sampleRow);
+    } else {
       return [];
     }
     
-    const sampleRow = drillData.data[0] as Record<string, unknown>;
-    const columns: ColumnsType<Record<string, unknown>> = [];
-    
-    Object.keys(sampleRow).forEach((key) => {
+    keys.forEach((key) => {
       const column: ColumnsType<Record<string, unknown>>[0] = {
         title: getColumnTitle(key),
         dataIndex: key,
@@ -111,7 +116,7 @@ export default function DrillDownPage() {
         column.width = 100;
       } else if (key.includes('_id') || key === 'id') {
         column.render = (id: string) => (
-          <span className="font-mono text-xs text-gray-400">{id?.substring(0, 12)}...</span>
+          <span className="font-mono text-xs text-gray-400">{String(id ?? '').substring(0, 12)}...</span>
         );
         column.width = 140;
       }
@@ -245,14 +250,15 @@ export default function DrillDownPage() {
           </div>
         }
       >
-        {drillData?.data && drillData.data.length > 0 ? (
+        {(drillData?.field_labels && Object.keys(drillData.field_labels).length > 0) || (drillData?.data && drillData.data.length > 0) ? (
           <Table
             columns={generateColumns()}
-            dataSource={drillData.data.map((item: Record<string, unknown>, index: number) => ({ ...item, key: index }))}
+            dataSource={(drillData.data || []).map((item: Record<string, unknown>, index: number) => ({ ...item, key: index }))}
+            locale={{ emptyText: <Empty description="暂无钻取数据" /> }}
             pagination={{
               current: currentPage,
               pageSize: pageSize,
-              total: drillData.total,
+              total: drillData.total || 0,
               showTotal: (total) => `共 ${total} 条记录`,
               showSizeChanger: true,
               pageSizeOptions: ['10', '20', '50', '100'],

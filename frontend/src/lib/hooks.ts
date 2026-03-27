@@ -29,11 +29,11 @@ import type {
 // ============ 诊断模块 Hooks ============
 
 // 获取诊断报告（不做缓存，始终用最新接口结果）
-export function useDiagnosisReport(diagnosisId: string | null) {
+export function useDiagnosisReport(diagnosisId: string | null, pauseFetching = false) {
   return useQuery<DiagnosisReport>({
     queryKey: ['diagnosis', 'report', diagnosisId],
     queryFn: () => diagnosisApi.getReport(diagnosisId!),
-    enabled: !!diagnosisId,
+    enabled: !!diagnosisId && !pauseFetching,
     staleTime: 0,
     gcTime: 0,
     refetchOnMount: 'always',
@@ -74,11 +74,11 @@ export function useDiagnosisStatus(
 }
 
 // 获取诊断历史列表
-export function useDiagnosisList(enterpriseId: string | null, skip = 0, limit = 20) {
+export function useDiagnosisList(enterpriseId: string | null, skip = 0, limit = 20, pauseFetching = false) {
   return useQuery<DiagnosisListResponse>({
     queryKey: ['diagnosis', 'list', enterpriseId, skip, limit],
     queryFn: () => diagnosisApi.list({ enterprise_id: enterpriseId!, skip, limit }),
-    enabled: !!enterpriseId,
+    enabled: !!enterpriseId && !pauseFetching,
     staleTime: 0,
   });
 }
@@ -115,22 +115,28 @@ export function useDiagnosisSelection(enterpriseId: string | null) {
 }
 
 // 获取最新诊断报告
-export function useLatestDiagnosisReport(enterpriseId: string | null) {
+export function useLatestDiagnosisReport(enterpriseId: string | null, options?: { pauseFetching?: boolean }) {
+  const pause = options?.pauseFetching ?? false;
+  
   // 先获取列表，找到最新的诊断
-  const listQuery = useDiagnosisList(enterpriseId, 0, 1);
+  const listQuery = useDiagnosisList(enterpriseId, 0, 1, pause);
   const latestDiagnosis = listQuery.data?.items?.[0];
   const latestDiagnosisId = latestDiagnosis?.diagnosis_id;
   const latestStatusQuery = useDiagnosisStatus(latestDiagnosisId ?? null, {
-    enabled: !!latestDiagnosisId,
-    pollWhenActive: latestDiagnosis?.status === 'running' || latestDiagnosis?.status === 'pending',
+    enabled: !!latestDiagnosisId && !pause,
+    pollWhenActive: !pause && (latestDiagnosis?.status === 'running' || latestDiagnosis?.status === 'pending'),
   });
   const runtimeStatus = latestStatusQuery.data;
 
-  // 报告在 diagnose 落库后即有；整段任务完成前 status 仍为 running（含方案生成中）
+  // 列表与 /status 可能短暂不一致；failed 时绝不拉取报告，避免误用上一次成功的报告键或旧数据
+  const listStatus = latestDiagnosis?.status;
+  const effectiveStatus = runtimeStatus?.status ?? listStatus;
   const reportReady =
-    latestDiagnosis?.status === 'completed' || latestDiagnosis?.report_ready === true;
+    effectiveStatus !== 'failed' &&
+    (listStatus === 'completed' || latestDiagnosis?.report_ready === true);
   const reportQuery = useDiagnosisReport(
-    reportReady && latestDiagnosisId ? latestDiagnosisId : null
+    reportReady && latestDiagnosisId ? latestDiagnosisId : null,
+    pause
   );
 
   return {
@@ -879,10 +885,11 @@ export function useWebSocket(enterpriseId: string | null) {
 
       // 根据任务类型刷新对应的查询
       if (message.task_type === 'diagnosis') {
-        if (message.status === 'completed' || message.status === 'failed') {
-          // 诊断完成或失败，刷新列表
-          queryClient.invalidateQueries({ 
-            queryKey: ['diagnosis', 'list', message.enterprise_id] 
+        // 仅完成后刷新列表。failed 时不在这里 invalidate，避免先于失败回调触发 refetch，
+        // 与「暂停拉数 / 失败定格」竞态；失败后的列表刷新由页面 onFailed 等路径触发。
+        if (message.status === 'completed') {
+          queryClient.invalidateQueries({
+            queryKey: ['diagnosis', 'list', message.enterprise_id],
           });
         }
       } else if (message.task_type === 'solution') {
@@ -940,15 +947,19 @@ export function useDiagnosisTaskStatus(
     onFailed?: (taskId: string, error: string) => void;
     /** 任务被用户取消时（WebSocket 收到 failed + message 已取消）*/
     onCancelled?: (taskId: string) => void;
+    /** 采集/诊断过程中部分失败时（level=warning）*/
+    onWarning?: (taskId: string, message: string) => void;
   }
 ) {
   const [tasks, setTasks] = useState<Record<string, TaskStatusMessage>>({});
+  const [warnings, setWarnings] = useState<string[]>([]);
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
   useEffect(() => {
     if (!enterpriseId) return;
     setTasks({}); // 切换企业时清空，避免展示其它企业的任务
+    setWarnings([]);
 
     const unsubscribe = wsManager.onMessage((message: TaskStatusMessage) => {
       if (message.task_type !== 'diagnosis' || message.enterprise_id !== enterpriseId) {
@@ -959,6 +970,14 @@ export function useDiagnosisTaskStatus(
         ...prev,
         [message.task_id]: message,
       }));
+
+      // 仅展示 warning（部分可恢复问题）。error 级多为致命失败，由最终 failed 态与服务端 message 统一呈现，避免进度区内嵌长技术细节。
+      const level = message.data?.level as string | undefined;
+      if (level === 'warning') {
+        const warnMsg = message.message || '未知警告';
+        setWarnings(prev => [...prev, warnMsg]);
+        optionsRef.current?.onWarning?.(message.task_id, warnMsg);
+      }
 
       // 调用回调
       switch (message.status) {
@@ -1008,6 +1027,8 @@ export function useDiagnosisTaskStatus(
     runningTasks,
     latestTask,
     hasRunningTask: runningTasks.length > 0,
+    /** 诊断执行过程中的警告消息列表（如部分数据采集失败）*/
+    warnings,
   };
 }
 
