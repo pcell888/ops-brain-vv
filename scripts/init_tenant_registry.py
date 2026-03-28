@@ -1,4 +1,4 @@
-"""在 PostgreSQL 中创建 tenant_registry 表并插入平台/本地 wlwq 租户（若表已存在则跳过）。"""
+"""在 PostgreSQL 中创建 tenant_registry 表并插入本地 wlwq 租户；中台配置见 .env（PLATFORM_CENTER_API_*）。"""
 import asyncio
 import os
 import sys
@@ -42,12 +42,6 @@ CREATE TABLE IF NOT EXISTS tenant_registry (
 );
 """
 
-SQL_INSERT_PLATFORM = """
-INSERT INTO tenant_registry (tenant_id, tenant_name, api_base_url, auth_type, auth_credential, status)
-VALUES ('__platform__', '平台中台', 'https://platform-center.wlwq.com/api', 'token', 'mock', 1)
-ON CONFLICT (tenant_id) DO NOTHING;
-"""
-
 SQL_INSERT_WLWQ = """
 INSERT INTO tenant_registry (tenant_id, tenant_name, api_base_url, auth_type, auth_credential, industry_code, status)
 VALUES ('wlwq_local', 'wlwq 本地模拟', 'http://localhost:8200', 'token', 'mock', 'retail_general', 1)
@@ -76,7 +70,10 @@ async def main():
     async with await AsyncConnection.connect(conninfo) as conn:
         async with conn.cursor() as cur:
             await cur.execute(SQL_CREATE)
-            await cur.execute(SQL_INSERT_PLATFORM)
+            await cur.execute(
+                "ALTER TABLE tenant_registry ADD COLUMN IF NOT EXISTS industry_name VARCHAR(128)"
+            )
+            await cur.execute("DELETE FROM tenant_registry WHERE tenant_id = '__platform__'")
             await cur.execute(SQL_INSERT_WLWQ)
             await cur.execute(SQL_AI_DIAGNOSIS_REPORT)
         await conn.commit()

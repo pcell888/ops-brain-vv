@@ -82,14 +82,15 @@ export default function SolutionDetailPage() {
   };
 
   const waitForExecutionPlanReady = async (planId: string) => {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 60; i++) {
       try {
         await executionApi.getPlanSummary(planId);
         return;
       } catch {
-        await new Promise((r) => setTimeout(r, 400));
+        await new Promise((r) => setTimeout(r, 500));
       }
     }
+    throw new Error('执行计划创建超时，请稍后刷新页面查看');
   };
 
   const handleAdoptDetailWithConfirm = () => {
@@ -106,8 +107,13 @@ export default function SolutionDetailPage() {
           await adoptSolution.mutateAsync(sid);
           message.success('方案已采纳');
           await refetch();
-          await waitForExecutionPlanReady(sid);
-          navigate(`/execution/${encodeURIComponent(sid)}#execution-task-list`);
+          try {
+            await waitForExecutionPlanReady(sid);
+            navigate(`/execution/${encodeURIComponent(sid)}#execution-task-list`);
+          } catch (e: any) {
+            message.warning(e?.message || '执行计划创建中，请稍后在执行列表中查看');
+            navigate(`/execution/${encodeURIComponent(sid)}#execution-task-list`);
+          }
         } catch {
           message.error('采纳失败');
         }

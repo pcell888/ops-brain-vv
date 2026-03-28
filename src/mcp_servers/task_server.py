@@ -34,6 +34,13 @@ async def create_execution_tasks(
     [{"task_name", "description", "assignee_user_id", "assignee_dept_id",
       "deadline", "deadline_at", "priority", "related_resources"}]
     """
+    logger.info(
+        "Tool called: create_execution_tasks tenant=%s store=%s plan_id=%s task_count=%d",
+        tenant_id,
+        store_id,
+        plan_id,
+        len(tasks),
+    )
     sid = effective_store_id_for_biz(tenant_id, store_id)
     payload = {"storeId": sid, "planId": plan_id, "tasks": tasks}
     data = await biz.post(tenant_id, "/ai-diagnosis/exec-task/batch-create", payload)
@@ -55,6 +62,13 @@ async def create_approval_flow(
     approver_user_id: int,
 ) -> dict:
     """发起方案审批流程（复用现有OA审批）。"""
+    logger.info(
+        "Tool called: create_approval_flow tenant=%s store=%s plan_id=%s approver=%s",
+        tenant_id,
+        store_id,
+        plan_id,
+        approver_user_id,
+    )
     sid = effective_store_id_for_biz(tenant_id, store_id)
     body = {
         "storeId": sid,
@@ -77,6 +91,7 @@ async def update_task_status(
     remark: str | None = None,
 ) -> dict:
     """更新任务执行状态。status: pending | in_progress | completed | paused | cancelled"""
+    logger.info("Tool called: update_task_status tenant=%s task_id=%s status=%s", tenant_id, task_id, status)
     payload: dict = {"status": status}
     if progress is not None:
         payload["progress"] = progress
@@ -100,6 +115,12 @@ async def create_coupon_campaign(
     {"coupon_name", "coupon_type", "full_price", "reduce_price",
      "target_customers", "start_time", "end_time"}
     """
+    logger.info(
+        "Tool called: create_coupon_campaign tenant=%s store=%s config=%s",
+        tenant_id,
+        store_id,
+        campaign_config.get("coupon_name"),
+    )
     sid = effective_store_id_for_biz(tenant_id, store_id)
     create_body = {
         "storeId": sid,
@@ -134,6 +155,7 @@ async def create_seckill_activity(
     activity_config: dict,
 ) -> dict:
     """创建秒杀活动（方案执行动作之一）。"""
+    logger.info("Tool called: create_seckill_activity tenant=%s store=%s", tenant_id, store_id)
     sid = effective_store_id_for_biz(tenant_id, store_id)
     body = dict(activity_config)
     body["storeId"] = sid

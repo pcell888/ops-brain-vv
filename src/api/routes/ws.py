@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from src.api.deps import manager, get_graph_app
+from src.core.diagnosis_errors import public_diagnosis_error_message
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,10 +83,10 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
                     from src.api.routes.solutions import _resume_after_adoption
                     asyncio.create_task(_resume_after_adoption(thread_id, config))
                 except Exception as e:
-                    logger.exception("采纳方案失败: %s", e)
+                    logger.exception("采纳方案失败 thread_id=%s", thread_id)
                     await manager.send_progress(thread_id, {
                         "type": "error",
-                        "message": f"采纳失败: {str(e)}",
+                        "message": public_diagnosis_error_message(e),
                     })
 
             elif data.get("action") == "ping":
@@ -93,6 +94,6 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
 
     except WebSocketDisconnect:
         manager.disconnect(thread_id)
-    except Exception as e:
-        logger.error("WebSocket error for %s: %s", thread_id, e)
+    except Exception:
+        logger.exception("WebSocket error for thread_id=%s", thread_id)
         manager.disconnect(thread_id)

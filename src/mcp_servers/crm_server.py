@@ -26,6 +26,7 @@ async def get_store_profile(tenant_id: str, store_id: str = "", auth_token: str 
     获取企业/店铺画像信息。
     store_id 为空时返回企业级聚合画像（全企业诊断）。
     """
+    logger.info("Tool called: get_store_profile tenant=%s store=%s", tenant_id, store_id)
     store_id = effective_store_id_for_biz(tenant_id, store_id)
     if not store_id:
         return await _get_tenant_profile(tenant_id, auth_token)
@@ -113,6 +114,9 @@ async def get_customer_list(
     auth_token: str | None = None,
 ) -> dict:
     """获取客户列表（支持分类筛选: all | high_value | churn_risk | new）。"""
+    logger.info(
+        "Tool called: get_customer_list tenant=%s store=%s filter=%s page=%s", tenant_id, store_id, filter_type, page
+    )
     sid = effective_store_id_for_biz(tenant_id, store_id)
     req: dict = {
         "storeId": sid,
@@ -130,6 +134,7 @@ async def get_customer_list(
 @server.tool()
 async def get_customer_detail(tenant_id: str, client_record_id: str, auth_token: str | None = None) -> dict:
     """获取单个客户详情（含交易记录、跟进记录）。"""
+    logger.info("Tool called: get_customer_detail tenant=%s client_id=%s", tenant_id, client_record_id)
     import asyncio
 
     client_data, contracts = await asyncio.gather(
@@ -147,6 +152,7 @@ async def get_sales_contract_list(
     auth_token: str | None = None,
 ) -> dict:
     """GET /sales-contract/list — 销售合同列表（可选按客户筛选）。"""
+    logger.info("Tool called: get_sales_contract_list tenant=%s client_id=%s", tenant_id, client_record_id)
     req: dict = {}
     if client_record_id:
         req["clientRecordId"] = client_record_id
@@ -164,6 +170,14 @@ async def get_order_analytics(
     auth_token: str | None = None,
 ) -> dict:
     """获取订单分析数据（GMV趋势、客单价、品类分布）。"""
+    logger.info(
+        "Tool called: get_order_analytics tenant=%s store=%s period=%s~%s group_by=%s",
+        tenant_id,
+        store_id,
+        start_date,
+        end_date,
+        group_by,
+    )
     sid = effective_store_id_for_biz(tenant_id, store_id)
     req: dict = {
         "storeId": sid,
@@ -188,6 +202,7 @@ async def _sys_dept_tree(tenant_id: str, store_id: str, auth_token: str | None =
 @server.tool()
 async def get_dept_tree(tenant_id: str, store_id: str = "", auth_token: str | None = None) -> dict:
     """GET /sys-dept/tree — 部门树。"""
+    logger.info("Tool called: get_dept_tree tenant=%s store=%s", tenant_id, store_id)
     sid = effective_store_id_for_biz(tenant_id, store_id)
     return await _sys_dept_tree(tenant_id, sid, auth_token)
 
@@ -195,6 +210,7 @@ async def get_dept_tree(tenant_id: str, store_id: str = "", auth_token: str | No
 @server.tool()
 async def get_users_by_dept(tenant_id: str, dept_id: str, auth_token: str | None = None) -> dict:
     """GET /sys-user/list — 部门下用户列表。"""
+    logger.info("Tool called: get_users_by_dept tenant=%s dept_id=%s", tenant_id, dept_id)
     data = await biz.get(tenant_id, "/sys-user/list", {"deptId": dept_id}, auth_token=auth_token)
     return {"list": data.get("list", [])}
 
@@ -202,6 +218,7 @@ async def get_users_by_dept(tenant_id: str, dept_id: str, auth_token: str | None
 @server.tool()
 async def get_dept_structure(tenant_id: str, store_id: str = "", auth_token: str | None = None) -> dict:
     """获取部门架构与人员信息。store_id 为空时聚合所有店铺的部门树。"""
+    logger.info("Tool called: get_dept_structure tenant=%s store=%s", tenant_id, store_id)
     sid = effective_store_id_for_biz(tenant_id, store_id)
     if sid:
         return await _fetch_dept_tree(tenant_id, sid, auth_token)

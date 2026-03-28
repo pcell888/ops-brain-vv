@@ -643,11 +643,9 @@ export function useMetricTrends(
   });
 }
 
-// 搜索案例
-export function useCaseSearch(params: { 
-  industry?: string; 
-  problem_type?: string;
-  min_score?: number;
+// 搜索案例（方案名称等条件由 params 传入，宜在点击搜索后更新）
+export function useCaseSearch(params: {
+  plan_name?: string;
   skip?: number;
   limit?: number;
 }) {

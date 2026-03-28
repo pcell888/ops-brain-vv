@@ -67,15 +67,21 @@ def _progress_to_task_status(
             percent = int(float(percent)) if percent is not None else 0
         except (TypeError, ValueError):
             percent = 0
+        level = raw.get("level")
+        # 与 emit_progress 语义一致：error 表示本步已失败，应与顶层 type=error 同样视为 failed，避免 status=running 却带错误文案
+        is_fatal = level == "error"
+        data = None
+        if level and level != "info":
+            data = {"level": level}
         return {
             "type": "task_status",
             "task_type": "diagnosis",
             "task_id": thread_id,
             "enterprise_id": enterprise_id,
-            "status": "running",
-            "progress": percent,
+            "status": "failed" if is_fatal else "running",
+            "progress": 0 if is_fatal else percent,
             "message": raw.get("message"),
-            "data": None,
+            "data": data,
         }
 
     if msg_type == "node_complete":
@@ -234,6 +240,6 @@ async def ws_enterprise_tasks(websocket: WebSocket, enterprise_id: str):
 
     except WebSocketDisconnect:
         enterprise_ws.disconnect(enterprise_id, websocket)
-    except Exception as e:
-        logger.error("Enterprise WS error for %s: %s", enterprise_id, e)
+    except Exception:
+        logger.exception("Enterprise WS error enterprise_id=%s", enterprise_id)
         enterprise_ws.disconnect(enterprise_id, websocket)

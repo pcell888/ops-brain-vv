@@ -127,6 +127,7 @@ async def _get_redis() -> aioredis.Redis:
 
 @server.tool()
 async def get_industry_benchmark(
+    tenant_id: str,
     industry_code: str,
     indicator_codes: list[str],
     period: str | None = None,
@@ -135,9 +136,17 @@ async def get_industry_benchmark(
     获取指定行业的基准数据。
     返回: 每个指标的 avg_value / median_value / excellent_value (P90)。
     优先从 Redis 缓存读取，缓存未命中调用平台中台API。
+    tenant_id: 企业租户，中台请求使用其 platform_auth_credential 鉴权。
     """
+    logger.info(
+        "Tool called: get_industry_benchmark tenant=%s industry=%s indicators=%s period=%s",
+        tenant_id,
+        industry_code,
+        indicator_codes,
+        period,
+    )
     rd = await _get_redis()
-    cache_key = f"benchmark:{industry_code}:{period or 'latest'}"
+    cache_key = f"benchmark:{tenant_id}:{industry_code}:{period or 'latest'}"
     cached = await rd.get(cache_key)
     if cached:
         all_benchmarks = _normalize_all_benchmarks(json.loads(cached))
@@ -173,25 +182,50 @@ async def get_industry_benchmark(
 
 
 @server.tool()
-async def list_industries() -> list[dict]:
-    """获取所有行业编码及名称列表。"""
-    data = await biz.platform_get("/store-class/list")
+async def list_industries(tenant_id: str) -> list[dict]:
+    """获取所有行业编码及名称列表。tenant_id: 企业租户，中台请求使用其 platform_auth_credential。"""
+    logger.info("Tool called: list_industries tenant=%s", tenant_id)
+    data = await biz.platform_get("/store-class/list", auth_tenant_id=tenant_id)
     return data.get("list", data) if isinstance(data, dict) else data
 
 
 @server.tool()
 async def get_industry_trend(
+    tenant_id: str,
     industry_code: str,
     indicator_code: str,
     periods: int = 6,
 ) -> list[dict]:
-    """获取行业指标趋势数据（最近N个月，用于对比分析图表）。"""
-    data = await biz.platform_get("/industry-trend-statistics/trend", {
-        "industryCode": industry_code,
-        "indicatorCode": indicator_code,
-        "periods": periods,
-    })
+    """获取行业指标趋势数据（最近N个月，用于对比分析图表）。tenant_id: 企业租户，中台请求使用其 platform_auth_credential。"""
+    logger.info(
+        "Tool called: get_industry_trend tenant=%s industry=%s indicator=%s periods=%s",
+        tenant_id,
+        industry_code,
+        indicator_code,
+        periods,
+    )
+    data = await biz.platform_get(
+        "/industry-trend-statistics/trend",
+        {
+            "industryCode": industry_code,
+            "indicatorCode": indicator_code,
+            "periods": periods,
+        },
+        auth_tenant_id=tenant_id,
+    )
     return data.get("trends", data) if isinstance(data, dict) else data
+
+
+@server.tool()
+async def get_project_enterprise_info(tenant_id: str) -> dict:
+    """
+    通过租户 ID 从平台中台获取项目及关联客户（企业）信息。
+    tenant_id: 在 tenant_registry 中的企业 ID；请求 query 仅含 projectId（与同字段同源），
+    鉴权使用该企业 platform_auth_credential / auth_credential（auth_tenant_id）。
+    """
+    logger.info("Tool called: get_project_enterprise_info tenant=%s", tenant_id)
+    q = {"projectId": tenant_id}
+    return await biz.platform_get("ai/customer/projectInfo", q, auth_tenant_id=tenant_id)
 
 
 # ── stdio Transport ──────────────────────────────────────────────

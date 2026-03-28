@@ -164,10 +164,17 @@ async def compat_diagnosis_list(
         report_ready = False
 
         if report:
-            health_score_val = report.get("health_score")
-            anomalies = report.get("anomalies") or []
-            anomaly_count = len(anomalies)
-            report_ready = True
+            if report.get("status") == "failed":
+                status = "failed"
+                progress = 0
+                error_message = report.get("error") or "诊断执行失败"
+                message = error_message
+                report_ready = True
+            else:
+                health_score_val = report.get("health_score")
+                anomalies = report.get("anomalies") or []
+                anomaly_count = len(anomalies)
+                report_ready = True
             # 报告在 diagnose 节点已落库，但 LangGraph 任务可能仍在执行 generate_solutions
             task = running_tasks.get(thread_id)
             if task and not task.done():

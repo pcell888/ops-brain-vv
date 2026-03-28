@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta
 
 from src.agent.state import DiagnosisState
@@ -11,6 +12,8 @@ from src.core.calculator import extract_indicator_codes, resolve_active_indicato
 from src.core.config import CN_TZ, get_settings
 from src.core.tenant_config import get_tenant_config
 from src.mcp_servers.biz_scope import effective_store_id_for_biz
+
+logger = logging.getLogger(__name__)
 
 DIMENSION_TOOL_MAP: dict[str, str] = {
     "crm": "get_crm_indicators",
@@ -92,13 +95,22 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         for dim in ordered_dims
     }
 
-    all_results = await asyncio.gather(profile_task, *dim_tasks.values())
+    # 任一 API 失败 → 直接终止诊断（不兜底，避免产出无意义的 60 分报告）
+    try:
+        all_results = await asyncio.gather(profile_task, *dim_tasks.values())
+    except Exception as e:
+        logger.error("collect_data failed: %s", e, exc_info=True)
+        # 不向用户推送 error 级进度：详情只打日志，失败说明由诊断顶层统一返回，避免进度条与长错误文案并存
+        raise
+
     profile = all_results[0]
     dim_raw_results = dict(zip(dim_tasks.keys(), all_results[1:]))
+
     if not isinstance(profile, dict):
         profile = unwrap_mcp_json_value(profile)
     if not isinstance(profile, dict):
         profile = {}
+
     dim_results: dict[str, object] = {}
     for dim in ordered_dims:
         v = dim_raw_results.get(dim)
@@ -116,6 +128,7 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         "benchmark-server",
         "get_industry_benchmark",
         {
+            "tenant_id": tenant_id,
             "industry_code": profile.get("industry_code", ""),
             "indicator_codes": filtered_codes,
         },
@@ -147,3 +160,4 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         output["store_id"] = store_id
 
     return output
+

@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 
+import httpx
 from langchain_openai import ChatOpenAI
 
 from src.agent.state import DiagnosisState
@@ -35,11 +36,21 @@ async def _llm_generate_review(
     snapshots: list[dict] | None = None,
 ) -> dict:
     settings = get_settings()
+    if not settings.llm_enabled:
+        logger.info("LLM_ENABLED=false，跳过复盘LLM分析")
+        return {
+            "overall_achievement_rate": 0,
+            "improved_indicator_count": 0,
+            "total_tracked_indicators": 0,
+            "summary": "LLM未启用，无法生成复盘报告",
+            "lessons_learned": [],
+        }
     llm = ChatOpenAI(
         model=settings.llm_model,
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         temperature=0.3,
+        timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10),
     )
 
     snapshots_text = ""
@@ -52,12 +63,15 @@ async def _llm_generate_review(
         exec_tasks=json.dumps(exec_tasks, ensure_ascii=False, indent=2),
         snapshots=snapshots_text,
     )
+    logger.info("LLM复盘分析输入: %d chars", len(user_msg))
 
     try:
-        resp = await llm.ainvoke([
-            {"role": "system", "content": REVIEW_ANALYSIS_SYSTEM},
-            {"role": "user", "content": user_msg},
-        ])
+        resp = await llm.ainvoke(
+            [
+                {"role": "system", "content": REVIEW_ANALYSIS_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ]
+        )
     except Exception as e:
         logger.warning("LLM 复盘报告调用失败（如 403 请检查 API Key/工作区权限）: %s", e)
         return {
@@ -172,19 +186,48 @@ async def track_effects_node(state: DiagnosisState) -> dict:
     try:
         achievement = review_report.get("overall_achievement_rate", 0)
         improved = review_report.get("improved_indicator_count", 0)
-        review_summary = {"overall_achievement": achievement, "improved_count": improved}
-        await mcp_call("notify-server", "send_review_report_notification", {
-            "tenant_id": tenant_id,
-            "store_id": store_id,
-            "admin_account_ids": _get_admin_accounts(state.get("store_profile", {})),
-            "thread_id": thread_id,
-            "review_summary": review_summary,
-        })
+        total = review_report.get("total_tracked_indicators", 0)
+        solution_name = tracking_data.get("solution_name", "")
+        report_time = now
+        tracking_period = f"{start[:10]}~{now[:10]}"
+
+        review_summary = {
+            "overall_achievement": achievement,
+            "improved_count": improved,
+            "total_indicators": total,
+            "solution_name": solution_name,
+            "report_time": report_time,
+            "tracking_period": tracking_period,
+        }
+        await mcp_call(
+            "notify-server",
+            "send_review_report_notification",
+            {
+                "tenant_id": tenant_id,
+                "store_id": store_id,
+                "admin_account_ids": _get_admin_accounts(state.get("store_profile", {})),
+                "thread_id": thread_id,
+                "review_summary": review_summary,
+            },
+        )
+
+        push_title = f"方案复盘完成 — 达成率 {achievement:.0f}%"
+        push_parts = []
+        if solution_name:
+            push_parts.append(f"方案: {solution_name}")
+        push_parts.append(f"追踪区间: {tracking_period}")
+        push_parts.append(f"达成率 {achievement:.0f}%（{improved}/{total} 项指标改善）")
+        push_parts.append(f"报告时间: {report_time}")
+        push_parts.append("报告详情请到【APP → AI智能诊断 → 效果追踪】中查看")
+        push_content = " | ".join(push_parts)
         await save_push_log(
-            thread_id, tenant_id, store_id,
-            "message", "ai_review_report",
-            f"AI复盘报告已生成 — 达成率 {achievement:.0f}%",
-            f"共 {improved} 项指标得到改善。",
+            thread_id,
+            tenant_id,
+            store_id,
+            "message",
+            "ai_review_report",
+            push_title,
+            push_content,
             review_summary,
         )
     except Exception as e:
@@ -198,8 +241,13 @@ async def track_effects_node(state: DiagnosisState) -> dict:
         for plan in adopted_plans:
             try:
                 await save_effective_plan(
-                    tenant_id, store_id, thread_id,
-                    plan, achievement, indicator_changes, lessons,
+                    tenant_id,
+                    store_id,
+                    thread_id,
+                    plan,
+                    achievement,
+                    indicator_changes,
+                    lessons,
                     industry_code=industry_code,
                 )
             except Exception as e:
@@ -207,6 +255,9 @@ async def track_effects_node(state: DiagnosisState) -> dict:
         emit_progress(state, f"已沉淀 {len(adopted_plans)} 个有效方案到知识库")
 
     emit_progress(state, "复盘报告已生成并推送")
+
+    tracking_data["status"] = "completed"
+    tracking_data["completed_at"] = now
 
     return {
         "tracking_data": tracking_data,

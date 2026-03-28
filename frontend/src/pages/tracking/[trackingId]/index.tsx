@@ -310,28 +310,25 @@ export default function TrackingDetailPage() {
     );
   }
 
-  if (!resolvedTrackingId) {
-    const description = selectedDiagnosisId
+  const hasNoData = !resolvedTrackingId || isError || !summary;
+
+  const emptyDescription = !resolvedTrackingId
+    ? (selectedDiagnosisId
       ? <span className='text-[#303133]'>当前诊断暂无效果追踪数据，请在执行中产生追踪记录或切换历史诊断</span>
-      : <span className='text-[#303133]'>暂无效果追踪数据，请先选择历史诊断</span>;
-    return <Empty description={description} />;
-  }
+      : <span className='text-[#303133]'>暂无效果追踪数据，请先选择历史诊断</span>)
+    : <span className='text-[#303133]'>追踪记录不存在或无法加载</span>;
 
-  if (isError || !summary) {
-    return <Empty description={<span className='text-[#303133]'>追踪记录不存在或无法加载</span>} />;
-  }
-
-  const statusText = statusTextMap[summary.status] || summary.status || '-';
-  const statusDotIcon = summary.status === 'active'
+  const statusText = !hasNoData ? (statusTextMap[summary!.status] || summary!.status || '-') : '-';
+  const statusDotIcon = !hasNoData ? (summary!.status === 'active'
     ? <SyncOutlined spin className='text-[11px]' />
-    : summary.status === 'completed'
+    : summary!.status === 'completed'
       ? <CheckCircleOutlined className='text-[11px]' />
-      : <ClockCircleOutlined className='text-[11px]' />;
-  const score = analyze.latest_score == null ? 0 : Math.max(0, Math.round(Number(analyze.latest_score)));
-  const days = getTrackingDays(summary.started_at, summary.completed_at);
-  const totalDaysRaw = Number(summary.total_duration_days);
+      : <ClockCircleOutlined className='text-[11px]' />) : null;
+  const score = !hasNoData ? (analyze.latest_score == null ? 0 : Math.max(0, Math.round(Number(analyze.latest_score)))) : 0;
+  const days = !hasNoData ? getTrackingDays(summary!.started_at, summary!.completed_at) : 0;
+  const totalDaysRaw = !hasNoData ? Number(summary!.total_duration_days) : 0;
   const totalDays = Number.isFinite(totalDaysRaw) && totalDaysRaw > 0 ? Math.round(totalDaysRaw) : null;
-  const canOperate = !!resolvedTrackingId && summary.status === 'active';
+  const canOperate = !!resolvedTrackingId && !hasNoData && summary!.status === 'active';
   const snapshotItems = ((snapshotsData as { items?: SnapshotItem[] } | undefined)?.items ?? []).slice();
 
   const handleSnapshot = async () => {
@@ -340,7 +337,7 @@ export default function TrackingDetailPage() {
       await takeSnapshot.mutateAsync({ trackingId: resolvedTrackingId, enterpriseId });
       message.success('快照已采集');
     } catch {
-      message.error('快照采集失败');
+      // 失败提示已由 api 响应拦截器展示，避免与「快照采集失败」重复 toast
     }
   };
 
@@ -377,12 +374,6 @@ export default function TrackingDetailPage() {
     <div className='space-y-5'>
       <div className='flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between'>
         <div>
-          {/* <h1 className='flex items-center gap-3 text-2xl font-bold text-[#303133] text-primary'>
-            <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 text-lg shadow-lg shadow-purple-500/20 text-[#fff]'>
-              <LineChartOutlined />
-            </span>
-            效果追踪
-          </h1> */}
           <p className='mt-2 text-sm text-secondary text-[#303133]'>追踪状态、快照趋势与效果分析总览</p>
         </div>
         <div className='flex flex-col items-stretch gap-3 lg:items-end'>
@@ -395,8 +386,9 @@ export default function TrackingDetailPage() {
               loading={diagnosisLoading}
             />
           )}
+          {!hasNoData && (
           <div className='flex flex-wrap items-center gap-2'>
-            {summary.status === 'completed' ? (
+            {summary!.status === 'completed' ? (
               <Button
                 type='primary'
                 icon={<EyeOutlined />}
@@ -440,9 +432,16 @@ export default function TrackingDetailPage() {
               </>
             )}
           </div>
+          )}
         </div>
       </div>
 
+      {hasNoData ? (
+        <div className="flex items-center justify-center py-16">
+          <Empty description={emptyDescription} />
+        </div>
+      ) : (
+      <>
       <div className='grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4'>
         <Card className='border-gray-200 bg-[#F0F1F9]'>
           <div className='flex items-center gap-3'>
@@ -676,6 +675,8 @@ export default function TrackingDetailPage() {
           </div>
         )}
       </Card>
+      </>
+      )}
     </div>
   );
 }

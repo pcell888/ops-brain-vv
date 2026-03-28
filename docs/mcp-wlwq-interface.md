@@ -789,7 +789,7 @@ wlwq 端点应返回以下标准格式：
 | 指标 | 钻取端点 | 额外参数 | 说明 |
 |------|---------|---------|------|
 | `lead_conversion_rate` | `GET /client-record/list` | `filterType=low_conversion` | 低转化线索客户列表 |
-| `response_time_avg` | `GET /examine-initiate/follow-stats` | `filterType=slow_response` | 响应慢的协同记录 |
+| `response_time_avg` | `GET /examine-initiate/follow-stats` | `filterType=slow_response` | 响应慢的协同记录（超过 24 小时未跟进） |
 | `follow_up_count` | `GET /examine-initiate/follow-stats` | `detail=true` | 跟进记录明细 |
 
 **`lead_conversion_rate` 明细 list 项字段：**
@@ -810,7 +810,7 @@ wlwq 端点应返回以下标准格式：
 | `content` | string | 内容 |
 | `create_time` | string | 创建时间 |
 | `finish_time` | string | 完成时间（仅 response_time_avg） |
-| `user_name` | string | 发起人 |
+| `user_name` | string | 发起人（一般是销售专员、客服或运营人员） |
 
 ##### 营销维度
 

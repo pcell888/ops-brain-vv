@@ -1,4 +1,4 @@
-"""方案相关 HTTP 接口（获取方案列表、采纳方案）。"""
+"""方案相关 HTTP 接口（获取方案列表、采纳方案、重新派发任务）。"""
 
 from __future__ import annotations
 
@@ -12,14 +12,23 @@ from src.core.models import AdoptPlanRequest
 from src.core.config import CN_TZ, get_settings
 from src.api.deps import astream_events_with_retry, get_graph_app, manager, running_tasks
 from src.agent.tools import set_progress_sender, clear_progress_sender
+from src.core.exec_task_repo import get_tasks_by_plan_id, update_task_status
+from src.core.diagnosis_errors import public_diagnosis_error_message
+from src.agent.tools import mcp_call
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/solutions", tags=["方案"])
 
-_WORKFLOW_NODES = frozenset({
-    "collect_data", "diagnose", "generate_solutions", "wait_adoption",
-    "execute_plans", "track_effects",
-})
+_WORKFLOW_NODES = frozenset(
+    {
+        "collect_data",
+        "diagnose",
+        "generate_solutions",
+        "wait_adoption",
+        "execute_plans",
+        "track_effects",
+    }
+)
 
 
 def _build_plan_detail(plan: dict, indicator_names: dict, adopted_ids: list[str]) -> dict:
@@ -35,8 +44,7 @@ def _build_plan_detail(plan: dict, indicator_names: dict, adopted_ids: list[str]
         "priority_level": plan.get("priority_level"),
         "adopted": plan.get("plan_id", "") in adopted_ids,
         "target_indicators": [
-            {"code": c, "name": indicator_names.get(c, c)}
-            for c in plan.get("target_indicators", [])
+            {"code": c, "name": indicator_names.get(c, c)} for c in plan.get("target_indicators", [])
         ],
         "metrics": {
             "expected_roi": plan.get("expected_roi", 0),
@@ -49,13 +57,10 @@ def _build_plan_detail(plan: dict, indicator_names: dict, adopted_ids: list[str]
             "steps": steps,
             "auto_action_count": len(auto_actions),
             "auto_action_types": list({a.get("type", "") for a in auto_actions}),
-            "departments_involved": sorted({
-                s.get("owner_dept", "") for s in steps if s.get("owner_dept")
-            }),
+            "departments_involved": sorted({s.get("owner_dept", "") for s in steps if s.get("owner_dept")}),
         },
         "expected_improvements": [
-            {"indicator": indicator_names.get(k, k), "code": k, "expected_pct": v}
-            for k, v in improvements.items()
+            {"indicator": indicator_names.get(k, k), "code": k, "expected_pct": v} for k, v in improvements.items()
         ],
         "auto_actions": auto_actions,
     }
@@ -108,8 +113,7 @@ async def get_diagnosis_solutions(thread_id: str):
     anomalies = values.get("anomalies") or []
 
     indicator_names = {
-        a["indicator_code"]: a.get("indicator_name", a["indicator_code"])
-        for a in anomalies if a.get("indicator_code")
+        a["indicator_code"]: a.get("indicator_name", a["indicator_code"]) for a in anomalies if a.get("indicator_code")
     }
 
     if "wait_adoption" in next_nodes:
@@ -148,11 +152,16 @@ async def adopt_plan(thread_id: str, request: AdoptPlanRequest):
     if request.plan_id not in all_plan_ids:
         raise HTTPException(status_code=400, detail=f"无效的 plan_id: {request.plan_id}")
 
-    existing = (state.values.get("adopted_plan_ids") or [])[:1]
-    if existing and existing[0] != request.plan_id:
+    # 检查是否已有方案被采纳或待采纳
+    existing_adopted = (state.values.get("adopted_plan_ids") or [])[:1]
+    existing_pending = state.values.get("pending_adopt_plan_id")
+    if existing_adopted and existing_adopted[0] != request.plan_id:
         raise HTTPException(400, detail="已有方案被采纳，不可再采纳其他方案")
+    if existing_pending and existing_pending != request.plan_id:
+        raise HTTPException(400, detail="已有方案待采纳，不可再采纳其他方案")
 
-    await app.aupdate_state(config, {"adopted_plan_ids": [request.plan_id]})
+    # 仅记录用户选择，等待 MCP 推送成功后再更新 adopted_plan_ids
+    await app.aupdate_state(config, {"pending_adopt_plan_id": request.plan_id})
 
     task = asyncio.create_task(_resume_after_adoption(thread_id, config))
     running_tasks[thread_id] = task
@@ -177,23 +186,32 @@ async def _resume_after_adoption(thread_id: str, config: dict):
                 if isinstance(output, dict) and "progress_messages" in output:
                     for msg in output["progress_messages"]:
                         content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-                        await manager.send_progress(thread_id, {
-                            "type": "progress",
-                            "message": content,
-                            "timestamp": datetime.now(CN_TZ).isoformat(),
-                        })
+                        await manager.send_progress(
+                            thread_id,
+                            {
+                                "type": "progress",
+                                "message": content,
+                                "timestamp": datetime.now(CN_TZ).isoformat(),
+                            },
+                        )
 
-                await manager.send_progress(thread_id, {
-                    "type": "node_complete",
-                    "node": node_name,
-                    "timestamp": datetime.now(CN_TZ).isoformat(),
-                })
+                await manager.send_progress(
+                    thread_id,
+                    {
+                        "type": "node_complete",
+                        "node": node_name,
+                        "timestamp": datetime.now(CN_TZ).isoformat(),
+                    },
+                )
     except Exception as e:
-        logger.error("恢复执行异常: %s", e, exc_info=True)
-        await manager.send_progress(thread_id, {
-            "type": "error",
-            "message": f"执行出错: {str(e)}",
-        })
+        logger.exception("恢复执行异常 thread_id=%s", thread_id)
+        await manager.send_progress(
+            thread_id,
+            {
+                "type": "error",
+                "message": public_diagnosis_error_message(e),
+            },
+        )
         return
     finally:
         clear_progress_sender()
@@ -202,13 +220,84 @@ async def _resume_after_adoption(thread_id: str, config: dict):
     state = await app.aget_state(config)
     if state.next and "track_effects" in state.next:
         delay = get_settings().effect_track_delay_days
-        await manager.send_progress(thread_id, {
-            "type": "completed",
-            "message": f"方案执行任务已全部创建，效果追踪将在 {delay} 天后自动执行",
-        })
+        await manager.send_progress(
+            thread_id,
+            {
+                "type": "completed",
+                "message": f"方案执行任务已全部创建，效果追踪将在 {delay} 天后自动执行",
+            },
+        )
     else:
-        await manager.send_progress(thread_id, {
-            "type": "completed",
-            "message": "方案执行任务已全部创建",
-        })
+        await manager.send_progress(
+            thread_id,
+            {
+                "type": "completed",
+                "message": "方案执行任务已全部创建",
+            },
+        )
 
+
+@router.post("/{thread_id}/plans/{plan_id}/redistribute", summary="重新派发任务")
+async def redistribute_tasks(thread_id: str, plan_id: str):
+    """手动重新派发指定方案的任务（仅派发 pending/failed 状态的任务）。"""
+    app = await get_graph_app()
+    config = {"configurable": {"thread_id": thread_id}}
+
+    state = await app.aget_state(config)
+    values = state.values if state.values else {}
+
+    tenant_id = values.get("tenant_id")
+    store_id = values.get("store_id")
+    if not tenant_id or not store_id:
+        raise HTTPException(status_code=400, detail="无法获取租户或门店信息")
+
+    # 获取待派发的任务
+    pending_tasks = await get_tasks_by_plan_id(tenant_id, store_id, plan_id, "pending")
+    failed_tasks = await get_tasks_by_plan_id(tenant_id, store_id, plan_id, "failed")
+    tasks_to_redistribute = pending_tasks + failed_tasks
+
+    if not tasks_to_redistribute:
+        raise HTTPException(status_code=400, detail="没有需要重新派发的任务")
+
+    # 尝试重新派发
+    redistributed = []
+    failed_count = 0
+    for task in tasks_to_redistribute:
+        try:
+            result = await mcp_call(
+                "task-server",
+                "create_execution_tasks",
+                {
+                    "tenant_id": tenant_id,
+                    "store_id": store_id,
+                    "plan_id": plan_id,
+                    "tasks": [task],
+                },
+            )
+            # 派发成功，更新状态为 running
+            await update_task_status([task.get("task_id")], "running")
+            redistributed.append(task.get("task_id"))
+        except Exception as e:
+            logger.warning("任务派发失败: task_id=%s, error=%s", task.get("task_id"), e)
+            # 派发失败，更新状态为 failed
+            await update_task_status([task.get("task_id")], "failed")
+            failed_count += 1
+
+    # 检查是否所有任务都派发成功
+    remaining_pending = await get_tasks_by_plan_id(tenant_id, store_id, plan_id, "pending")
+    remaining_failed = await get_tasks_by_plan_id(tenant_id, store_id, plan_id, "failed")
+    all_success = len(remaining_pending) == 0 and len(remaining_failed) == 0
+
+    # 如果所有任务都派发成功，更新 adopted_plan_ids
+    if all_success:
+        pending_id = values.get("pending_adopt_plan_id")
+        if pending_id == plan_id:
+            await app.aupdate_state(config, {"adopted_plan_ids": [plan_id], "pending_adopt_plan_id": None})
+
+    return {
+        "plan_id": plan_id,
+        "redistributed_count": len(redistributed),
+        "failed_count": failed_count,
+        "remaining_pending": len(remaining_pending) + len(remaining_failed),
+        "all_success": all_success,
+    }

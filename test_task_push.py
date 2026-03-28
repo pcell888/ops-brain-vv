@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""任务推送测试 — 输入诊断id，从库中拉取历史诊断计划执行任务，推送给业务系统。"""
+"""任务推送诊断工具 — 输入诊断id，获取已采纳方案的任务，重新推送给业务系统。"""
 
 from __future__ import annotations
 
@@ -22,40 +22,49 @@ setup_logging("mcp-servers")
 console = Console()
 
 
-async def fetch_exec_tasks(thread_id: str | None = None, plan_id: str | None = None) -> list[dict]:
-    """根据诊断id从ai_exec_task表拉取任务历史。"""
+async def get_adopted_plan_id(thread_id: str) -> str | None:
+    """从 LangGraph checkpoint 获取已采纳方案的 plan_id。"""
+    try:
+        from src.api.deps import get_graph_app
+
+        app = await get_graph_app()
+        config = {"configurable": {"thread_id": thread_id}}
+        state = await app.aget_state(config)
+        values = state.values if state.values else {}
+        adopted_ids = values.get("adopted_plan_ids") or []
+        return adopted_ids[0] if adopted_ids else None
+    except Exception as e:
+        console.print(f"[red]获取已采纳方案失败: {e}[/red]")
+        return None
+
+
+async def fetch_adopted_plan_tasks(thread_id: str) -> list[dict]:
+    """根据诊断id获取已采纳方案的任务。"""
+    # 先获取已采纳方案的 plan_id
+    adopted_plan_id = await get_adopted_plan_id(thread_id)
+    if not adopted_plan_id:
+        console.print("[yellow]该诊断未找到已采纳的方案[/yellow]")
+        return []
+
+    console.print(f"[green]✓[/green] 已采纳方案ID: {adopted_plan_id}")
+
+    # 从 ai_exec_task 表查询该方案的任务
     await ensure_ai_exec_task()
     conninfo = _uri_to_conninfo(get_settings().postgres_uri)
 
     async with await psycopg.AsyncConnection.connect(conninfo) as conn:
         async with conn.cursor() as cur:
-            if thread_id:
-                await cur.execute(
-                    """
-                    SELECT task_id, thread_id, tenant_id, store_id, plan_id, task_name, description,
-                           assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at, priority, status,
-                           related_resources, created_at
-                    FROM ai_exec_task
-                    WHERE thread_id = %s
-                    ORDER BY created_at ASC
-                    """,
-                    (thread_id,),
-                )
-            elif plan_id:
-                await cur.execute(
-                    """
-                    SELECT task_id, thread_id, tenant_id, store_id, plan_id, task_name, description,
-                           assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at, priority, status,
-                           related_resources, created_at
-                    FROM ai_exec_task
-                    WHERE plan_id = %s
-                    ORDER BY created_at ASC
-                    """,
-                    (plan_id,),
-                )
-            else:
-                console.print("[red]必须提供 thread_id 或 plan_id[/red]")
-                return []
+            await cur.execute(
+                """
+                SELECT task_id, thread_id, tenant_id, store_id, plan_id, task_name, description,
+                       assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at, priority, status,
+                       related_resources, created_at
+                FROM ai_exec_task
+                WHERE thread_id = %s AND plan_id = %s
+                ORDER BY created_at ASC
+                """,
+                (thread_id, adopted_plan_id),
+            )
             rows = await cur.fetchall()
 
     tasks = []
@@ -74,7 +83,9 @@ async def fetch_exec_tasks(thread_id: str | None = None, plan_id: str | None = N
                 "assignee_dept_id": row[9],
                 "deadline": row[10],
                 "deadline_at": (
-                    (row[11].astimezone(CN_TZ) if getattr(row[11], "tzinfo", None) else row[11].replace(tzinfo=CN_TZ)).isoformat()
+                    (
+                        row[11].astimezone(CN_TZ) if getattr(row[11], "tzinfo", None) else row[11].replace(tzinfo=CN_TZ)
+                    ).isoformat()
                     if row[11]
                     else ""
                 ),
@@ -103,44 +114,59 @@ async def push_tasks_to_biz(
     success_count = 0
     fail_count = 0
 
+    # 按 plan_id 分组推送
+    plan_groups: dict[str, list[dict]] = {}
     for task in tasks:
-        tenant_id = task.get("tenant_id", "")
-        store_id = task.get("store_id", "")
         plan_id = task.get("plan_id", "")
+        if plan_id not in plan_groups:
+            plan_groups[plan_id] = []
+        plan_groups[plan_id].append(task)
 
-        if not tenant_id:
-            console.print(f"  [dim]跳过 task_id={task.get('task_id')}: 缺少 tenant_id[/dim]")
-            fail_count += 1
+    for plan_id, plan_tasks in plan_groups.items():
+        if not plan_tasks:
             continue
 
-        payload_tasks = [
-            {
-                "taskName": task.get("task_name", ""),
-                "description": task.get("description", ""),
-                "assigneeUserId": task.get("assignee_user_id"),
-                "assigneeAccountId": task.get("assignee_account_id", ""),
-                "assigneeDeptId": task.get("assignee_dept_id", ""),
-                "deadline": task.get("deadline", ""),
-                "deadlineAt": task.get("deadline_at", ""),
-                "priority": task.get("priority", ""),
-                "relatedResources": task.get("related_resources", {}),
-            }
-        ]
+        tenant_id = plan_tasks[0].get("tenant_id", "")
+        store_id = plan_tasks[0].get("store_id", "")
+
+        if not tenant_id:
+            console.print(f"  [dim]跳过 plan_id={plan_id}: 缺少 tenant_id[/dim]")
+            fail_count += len(plan_tasks)
+            continue
+
+        payload_tasks = []
+        for task in plan_tasks:
+            payload_tasks.append(
+                {
+                    "task_name": task.get("task_name", ""),
+                    "description": task.get("description", ""),
+                    "assignee_user_id": task.get("assignee_user_id"),
+                    "assignee_account_id": task.get("assignee_account_id", ""),
+                    "assignee_dept_id": task.get("assignee_dept_id", ""),
+                    "deadline": task.get("deadline", ""),
+                    "deadline_at": task.get("deadline_at", ""),
+                    "priority": task.get("priority", ""),
+                    "related_resources": task.get("related_resources", {}),
+                }
+            )
+
         payload = {"storeId": store_id, "planId": plan_id, "tasks": payload_tasks}
 
         if dry_run:
-            console.print(f"  [dim]DRY-RUN: 将推送任务到 tenant={tenant_id}[/dim]")
+            console.print(f"  [dim]DRY-RUN: 将推送 {len(payload_tasks)} 个任务到 tenant={tenant_id}[/dim]")
             console.print(f"    {json.dumps(payload, ensure_ascii=False)}")
-            success_count += 1
+            success_count += len(payload_tasks)
             continue
 
         try:
             await biz.post(tenant_id, "/ai-diagnosis/exec-task/batch-create", payload)
-            console.print(f"  [green]✓[/green] task_id={task.get('task_id')} 推送成功")
-            success_count += 1
+            for task in plan_tasks:
+                console.print(f"  [green]✓[/green] task_id={task.get('task_id')} 推送成功")
+            success_count += len(plan_tasks)
         except Exception as e:
-            console.print(f"  [red]✗[/red] task_id={task.get('task_id')} 推送失败: {e}")
-            fail_count += 1
+            for task in plan_tasks:
+                console.print(f"  [red]✗[/red] task_id={task.get('task_id')} 推送失败: {e}")
+            fail_count += len(plan_tasks)
 
     console.print()
     _print_summary(success_count, fail_count, dry_run)
@@ -201,33 +227,27 @@ def _print_summary(success: int, fail: int, dry_run: bool) -> None:
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="任务推送测试工具")
-    parser.add_argument("diagnosis_id", nargs="?", help="诊断thread_id或plan_id")
-    parser.add_argument("--type", choices=["thread", "plan"], default="thread", help="diagnosis_id类型")
+    parser = argparse.ArgumentParser(description="任务推送诊断工具 - 重新推送已采纳方案的任务")
+    parser.add_argument("thread_id", nargs="?", help="诊断 thread_id")
     parser.add_argument("--dry-run", action="store_true", help="仅展示任务，不实际推送")
     args = parser.parse_args()
 
-    if args.diagnosis_id:
+    if args.thread_id:
         try:
-            diagnosis_id = args.diagnosis_id.strip()
-            if args.type == "thread":
-                tasks = asyncio.run(fetch_exec_tasks(thread_id=diagnosis_id))
-            else:
-                tasks = asyncio.run(fetch_exec_tasks(plan_id=diagnosis_id))
+            thread_id = args.thread_id.strip()
+            tasks = asyncio.run(fetch_adopted_plan_tasks(thread_id))
 
             if not tasks:
-                console.print("[yellow]未找到该诊断的执行任务[/yellow]")
+                console.print("[yellow]未找到该诊断已采纳方案的执行任务[/yellow]")
                 return
 
-            console.print(
-                Panel(f"[bold cyan]任务推送测试[/bold cyan]\ndiagnosis_id: {diagnosis_id}", border_style="cyan")
-            )
-            console.print(f"[green]✓[/green] 共找到 {len(tasks)} 条执行任务记录")
+            console.print(Panel(f"[bold cyan]任务推送诊断[/bold cyan]\nthread_id: {thread_id}", border_style="cyan"))
+            console.print(f"[green]✓[/green] 共找到 {len(tasks)} 条已采纳方案的执行任务")
             _print_task_list(tasks)
 
             if not args.dry_run:
                 console.print()
-                confirm = input("确认推送这些任务到业务系统? (y/N): ").strip().lower()
+                confirm = input("确认重新推送这些任务到业务系统? (y/N): ").strip().lower()
                 if confirm != "y":
                     console.print("[yellow]已取消[/yellow]")
                     return
@@ -236,40 +256,36 @@ def main():
         except Exception as e:
             console.print(f"[red]执行异常: {e}[/red]")
     else:
-        console.print(Panel("[bold]任务推送测试工具[/bold]\n输入诊断 thread_id 或 plan_id 后回车", border_style="blue"))
+        console.print(
+            Panel(
+                "[bold]任务推送诊断工具[/bold]\n输入诊断 thread_id 后回车，将重新推送已采纳方案的任务",
+                border_style="blue",
+            )
+        )
         while True:
             console.print()
-            diagnosis_id = input("请输入诊断 ID (输入 q 退出): ").strip()
-            if diagnosis_id.lower() == "q":
+            thread_id = input("请输入诊断 thread_id (输入 q 退出): ").strip()
+            if thread_id.lower() == "q":
                 console.print("[dim]再见![/dim]")
                 break
-            if not diagnosis_id:
-                console.print("[yellow]diagnosis_id 不能为空[/yellow]")
+            if not thread_id:
+                console.print("[yellow]thread_id 不能为空[/yellow]")
                 continue
 
-            console.print("请选择 ID 类型:")
-            console.print("  1) thread_id (诊断会话ID)")
-            console.print("  2) plan_id (诊断方案ID)")
-            selection = input("请输入选项(默认1): ").strip()
-            id_type = {"1": "thread", "2": "plan", "": "thread"}.get(selection, "thread")
-
-            if id_type == "thread":
-                tasks = asyncio.run(fetch_exec_tasks(thread_id=diagnosis_id))
-            else:
-                tasks = asyncio.run(fetch_exec_tasks(plan_id=diagnosis_id))
+            tasks = asyncio.run(fetch_adopted_plan_tasks(thread_id))
 
             if not tasks:
-                console.print("[yellow]未找到该诊断的执行任务[/yellow]")
+                console.print("[yellow]未找到该诊断已采纳方案的执行任务[/yellow]")
                 continue
 
-            console.print(f"[green]✓[/green] 共找到 {len(tasks)} 条执行任务记录")
+            console.print(f"[green]✓[/green] 共找到 {len(tasks)} 条已采纳方案的执行任务")
             _print_task_list(tasks)
 
             dry_run_input = input("是否仅展示不推送? (y/N): ").strip().lower()
             dry_run = dry_run_input == "y"
 
             if not dry_run:
-                confirm = input("确认推送这些任务到业务系统? (y/N): ").strip().lower()
+                confirm = input("确认重新推送这些任务到业务系统? (y/N): ").strip().lower()
                 if confirm != "y":
                     console.print("[yellow]已取消[/yellow]")
                     continue

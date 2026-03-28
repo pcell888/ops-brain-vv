@@ -23,6 +23,7 @@ def _store_aware_params(tenant_id: str, store_id: str, start_date: str, end_date
     sid = effective_store_id_for_biz(tenant_id, store_id)
     return {"storeId": sid, "startDate": start_date, "endDate": end_date}
 
+
 server = FastMCP("metrics-server")
 router = TenantRouter()
 biz = BizAPIClient(router)
@@ -40,6 +41,9 @@ async def get_crm_indicators(
     采集CRM共享维度指标。
     返回: lead_conversion_rate, response_time_avg, follow_up_count
     """
+    logger.info(
+        "Tool called: get_crm_indicators tenant=%s store=%s period=%s~%s", tenant_id, store_id, start_date, end_date
+    )
     params = _store_aware_params(tenant_id, store_id, start_date, end_date)
 
     clients_data, contracts_data, follows_data = await asyncio.gather(
@@ -95,6 +99,13 @@ async def get_marketing_indicators(
     返回: coupon_redemption_rate, browse_to_order_rate, order_conversion_rate,
           seckill_conversion_rate
     """
+    logger.info(
+        "Tool called: get_marketing_indicators tenant=%s store=%s period=%s~%s",
+        tenant_id,
+        store_id,
+        start_date,
+        end_date,
+    )
     params = _store_aware_params(tenant_id, store_id, start_date, end_date)
 
     coupon_data, order_data, exposure_data, seckill_data = await asyncio.gather(
@@ -166,6 +177,13 @@ async def get_retention_indicators(
     返回: repurchase_rate, refund_rate, churn_rate, positive_review_rate,
           avg_customer_lifetime_value
     """
+    logger.info(
+        "Tool called: get_retention_indicators tenant=%s store=%s period=%s~%s",
+        tenant_id,
+        store_id,
+        start_date,
+        end_date,
+    )
     params = _store_aware_params(tenant_id, store_id, start_date, end_date)
 
     repurchase_data, refund_data, evaluate_data = await asyncio.gather(
@@ -243,6 +261,13 @@ async def get_efficiency_indicators(
     采集运营效率维度指标。
     返回: service_completion_rate, avg_shipping_hours
     """
+    logger.info(
+        "Tool called: get_efficiency_indicators tenant=%s store=%s period=%s~%s",
+        tenant_id,
+        store_id,
+        start_date,
+        end_date,
+    )
     params = _store_aware_params(tenant_id, store_id, start_date, end_date)
 
     service_data, shipping_data = await asyncio.gather(
@@ -292,6 +317,13 @@ async def drill_down_indicator(
     指标数据钻取 — 返回指标对应的明细数据列表，支持分页。
     支持全部指标 (indicator_code 见 INDICATOR_META)。
     """
+    logger.info(
+        "Tool called: drill_down_indicator tenant=%s store=%s indicator=%s page=%s",
+        tenant_id,
+        store_id,
+        indicator_code,
+        page,
+    )
     params: dict = {
         "storeId": effective_store_id_for_biz(tenant_id, store_id),
         "startDate": start_date,
@@ -331,9 +363,7 @@ async def drill_down_indicator(
     data = await biz.get(tenant_id, endpoint, params, auth_token=auth_token)
     raw_items = data.get("list", data.get("items", []))
     allowed = DRILL_ITEM_FIELDS.get(indicator_code)
-    items = (
-        [filter_drill_row_by_allowed_fields(it, allowed) for it in raw_items] if allowed else raw_items
-    )
+    items = [filter_drill_row_by_allowed_fields(it, allowed) for it in raw_items] if allowed else raw_items
     field_labels = {k: DRILL_FIELD_LABELS.get(k, k) for k in (allowed or [])}
     return {
         "indicator_code": indicator_code,

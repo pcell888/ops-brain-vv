@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from mcp.client.stdio import stdio_client
 
 from src.agent.tools import MCP_SERVER_MODULES, mcp_call
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 
@@ -101,7 +103,8 @@ async def list_tools(server: str = Query(..., description="Server name")):
         tools = await _list_tools(MCP_SERVER_MODULES[server])
         return {"server": server, "tools": tools}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list tools: {e}") from e
+        logger.exception("MCP list_tools 失败 server=%s", server)
+        raise HTTPException(status_code=500, detail="列出工具失败，请查看服务日志") from e
 
 
 @router.get("/template")
@@ -122,7 +125,11 @@ async def get_template(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to build template: {e}") from e
+        logger.exception("MCP get_template 失败 server=%s tool=%s", server, tool)
+        raise HTTPException(
+            status_code=500,
+            detail="生成参数模板失败，请查看服务日志",
+        ) from e
 
 
 @router.post("/call")
@@ -133,7 +140,12 @@ async def call_tool(payload: MCPCallRequest):
         result = await mcp_call(payload.server, payload.tool, payload.arguments)
         return {"result": result}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"MCP call failed: {e}") from e
+        logger.exception(
+            "MCP call 失败 server=%s tool=%s",
+            payload.server,
+            payload.tool,
+        )
+        raise HTTPException(status_code=500, detail="MCP 调用失败，请查看服务日志") from e
 
 
 @router.get("/ui", response_class=HTMLResponse)

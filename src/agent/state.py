@@ -37,7 +37,8 @@ class DiagnosisState(TypedDict):
 
     # ── 方案阶段产出 ──
     solution_plans: list[dict] | None
-    adopted_plan_ids: list[str] | None
+    pending_adopt_plan_id: str | None  # 用户选择但尚未确认的方案 ID
+    adopted_plan_ids: list[str] | None  # MCP 推送成功后确认的方案 ID
 
     # ── 执行阶段产出 ──
     exec_tasks: list[dict] | None

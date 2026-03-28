@@ -27,7 +27,8 @@ def route_after_solutions(state: DiagnosisState) -> str:
 
 
 def route_after_adoption(state: DiagnosisState) -> str:
-    if state.get("adopted_plan_ids"):
+    # 检查是否有待采纳的方案（pending_adopt_plan_id）或已采纳的方案（adopted_plan_ids）
+    if state.get("pending_adopt_plan_id") or state.get("adopted_plan_ids"):
         return "execute_plans"
     return END
 
@@ -96,10 +97,7 @@ def _postgres_uri_to_conninfo(uri: str) -> str:
     if not base:
         return uri
     # 降低长时间空闲后服务端关闭 TCP 导致 checkpoint 连接失效的概率（Docker / Pg 默认超时）
-    return (
-        f"{base} keepalives=1 keepalives_idle=60 "
-        f"keepalives_interval=10 keepalives_count=3"
-    )
+    return f"{base} keepalives=1 keepalives_idle=60 keepalives_interval=10 keepalives_count=3"
 
 
 async def compile_graph():

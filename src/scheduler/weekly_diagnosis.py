@@ -26,7 +26,7 @@ async def _get_active_tenants() -> list[dict]:
         async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             await cur.execute(
                 "SELECT tenant_id, tenant_name, config FROM tenant_registry "
-                "WHERE status=1 AND tenant_id != '__platform__'"
+                "WHERE status=1"
             )
             return await cur.fetchall()
 

@@ -21,6 +21,7 @@ from src.core.calculator import (
 )
 from src.core.diagnosis_report_repo import list_reports, get_report as get_report_from_db
 from src.core.tenant_config import get_tenant_config
+from src.core.diagnosis_errors import public_diagnosis_error_message
 from src.api.deps import (
     astream_events_with_retry,
     get_graph_app,
@@ -175,7 +176,7 @@ async def _query_drill_data_from_wlwq(
     try:
         data = await _biz.get(enterprise_id, endpoint, params)
     except BizAPIError as e:
-        logger.error(
+        logger.exception(
             "指标钻取调用业务接口失败: metric=%s enterprise_id=%s endpoint=%s status=%s url=%s error=%s",
             metric_code,
             enterprise_id,
@@ -183,17 +184,14 @@ async def _query_drill_data_from_wlwq(
             e.status_code,
             e.url,
             e.message,
-            exc_info=True,
         )
         raise HTTPException(status_code=502, detail="调用业务侧接口失败，请稍后重试") from e
     except Exception as e:
-        logger.error(
-            "指标钻取调用业务接口异常: metric=%s enterprise_id=%s endpoint=%s error=%s",
+        logger.exception(
+            "指标钻取调用业务接口异常: metric=%s enterprise_id=%s endpoint=%s",
             metric_code,
             enterprise_id,
             endpoint,
-            str(e),
-            exc_info=True,
         )
         raise HTTPException(status_code=502, detail="调用业务侧接口异常，请稍后重试") from e
 
@@ -359,9 +357,10 @@ async def _run_diagnosis_with_stream(
         logger.info("诊断流程已取消: thread=%s", thread_id)
         return
     except Exception as e:
-        logger.error("诊断流程异常: %s", e, exc_info=True)
+        logger.exception("诊断流程异常 thread=%s", thread_id)
+        err_msg = public_diagnosis_error_message(e)
         progress_cache[thread_id] = {
-            "message": f"诊断流程出错: {str(e)}",
+            "message": err_msg,
             "percent": 0,
             "timestamp": datetime.now(CN_TZ).isoformat(),
         }
@@ -369,7 +368,7 @@ async def _run_diagnosis_with_stream(
             thread_id,
             {
                 "type": "error",
-                "message": f"诊断流程出错: {str(e)}",
+                "message": err_msg,
                 "timestamp": datetime.now(CN_TZ).isoformat(),
             },
         )

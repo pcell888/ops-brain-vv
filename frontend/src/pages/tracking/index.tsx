@@ -169,7 +169,7 @@ export default function TrackingPage() {
       message.success('快照已采集');
       refetch();
     } catch {
-      message.error('快照采集失败');
+      // 失败提示已由 api 响应拦截器展示
     }
   };
 

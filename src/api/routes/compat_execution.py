@@ -195,8 +195,8 @@ async def list_execution_plans(
             })
 
         return {"items": items, "total": total}
-    except Exception as e:
-        logger.error("查询执行计划列表失败: %s", e)
+    except Exception:
+        logger.exception("查询执行计划列表失败")
         return {"items": [], "total": 0}
 
 
@@ -275,8 +275,8 @@ async def list_tasks(
         items = [_task_row_to_api_item(row, include_plan_meta=True) for row in rows]
 
         return {"items": items, "total": total, "stats": stats}
-    except Exception as e:
-        logger.error("查询执行任务列表失败: %s", e)
+    except Exception:
+        logger.exception("查询执行任务列表失败")
         return {
             "items": [],
             "total": 0,
@@ -310,8 +310,8 @@ async def get_task_detail(task_id: str):
                 )
                 row = await cur.fetchone()
     except Exception as e:
-        logger.error("查询任务详情失败: %s", e)
-        raise HTTPException(status_code=500, detail="查询失败") from e
+        logger.exception("查询任务详情失败")
+        raise HTTPException(status_code=500, detail="查询失败，请稍后重试") from e
 
     if not row:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -396,8 +396,8 @@ async def get_plan_summary(plan_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("查询执行计划失败: %s", e)
-        raise HTTPException(status_code=500, detail="查询失败") from e
+        logger.exception("查询执行计划失败")
+        raise HTTPException(status_code=500, detail="查询失败，请稍后重试") from e
 
 
 @router.get("/plans/{plan_id}/tasks", summary="计划任务列表(兼容)")
@@ -427,8 +427,8 @@ async def list_plan_tasks(plan_id: str, status: str | None = Query(default=None)
         items = [_task_row_to_api_item(row, include_plan_meta=True) for row in rows]
 
         return {"items": items, "total": len(items)}
-    except Exception as e:
-        logger.error("查询任务列表失败: %s", e)
+    except Exception:
+        logger.exception("查询任务列表失败")
         return {"items": [], "total": 0}
 
 
@@ -444,7 +444,8 @@ async def complete_task(task_id: str):
             await conn.commit()
         return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail="操作失败") from e
+        logger.exception("完成任务失败 task_id=%s", task_id)
+        raise HTTPException(status_code=500, detail="操作失败，请稍后重试") from e
 
 
 @router.post("/tasks/{task_id}/fail", summary="任务失败(兼容)")
@@ -459,7 +460,8 @@ async def fail_task(task_id: str):
             await conn.commit()
         return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail="操作失败") from e
+        logger.exception("标记任务失败时出错 task_id=%s", task_id)
+        raise HTTPException(status_code=500, detail="操作失败，请稍后重试") from e
 
 
 @router.post("/tasks/{task_id}/retry", summary="重试任务(兼容)")
@@ -474,4 +476,5 @@ async def retry_task(task_id: str):
             await conn.commit()
         return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail="操作失败") from e
+        logger.exception("重试任务失败 task_id=%s", task_id)
+        raise HTTPException(status_code=500, detail="操作失败，请稍后重试") from e

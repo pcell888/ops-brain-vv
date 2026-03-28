@@ -6,6 +6,7 @@ import json
 import logging
 import uuid
 
+import httpx
 from langchain_openai import ChatOpenAI
 
 from src.agent.state import DiagnosisState
@@ -26,6 +27,52 @@ from src.core.indicator_push_rules import (
 logger = logging.getLogger(__name__)
 
 _DEPT_KEYS = ("销售", "运营", "客服", "仓储", "管理", "市场", "售后")
+
+
+def _slim_anomalies(anomalies: list[dict]) -> list[dict]:
+    return [
+        {
+            "indicator_code": a.get("indicator_code"),
+            "indicator_name": a.get("indicator_name"),
+            "dimension": a.get("dimension"),
+            "current_value": a.get("current_value"),
+            "benchmark_avg": a.get("benchmark_avg"),
+            "deviation_pct": a.get("deviation_pct"),
+            "severity": a.get("severity"),
+        }
+        for a in anomalies
+    ]
+
+
+def _slim_indicators(all_indicators: dict, anomalies: list[dict]) -> dict:
+    anomaly_codes = {a["indicator_code"] for a in anomalies if a.get("indicator_code")}
+    anomaly_dims = {a.get("dimension") for a in anomalies if a.get("dimension")}
+    slim = {}
+    for dim, data in all_indicators.items():
+        if dim not in anomaly_dims:
+            continue
+        indicators = data.get("indicators", {})
+        if not isinstance(indicators, dict):
+            continue
+        slim_indicators = {}
+        for code, ind_data in indicators.items():
+            if code in anomaly_codes:
+                slim_indicators[code] = {
+                    "value": ind_data.get("value"),
+                    "unit": ind_data.get("unit"),
+                }
+        if slim_indicators:
+            slim[dim] = {"indicators": slim_indicators}
+    return slim
+
+
+def _slim_benchmarks(benchmarks: dict, anomalies: list[dict]) -> dict:
+    anomaly_codes = {a["indicator_code"] for a in anomalies if a.get("indicator_code")}
+    slim = {}
+    for code, bench in benchmarks.items():
+        if code in anomaly_codes:
+            slim[code] = bench
+    return slim
 
 
 def _anomaly_data_context_line(anomalies: list[dict], indicator_code: str) -> str:
@@ -143,19 +190,21 @@ def _ensure_mandatory_task_steps(plans: list[dict], mandatory: list[dict], anoma
     if not plans:
         pid = f"plan_{uuid.uuid4().hex[:8]}"
         codes = list({m["indicator_code"] for m in mandatory if m.get("indicator_code")})
-        plans = [{
-            "plan_id": pid,
-            "plan_name": "5.2.3 规则保底方案",
-            "description": "由系统根据 5.2.3 规则保底任务生成，请结合业务采纳或合并到其他方案。",
-            "target_indicators": codes,
-            "expected_improvement": {},
-            "expected_roi": 1.0,
-            "difficulty_score": 5,
-            "urgency_score": 7,
-            "priority_level": "high",
-            "steps": [],
-            "auto_actions": [],
-        }]
+        plans = [
+            {
+                "plan_id": pid,
+                "plan_name": "5.2.3 规则保底方案",
+                "description": "由系统根据 5.2.3 规则保底任务生成，请结合业务采纳或合并到其他方案。",
+                "target_indicators": codes,
+                "expected_improvement": {},
+                "expected_roi": 1.0,
+                "difficulty_score": 5,
+                "urgency_score": 7,
+                "priority_level": "high",
+                "steps": [],
+                "auto_actions": [],
+            }
+        ]
     target = plans[0]
     steps = list(target.get("steps") or [])
     next_no = 0
@@ -183,10 +232,7 @@ def _build_plans_when_llm_disabled(anomalies: list[dict], mandatory: list[dict])
     """LLM 关闭时：仅规则保底步骤 + 规则券。"""
     pid = f"plan_{uuid.uuid4().hex[:8]}"
     codes = [a.get("indicator_code") for a in anomalies if a.get("indicator_code")]
-    steps = [
-        _step_from_mandatory_spec(s, i + 1, anomalies)
-        for i, s in enumerate(mandatory)
-    ]
+    steps = [_step_from_mandatory_spec(s, i + 1, anomalies) for i, s in enumerate(mandatory)]
     auto: list[dict] = []
     seen_tgt: set[str] = set()
     for a in anomalies:
@@ -202,19 +248,21 @@ def _build_plans_when_llm_disabled(anomalies: list[dict], mandatory: list[dict])
             continue
         seen_tgt.add(tgt)
         auto.append({"type": "coupon_campaign", "config": dict(cc)})
-    return [{
-        "plan_id": pid,
-        "plan_name": "规则保底优化方案（LLM 已关闭）",
-        "description": "LLM 未启用，步骤与券活动均来自 5.2.3 规则表。",
-        "target_indicators": codes[:10],
-        "expected_improvement": {},
-        "expected_roi": 1.0,
-        "difficulty_score": 5,
-        "urgency_score": 6,
-        "priority_level": "medium",
-        "steps": steps,
-        "auto_actions": auto,
-    }]
+    return [
+        {
+            "plan_id": pid,
+            "plan_name": "规则保底优化方案（LLM 已关闭）",
+            "description": "LLM 未启用，步骤与券活动均来自 5.2.3 规则表。",
+            "target_indicators": codes[:10],
+            "expected_improvement": {},
+            "expected_roi": 1.0,
+            "difficulty_score": 5,
+            "urgency_score": 6,
+            "priority_level": "medium",
+            "steps": steps,
+            "auto_actions": auto,
+        }
+    ]
 
 
 def _get_admin_accounts(profile: dict) -> list[str]:
@@ -242,20 +290,29 @@ async def _llm_generate_solutions(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         temperature=0.5,
+        timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10),
     )
 
     cases_text = ""
     if historical_cases:
-        cases_text = json.dumps(historical_cases, ensure_ascii=False, indent=2)
+        cases_text = json.dumps(historical_cases[:3], ensure_ascii=False, indent=2)
 
     mr_block = mandatory_rule_tasks or json.dumps(
-        collect_mandatory_task_specs(anomalies), ensure_ascii=False, indent=2,
+        collect_mandatory_task_specs(anomalies),
+        ensure_ascii=False,
+        indent=2,
     )
     if mr_block.strip() in ("[]", ""):
         mr_block = "（本次涉及指标在规则表中无 tasks 条目；若有券/消息类要求见上文 5.2.3 规范 JSON。）"
 
+    slim_profile = {
+        "store_name": store_profile.get("store_name"),
+        "industry_code": store_profile.get("industry_code"),
+        "customer_count": store_profile.get("customer_count"),
+        "monthly_gmv": store_profile.get("monthly_gmv"),
+    }
     user_msg = SOLUTION_GENERATION_USER.format(
-        store_profile=json.dumps(store_profile, ensure_ascii=False, indent=2),
+        store_profile=json.dumps(slim_profile, ensure_ascii=False, indent=2),
         anomalies=json.dumps(anomalies, ensure_ascii=False, indent=2),
         root_causes=json.dumps(root_causes, ensure_ascii=False, indent=2),
         benchmarks=json.dumps(benchmarks, ensure_ascii=False, indent=2),
@@ -264,11 +321,23 @@ async def _llm_generate_solutions(
         mandatory_rule_tasks=mr_block,
         historical_cases=cases_text,
     )
+    logger.info(
+        "LLM方案生成输入: %d chars (异常数: %d, 案例数: %d)",
+        len(user_msg),
+        len(anomalies),
+        len(historical_cases) if historical_cases else 0,
+    )
 
-    resp = await llm.ainvoke([
-        {"role": "system", "content": SOLUTION_GENERATION_SYSTEM},
-        {"role": "user", "content": user_msg},
-    ])
+    try:
+        resp = await llm.ainvoke(
+            [
+                {"role": "system", "content": SOLUTION_GENERATION_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ]
+        )
+    except Exception as e:
+        logger.warning("LLM方案生成调用失败: %s", e)
+        return _build_plans_when_llm_disabled(anomalies, mandatory_specs)
 
     try:
         text = resp.content.strip()
@@ -289,19 +358,21 @@ async def _llm_generate_solutions(
         return plans if plans else []
     except (json.JSONDecodeError, IndexError, TypeError, ValueError):
         logger.warning("LLM方案生成输出解析失败")
-        return [{
-            "plan_id": f"plan_{uuid.uuid4().hex[:8]}",
-            "plan_name": "默认优化方案（解析失败）",
-            "description": (resp.content or "")[:8000],
-            "target_indicators": [a["indicator_code"] for a in anomalies[:3]],
-            "expected_improvement": {},
-            "expected_roi": 1.0,
-            "difficulty_score": 5,
-            "urgency_score": 5,
-            "priority_level": "medium",
-            "steps": [],
-            "auto_actions": [],
-        }]
+        return [
+            {
+                "plan_id": f"plan_{uuid.uuid4().hex[:8]}",
+                "plan_name": "默认优化方案（解析失败）",
+                "description": (resp.content or "")[:8000],
+                "target_indicators": [a["indicator_code"] for a in anomalies[:3]],
+                "expected_improvement": {},
+                "expected_roi": 1.0,
+                "difficulty_score": 5,
+                "urgency_score": 5,
+                "priority_level": "medium",
+                "steps": [],
+                "auto_actions": [],
+            }
+        ]
 
 
 async def generate_solutions_node(state: DiagnosisState) -> dict:
@@ -331,17 +402,19 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
     mandatory_specs = collect_mandatory_task_specs(anomalies)
     mandatory_json = json.dumps(mandatory_specs, ensure_ascii=False, indent=2)
 
+    all_indicators = {
+        "crm": state.get("crm_indicators", {}),
+        "marketing": state.get("marketing_indicators", {}),
+        "retention": state.get("retention_indicators", {}),
+        "efficiency": state.get("efficiency_indicators", {}),
+    }
+
     plans = await _llm_generate_solutions(
         store_profile=store_profile,
-        anomalies=anomalies,
+        anomalies=_slim_anomalies(anomalies),
         root_causes=state.get("root_causes", []),
-        benchmarks=benchmarks,
-        indicators={
-            "crm": state.get("crm_indicators", {}),
-            "marketing": state.get("marketing_indicators", {}),
-            "retention": state.get("retention_indicators", {}),
-            "efficiency": state.get("efficiency_indicators", {}),
-        },
+        benchmarks=_slim_benchmarks(benchmarks, anomalies),
+        indicators=_slim_indicators(all_indicators, anomalies),
         historical_cases=historical_cases if historical_cases else None,
         indicator_push_rules=rules_text,
         mandatory_rule_tasks=mandatory_json,
@@ -363,19 +436,26 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
 
     try:
         plans_summary = [{"name": p.get("plan_name", ""), "priority": p.get("priority_level", "medium")} for p in plans]
-        await mcp_call("notify-server", "send_plan_adoption_request", {
-            "tenant_id": state["tenant_id"],
-            "store_id": state["store_id"],
-            "admin_account_ids": _get_admin_accounts(store_profile),
-            "thread_id": state.get("thread_id", ""),
-            "plans_summary": plans_summary,
-        })
+        await mcp_call(
+            "notify-server",
+            "send_plan_adoption_request",
+            {
+                "tenant_id": state["tenant_id"],
+                "store_id": state["store_id"],
+                "admin_account_ids": _get_admin_accounts(store_profile),
+                "thread_id": state.get("thread_id", ""),
+                "plans_summary": plans_summary,
+            },
+        )
         plan_names = "、".join(p.get("name", "") for p in plans_summary[:3])
         await save_push_log(
-            state.get("thread_id", ""), state["tenant_id"], state["store_id"],
-            "message", "ai_plan_adoption",
-            "AI优化方案待采纳",
-            f"已生成 {len(plans)} 个优化方案（{plan_names}），请查看并选择采纳。",
+            state.get("thread_id", ""),
+            state["tenant_id"],
+            state["store_id"],
+            "message",
+            "ai_plan_adoption",
+            f"您有 {len(plans)} 个 AI 优化方案待审阅采纳",
+            f"AI 已基于当前业务数据，为您生成了 {len(plans)} 份针对性优化方案（{plan_names}）。方案详情已准备就绪，请前往 【企业APP → AI智能诊断 → 推荐方案】 尽快查看并选择采纳，以便及时落地执行。",
             {"plans_summary": plans_summary},
         )
     except Exception as e:

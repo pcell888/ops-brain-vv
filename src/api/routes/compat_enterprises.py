@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
 from src.core.config import get_settings
 from src.core.db_init import _uri_to_conninfo
+from src.mcp_servers.biz_api_client import BizAPIClient, BizAPIError
+from src.mcp_servers.tenant_router import TenantNotFoundError, TenantRouter
 from src.core.tenant_config import (
     CONFIG_DEFAULTS,
     normalize_diagnosis_trigger_mode,
@@ -21,6 +23,9 @@ from src.core.tenant_config import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/enterprises", tags=["企业(兼容层)"])
+
+_platform_router = TenantRouter()
+_platform_biz = BizAPIClient(_platform_router)
 
 
 class SyncEnterpriseBody(BaseModel):
@@ -42,7 +47,7 @@ async def _get_tenant_row(tenant_id: str) -> dict | None:
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    "SELECT tenant_id, tenant_name, industry_code, config, created_at, updated_at "
+                    "SELECT tenant_id, tenant_name, industry_code, industry_name, config, created_at, updated_at "
                     "FROM tenant_registry WHERE tenant_id = %s AND status = 1",
                     (tenant_id,),
                 )
@@ -63,6 +68,7 @@ def _row_to_enterprise(row: dict) -> dict:
         "id": row["tenant_id"],
         "name": row.get("tenant_name") or row["tenant_id"],
         "industry": row.get("industry_code") or "general",
+        "industry_name": row.get("industry_name"),
         "scale": normalized_config.get("scale"),
         "team_size": normalized_config.get("team_size"),
         "config": {
@@ -119,22 +125,97 @@ def _merge_sync_config(current: dict | str | None, body: SyncEnterpriseBody) -> 
     return config
 
 
+def _coerce_industry_code(val) -> str | None:
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, int):
+        return str(val)
+    s = str(val).strip()
+    return s or None
+
+
+def _platform_enterprise_fields(payload: dict, fallback_name: str) -> dict:
+    core = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    serve = core.get("serveUrl") or core.get("serve_url")
+    if serve is None or not str(serve).strip():
+        raise ValueError("中台 projectInfo 未返回 serveUrl")
+    api_base_url = str(serve).strip().rstrip("/")
+    raw_name = core.get("customerName") if core.get("customerName") is not None else core.get("customer_name")
+    tenant_name = str(raw_name).strip() if raw_name is not None else ""
+    if not tenant_name:
+        tenant_name = fallback_name.strip()
+    if not tenant_name:
+        raise ValueError("中台未返回 customerName 且请求体 name 为空")
+    industry_code = _coerce_industry_code(
+        core.get("businessClassCode") or core.get("business_class_code")
+    )
+    in_raw = (
+        core.get("businessClassName")
+        if core.get("businessClassName") is not None
+        else core.get("business_class_name")
+    )
+    industry_name = str(in_raw).strip() if in_raw is not None and str(in_raw).strip() else None
+    return {
+        "tenant_name": tenant_name,
+        "api_base_url": api_base_url,
+        "industry_code": industry_code,
+        "industry_name": industry_name,
+    }
+
+
+async def _fetch_project_info_for_sync(enterprise_id: str, auth_override: str | None) -> dict:
+    """中台 projectInfo：query 仅 projectId（与入库 tenant_id 同源时等同企业 ID）。"""
+    params = {"projectId": enterprise_id}
+    try:
+        return await _platform_biz.platform_get(
+            "ai/customer/projectInfo",
+            params,
+            auth_tenant_id=enterprise_id,
+        )
+    except TenantNotFoundError:
+        ov = (auth_override or "").strip()
+        if not ov:
+            raise HTTPException(
+                status_code=401,
+                detail="租户尚未入库，请携带 Authorization 请求中台以完成首次同步",
+            ) from None
+        return await _platform_biz.platform_get(
+            "ai/customer/projectInfo",
+            params,
+            auth_authorization_override=ov,
+        )
+
+
+async def _invalidate_tenant_cache(tenant_id: str) -> None:
+    settings = get_settings()
+    if settings.tenant_cache_ttl <= 0:
+        return
+    try:
+        import redis.asyncio as aioredis
+
+        rd = aioredis.from_url(settings.redis_url, decode_responses=True)
+        await rd.delete(f"tenant:{tenant_id}")
+        await rd.aclose()
+    except Exception as e:
+        logger.debug("清理租户 Redis 缓存失败 tenant=%s: %s", tenant_id, e)
+
+
 @router.get("", summary="企业列表")
 async def list_enterprises():
     try:
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    "SELECT tenant_id, tenant_name, industry_code, config, created_at, updated_at "
-                    "FROM tenant_registry WHERE status = 1 AND tenant_id != '__platform__' "
+                    "SELECT tenant_id, tenant_name, industry_code, industry_name, config, created_at, updated_at "
+                    "FROM tenant_registry WHERE status = 1 "
                     "ORDER BY created_at DESC"
                 )
                 rows = await cur.fetchall()
         enterprises = [_row_to_enterprise(r) for r in rows]
         return {"enterprises": enterprises, "total": len(enterprises)}
     except Exception as e:
-        logger.error("查询企业列表失败: %s", e)
-        raise HTTPException(status_code=500, detail="查询企业列表失败") from e
+        logger.exception("查询企业列表失败")
+        raise HTTPException(status_code=500, detail="查询企业列表失败，请稍后重试") from e
 
 
 @router.get("/{enterprise_id}", summary="企业详情")
@@ -146,8 +227,24 @@ async def get_enterprise(enterprise_id: str):
 
 
 @router.put("/{enterprise_id}", summary="同步企业")
-async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody):
+async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody, request: Request):
     created = False
+    auth_override = getattr(request.state, "platform_token", None)
+
+    try:
+        raw_info = await _fetch_project_info_for_sync(enterprise_id, auth_override)
+        pf = _platform_enterprise_fields(raw_info, body.name)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except BizAPIError as e:
+        raise HTTPException(status_code=502, detail=f"中台请求失败: {e.message}") from e
+
+    tenant_name = pf["tenant_name"]
+    api_base_url = pf["api_base_url"]
+    industry_code = pf["industry_code"] or body.industry
+    industry_name = pf["industry_name"]
 
     try:
         async with await AsyncConnection.connect(_conninfo()) as conn:
@@ -162,12 +259,16 @@ async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody):
                 if row:
                     await cur.execute(
                         "UPDATE tenant_registry "
-                        "SET tenant_name = %s, industry_code = COALESCE(%s, industry_code), "
+                        "SET tenant_name = %s, api_base_url = %s, "
+                        "industry_code = COALESCE(%s, industry_code), "
+                        "industry_name = COALESCE(%s, industry_name), "
                         "status = 1, config = %s::jsonb, updated_at = NOW() "
                         "WHERE tenant_id = %s",
                         (
-                            body.name,
-                            body.industry,
+                            tenant_name,
+                            api_base_url,
+                            industry_code,
+                            industry_name,
                             json.dumps(config, ensure_ascii=False),
                             enterprise_id,
                         ),
@@ -176,20 +277,24 @@ async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody):
                     created = True
                     await cur.execute(
                         "INSERT INTO tenant_registry "
-                        "(tenant_id, tenant_name, api_base_url, auth_type, auth_credential, industry_code, status, config) "
-                        "VALUES (%s, %s, %s, 'token', 'pending', %s, 1, %s::jsonb)",
+                        "(tenant_id, tenant_name, api_base_url, auth_type, auth_credential, "
+                        "industry_code, industry_name, status, config) "
+                        "VALUES (%s, %s, %s, 'token', 'pending', %s, %s, 1, %s::jsonb)",
                         (
                             enterprise_id,
-                            body.name,
-                            "http://localhost:8200",
-                            body.industry,
+                            tenant_name,
+                            api_base_url,
+                            industry_code,
+                            industry_name,
                             json.dumps(config, ensure_ascii=False),
                         ),
                     )
             await conn.commit()
     except Exception as e:
-        logger.error("同步企业 %s 失败: %s", enterprise_id, e)
-        raise HTTPException(status_code=500, detail="同步企业失败") from e
+        logger.exception("同步企业失败 enterprise_id=%s", enterprise_id)
+        raise HTTPException(status_code=500, detail="同步企业失败，请稍后重试") from e
+
+    await _invalidate_tenant_cache(enterprise_id)
 
     updated_row = await _get_tenant_row(enterprise_id)
     if not updated_row:

@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from src.mcp_servers.tenant_router import TenantContext, TenantRouter
+from src.mcp_servers.tenant_router import PLATFORM_TENANT_ID, TenantContext, TenantRouter
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +202,33 @@ MOCK_DATA: dict[str, dict | list] = {
             {"period": "2026-03", "value": 5.2},
         ],
     },
+    "ai/customer/projectInfo": {
+        "projectId": "2018877462439526400",
+        "customerId": "2021775485087776768",
+        "customerName": "客户F002",
+        "projectNo": "F002",
+        "projectName": "服务002",
+        "projectDesc": "服务002",
+        "progress": 4,
+        "isPermit": True,
+        "state": True,
+        "deliveredTime": "2026-02-04",
+        "serveUrl": "http://192.168.1.249:8083",
+        "logoUrl": "https://qiniu.chaolianweilai.com/2034898974276444160.png",
+        "projectShortName": "服务002",
+        "projectType": 2,
+        "discountRate": 10.00,
+        "accountTokenRate": 50.00,
+        "platformTokenRate": 45.00,
+        "middleTokenRate": 5.00,
+        "invitationTokenRate": 1.00,
+        "reflowTokenRate": 50.00,
+        "businessClassCode": 1019,
+        "businessClassName": "国际组织",
+        "createTime": "2026-02-04T02:41:11",
+        "remark": "F002",
+        "projectTypeName": "电商类",
+    },
     # ── Task ──
     "/ai-diagnosis/exec-task/batch-create": {"tasks": [], "count": 0},
     "/ai-diagnosis/exec-task/{id}/status": {},
@@ -259,9 +286,26 @@ class BizAPIClient:
     ) -> dict[str, Any]:
         return await self._safe_request(tenant_id, "PUT", path, json_data=json_data, auth_token=auth_token)
 
-    async def platform_get(self, path: str, params: dict | None = None) -> dict[str, Any]:
-        """调用平台中台API。"""
-        return await self._safe_request("__platform__", "GET", path, params=params)
+    async def platform_get(
+        self,
+        path: str,
+        params: dict | None = None,
+        *,
+        auth_tenant_id: str | None = None,
+        auth_authorization_override: str | None = None,
+    ) -> dict[str, Any]:
+        """调用平台中台 API（连接键为 __platform__）。
+        auth_tenant_id: 使用该企业的 platform_auth_credential（或 auth_credential）访问中台。
+        auth_authorization_override: 直接作为 Authorization 头（首访租户尚未入库时使用）。
+        二者同时存在时优先 override。"""
+        return await self._safe_request(
+            PLATFORM_TENANT_ID,
+            "GET",
+            path,
+            params=params,
+            platform_auth_tenant_id=auth_tenant_id,
+            platform_auth_authorization_override=auth_authorization_override,
+        )
 
     # 租户解析(Redis/PG)或请求 wlwq 无响应时会阻塞，整次请求加超时后降级 mock
     _REQUEST_TIMEOUT = 15.0
@@ -276,10 +320,19 @@ class BizAPIClient:
         params: dict | None = None,
         json_data: dict | None = None,
         auth_token: str | None = None,
+        platform_auth_tenant_id: str | None = None,
+        platform_auth_authorization_override: str | None = None,
     ) -> dict[str, Any]:
         ctx0 = await self.router.resolve(tenant_id)
         base_url = ctx0.api_base_url.rstrip("/")
-        auth_label = _auth_source_label_ctx(ctx0, auth_token)
+        if auth_token:
+            auth_label = "Authorization=请求参数覆盖"
+        elif platform_auth_authorization_override and tenant_id == PLATFORM_TENANT_ID:
+            auth_label = "Authorization=中台首访覆盖"
+        elif platform_auth_tenant_id and tenant_id == PLATFORM_TENANT_ID:
+            auth_label = f"鉴权=企业platform_auth_credential(tenant={platform_auth_tenant_id})"
+        else:
+            auth_label = _auth_source_label_ctx(ctx0, auth_token)
 
         # 记录所有请求（包括GET）；base_url / 鉴权标签来自当次 resolve（重试时会再次 resolve）
         if method in ("POST", "PUT") and json_data is not None:
@@ -306,9 +359,40 @@ class BizAPIClient:
         async def _do():
             ctx_try = await self.router.resolve(tenant_id)
             client_try = await self.router.get_client(tenant_id, ctx=ctx_try)
-            req_headers = dict(ctx_try.auth_headers)
+            if tenant_id == PLATFORM_TENANT_ID and platform_auth_authorization_override:
+                req_headers = {"Authorization": platform_auth_authorization_override}
+            elif platform_auth_tenant_id and tenant_id == PLATFORM_TENANT_ID:
+                req_headers = await self.router.get_platform_api_auth_headers(platform_auth_tenant_id)
+            else:
+                req_headers = dict(ctx_try.auth_headers)
             if auth_token:
+                req_headers = dict(req_headers)
                 req_headers["Authorization"] = auth_token
+            auth_hdr = (req_headers.get("Authorization") or "").strip()
+            sig_hdr = (req_headers.get("X-Service-Signature") or "").strip()
+            if auth_hdr:
+                logger.info(
+                    "业务API使用令牌: tenant=%s %s %s Authorization=%s",
+                    tenant_id,
+                    method,
+                    path,
+                    auth_hdr,
+                )
+            elif sig_hdr:
+                logger.info(
+                    "业务API使用令牌: tenant=%s %s %s X-Service-Signature=%s",
+                    tenant_id,
+                    method,
+                    path,
+                    sig_hdr,
+                )
+            else:
+                logger.info(
+                    "业务API使用令牌: tenant=%s %s %s (无 Authorization/X-Service-Signature)",
+                    tenant_id,
+                    method,
+                    path,
+                )
             return await self._request(
                 client_try, method, path, params=params, json_data=json_data, headers=req_headers
             )

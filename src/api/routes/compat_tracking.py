@@ -6,6 +6,7 @@ ai_solution_knowledge 表提供效果追踪与复盘接口。
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -13,18 +14,30 @@ import uuid
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
+import httpx
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
 from src.agent.prompts.review_analysis import REVIEW_ANALYSIS_SYSTEM, REVIEW_ANALYSIS_USER
+from src.agent.tools import MCPToolInvocationError, mcp_call, unwrap_mcp_json_value
+from src.core.calculator import (
+    INDICATOR_META,
+    NOT_APPLICABLE_MAP,
+    calculate_dimension_score,
+    extract_indicator_codes,
+    rebalance_weights,
+    resolve_active_indicators,
+)
 from src.core.config import CN_TZ, get_settings
 from src.core.db_init import _uri_to_conninfo, ensure_ai_effect_tracking, ensure_ai_pending_review
 from src.core.pending_review_repo import cancel_pending_review, get_pending_review, get_pending_review_by_thread
 from src.core.solution_knowledge_repo import save_effective_plan
 from src.core.tracking_report_enrichment import needs_llm_enrichment
+from src.core.tenant_config import get_tenant_config
 from src.core.tracking_names import resolve_solution_name
+from src.mcp_servers.biz_scope import effective_store_id_for_biz
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tracking", tags=["效果追踪"])
@@ -77,6 +90,29 @@ def _is_generic_solution_name(v: object) -> bool:
     return (not name) or name.startswith("效果追踪")
 
 
+async def _get_diagnosis_health_score(cur, thread_id: str) -> float | None:
+    """从 ai_diagnosis_report 取诊断时的健康评分，作为快照未采集时的兜底。"""
+    try:
+        await cur.execute(
+            "SELECT report FROM ai_diagnosis_report WHERE thread_id = %s",
+            (thread_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        report = row.get("report")
+        if isinstance(report, str):
+            report = json.loads(report)
+        if not isinstance(report, dict):
+            return None
+        val = report.get("health_score")
+        if val is None:
+            return None
+        return round(float(val), 1)
+    except Exception:
+        return None
+
+
 def _extract_plan_name_from_desc(desc: object) -> str | None:
     text = str(desc or "").strip()
     if not text:
@@ -113,6 +149,7 @@ async def _llm_review_report(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         temperature=0.3,
+        timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10),
     )
     user_msg = REVIEW_ANALYSIS_USER.format(
         tracking_data=json.dumps(tracking_data, ensure_ascii=False, indent=2),
@@ -121,10 +158,12 @@ async def _llm_review_report(
         snapshots=json.dumps(snapshots, ensure_ascii=False, indent=2),
     )
     try:
-        resp = await llm.ainvoke([
-            {"role": "system", "content": REVIEW_ANALYSIS_SYSTEM},
-            {"role": "user", "content": user_msg},
-        ])
+        resp = await llm.ainvoke(
+            [
+                {"role": "system", "content": REVIEW_ANALYSIS_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ]
+        )
     except Exception as e:
         logger.warning("LLM 复盘生成失败，回退规则模板: %s", e)
         return None
@@ -186,15 +225,17 @@ def _build_metric_effects(snapshot_rows: list[dict]) -> list[dict]:
 
         actual_change = round(cur_num - base_num, 2)
         change_pct = 0.0 if base_num == 0 else round((actual_change / abs(base_num)) * 100.0, 2)
-        effects.append({
-            "metric_name": code,
-            "baseline_value": round(base_num, 2),
-            "current_value": round(cur_num, 2),
-            "expected_change": 0,
-            "actual_change": actual_change,
-            "change_percentage": change_pct,
-            "status": _metric_status_by_change(change_pct),
-        })
+        effects.append(
+            {
+                "metric_name": code,
+                "baseline_value": round(base_num, 2),
+                "current_value": round(cur_num, 2),
+                "expected_change": 0,
+                "actual_change": actual_change,
+                "change_percentage": change_pct,
+                "status": _metric_status_by_change(change_pct),
+            }
+        )
     return effects
 
 
@@ -249,10 +290,7 @@ def _normalize_report_payload(
     last_snapshot_at = _ser(snapshot_rows[-1].get("snapshot_at")) if snapshot_rows else None
     started_at = out.get("started_at") or tracking_data.get("started_at") or first_snapshot_at
     completed_at = (
-        out.get("completed_at")
-        or tracking_data.get("completed_at")
-        or last_snapshot_at
-        or _ser(report_created_at)
+        out.get("completed_at") or tracking_data.get("completed_at") or last_snapshot_at or _ser(report_created_at)
     )
     out["started_at"] = started_at
     out["completed_at"] = completed_at
@@ -282,11 +320,7 @@ def _normalize_report_payload(
     out["tracking_duration_days"] = int(duration_days)
 
     if out.get("overall_score") is None:
-        score = (
-            out.get("final_score")
-            if out.get("final_score") is not None
-            else out.get("overall_achievement_rate")
-        )
+        score = out.get("final_score") if out.get("final_score") is not None else out.get("overall_achievement_rate")
         score_num = _to_float(score)
         out["overall_score"] = round(score_num, 2) if score_num is not None else 0
 
@@ -463,6 +497,147 @@ class SnapshotBody(BaseModel):
     """首次采集快照时若尚无追踪行，需传 enterprise_id（即 tenant_id）以创建。"""
 
     enterprise_id: str | None = Field(default=None, description="租户/企业 ID，与所选诊断一致")
+    auth_token: str | None = Field(default=None, description="可选，透传企业业务 API 鉴权（与诊断采集一致）")
+
+
+_TRACKING_METRIC_TOOLS: dict[str, str] = {
+    "crm": "get_crm_indicators",
+    "marketing": "get_marketing_indicators",
+    "retention": "get_retention_indicators",
+    "efficiency": "get_efficiency_indicators",
+}
+
+
+async def _build_effect_tracking_snapshot(
+    tenant_id: str,
+    store_id_db: str,
+    tracking_data: dict,
+    *,
+    snapshot_at: datetime,
+    auth_token: str | None,
+) -> dict:
+    """经 MCP 拉取各维度指标并计算与诊断一致的加权健康分；快照 indicators 为扁平结构供兼容前端。"""
+    active_dims, active_inds = resolve_active_indicators(
+        tracking_data.get("selected_dimensions"),
+        tracking_data.get("selected_indicators"),
+    )
+    store_id = effective_store_id_for_biz(tenant_id, store_id_db or "")
+    settings = get_settings()
+    tenant_config = await get_tenant_config(tenant_id)
+    lookback_days = int(tenant_config.get("analysis_period_days") or settings.diagnosis_lookback_days)
+    end_date = snapshot_at.strftime("%Y-%m-%d %H:%M:%S")
+    start_date = (snapshot_at - timedelta(days=lookback_days)).strftime("%Y-%m-%d %H:%M:%S")
+    common_args: dict = {
+        "tenant_id": tenant_id,
+        "store_id": store_id,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+    if auth_token:
+        common_args["auth_token"] = auth_token
+
+    ordered_dims = [d for d in ("crm", "marketing", "retention", "efficiency") if d in active_dims]
+    profile_task = mcp_call(
+        "crm-server",
+        "get_store_profile",
+        {"tenant_id": tenant_id, "store_id": store_id, **({"auth_token": auth_token} if auth_token else {})},
+    )
+    dim_tasks = [mcp_call("metrics-server", _TRACKING_METRIC_TOOLS[d], common_args) for d in ordered_dims]
+    all_results = await asyncio.gather(profile_task, *dim_tasks)
+
+    profile = all_results[0]
+    if not isinstance(profile, dict):
+        profile = unwrap_mcp_json_value(profile)
+    if not isinstance(profile, dict):
+        profile = {}
+
+    dim_results: dict[str, dict] = {}
+    for dim, raw in zip(ordered_dims, all_results[1:]):
+        v = raw
+        if not isinstance(v, dict):
+            v = unwrap_mcp_json_value(v)
+        dim_results[dim] = v if isinstance(v, dict) else {}
+
+    business_mode = profile.get("business_mode", "hybrid")
+    na_codes = NOT_APPLICABLE_MAP.get(business_mode, set())
+    for _dim, dim_data in dim_results.items():
+        if dim_data and na_codes:
+            raw_inds = dim_data.get("indicators", {})
+            if isinstance(raw_inds, dict):
+                for code in na_codes:
+                    if code in raw_inds and isinstance(raw_inds[code], dict):
+                        raw_inds[code]["not_applicable"] = True
+
+    indicator_dicts = [dim_results[d] for d in ordered_dims]
+    codes_for_benchmark = [c for c in extract_indicator_codes(*indicator_dicts) if c in active_inds]
+    benchmarks = await mcp_call(
+        "benchmark-server",
+        "get_industry_benchmark",
+        {
+            "tenant_id": tenant_id,
+            "industry_code": profile.get("industry_code", ""),
+            "indicator_codes": codes_for_benchmark,
+        },
+    )
+    if not isinstance(benchmarks, dict):
+        benchmarks = unwrap_mcp_json_value(benchmarks)
+    if not isinstance(benchmarks, dict):
+        benchmarks = {}
+
+    benchmark_payload = benchmarks.get("benchmarks", benchmarks)
+    if not isinstance(benchmark_payload, dict):
+        benchmark_payload = {}
+
+    weights = rebalance_weights(active_dims)
+    dimension_scores: dict = {}
+    for dim_name in ("crm", "marketing", "retention", "efficiency"):
+        if dim_name not in active_dims:
+            continue
+        indicators = dim_results.get(dim_name, {})
+        weight = weights.get(dim_name, 0.0)
+        if not indicators:
+            dimension_scores[dim_name] = {"score": 60.0, "weight": weight}
+            continue
+        score, _, _ = calculate_dimension_score(
+            indicators=indicators,
+            benchmarks=benchmark_payload,
+            dimension=dim_name,
+            active_indicators=active_inds,
+        )
+        dimension_scores[dim_name] = {"score": score, "weight": weight}
+
+    health_score = sum(d["score"] * d["weight"] for d in dimension_scores.values())
+
+    flat: dict[str, dict] = {}
+    for dim_name in ordered_dims:
+        pack = dim_results.get(dim_name) or {}
+        inds = pack.get("indicators", {}) if isinstance(pack, dict) else {}
+        if not isinstance(inds, dict):
+            continue
+        for code, spec in inds.items():
+            if code not in INDICATOR_META:
+                continue
+            if isinstance(spec, dict) and spec.get("not_applicable"):
+                continue
+            meta = INDICATOR_META[code]
+            raw_val = spec.get("value") if isinstance(spec, dict) else spec
+            try:
+                val_f = round(float(raw_val), 2)
+            except (TypeError, ValueError):
+                continue
+            unit = meta.get("unit", "")
+            if isinstance(spec, dict) and spec.get("unit"):
+                unit = str(spec.get("unit"))
+            flat[code] = {"name": meta["name"], "value": val_f, "unit": unit}
+
+    return {
+        "snapshot_at": snapshot_at.isoformat(),
+        "health_score": round(float(health_score), 1),
+        "indicators": flat,
+        "snapshot_type": "periodic",
+        "period": {"start_date": start_date, "end_date": end_date},
+        "source": "mcp_metrics",
+    }
 
 
 async def _ensure_effect_tracking_row(
@@ -519,6 +694,7 @@ async def _ensure_effect_tracking_row(
 
 # ── 启动追踪 ──────────────────────────────────────────────────────
 
+
 @router.post("/start", summary="启动效果追踪")
 async def start_tracking(data: dict):
     """前端 POST /tracking/start
@@ -558,11 +734,12 @@ async def start_tracking(data: dict):
 
         return {"tracking_id": thread_id, "status": "active", "message": "追踪已启动"}
     except Exception as e:
-        logger.error("启动追踪失败: %s", e)
-        raise HTTPException(status_code=500, detail="启动追踪失败") from e
+        logger.exception("启动追踪失败")
+        raise HTTPException(status_code=500, detail="启动追踪失败，请稍后重试") from e
 
 
 # ── 追踪列表 ─────────────────────────────────────────────────────
+
 
 def _pending_list_item(
     thread_id: str,
@@ -633,9 +810,7 @@ async def list_trackings(
                     params.append(diagnosis_id)
                 where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
-                await cur.execute(
-                    f"SELECT COUNT(*) FROM ai_effect_tracking t {where_sql}", params
-                )
+                await cur.execute(f"SELECT COUNT(*) FROM ai_effect_tracking t {where_sql}", params)
                 total_db = (await cur.fetchone() or {}).get("count", 0)
                 total = int(total_db) + pending_bonus
 
@@ -678,34 +853,56 @@ async def list_trackings(
             if status and eff_status != status:
                 continue
 
-            items.append({
-                "tracking_id": row["thread_id"],
-                "plan_id": td.get("plan_id", ""),
-                "diagnosis_id": row.get("diagnosis_id") or row["thread_id"],
-                "solution_name": resolve_solution_name(td, row.get("adopted_plan_name")),
-                "status": eff_status,
-                "current_score": td.get("current_score")
-                if td.get("current_score") is not None
-                else td.get("overall_achievement_rate"),
-                "snapshot_count": td.get("snapshot_count", 0),
-                "started_at": td.get("started_at", _ser(row["created_at"])),
-                "last_snapshot_at": td.get("last_snapshot_at"),
-                "completed_at": td.get("completed_at"),
-            })
+            items.append(
+                {
+                    "tracking_id": row["thread_id"],
+                    "plan_id": td.get("plan_id", ""),
+                    "diagnosis_id": row.get("diagnosis_id") or row["thread_id"],
+                    "solution_name": resolve_solution_name(td, row.get("adopted_plan_name")),
+                    "status": eff_status,
+                    "current_score": td.get("current_score")
+                    if td.get("current_score") is not None
+                    else td.get("overall_achievement_rate"),
+                    "snapshot_count": td.get("snapshot_count", 0),
+                    "started_at": td.get("started_at", _ser(row["created_at"])),
+                    "last_snapshot_at": td.get("last_snapshot_at"),
+                    "completed_at": td.get("completed_at"),
+                }
+            )
+
+        # 对 current_score 仍为 None 的条目，从诊断报告回退取 health_score
+        missing_ids = [it["tracking_id"] for it in items if it.get("current_score") is None]
+        if missing_ids:
+            try:
+                async with await AsyncConnection.connect(_conninfo()) as conn2:
+                    async with conn2.cursor(row_factory=dict_row) as cur2:
+                        await cur2.execute(
+                            """SELECT thread_id, report->>'health_score' AS hs
+                               FROM ai_diagnosis_report WHERE thread_id = ANY(%s)""",
+                            (missing_ids,),
+                        )
+                        diag_rows = await cur2.fetchall()
+                        diag_map = {
+                            r["thread_id"]: round(float(r["hs"]), 1) for r in diag_rows if r.get("hs") is not None
+                        }
+                        for it in items:
+                            if it.get("current_score") is None and it["tracking_id"] in diag_map:
+                                it["current_score"] = diag_map[it["tracking_id"]]
+            except Exception:
+                pass
 
         return {"items": items, "total": total}
-    except Exception as e:
-        logger.error("查询追踪列表失败: %s", e)
+    except Exception:
+        logger.exception("查询追踪列表失败")
         return {"items": [], "total": 0}
 
 
 # ── 案例搜索（静态路由，须在 /{tracking_id} 之前） ────────────────
 
+
 @router.get("/cases/search", summary="案例搜索")
 async def search_cases(
-    industry: str | None = Query(default=None),
-    problem_type: str | None = Query(default=None),
-    min_score: float | None = Query(default=None),
+    plan_name: str | None = Query(default=None, description="方案名称，模糊匹配"),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
 ):
@@ -714,18 +911,15 @@ async def search_cases(
             async with conn.cursor(row_factory=dict_row) as cur:
                 where_parts = []
                 params: list = []
-                if industry:
-                    where_parts.append("industry_code = %s")
-                    params.append(industry)
-                if min_score is not None:
-                    where_parts.append("achievement_rate >= %s")
-                    params.append(min_score)
+                key = (plan_name or "").strip()
+                if key:
+                    where_parts.append("plan_name ILIKE %s ESCAPE '\\'")
+                    like = "%" + key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                    params.append(like)
 
                 where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
-                await cur.execute(
-                    f"SELECT COUNT(*) FROM ai_solution_knowledge {where_sql}", params
-                )
+                await cur.execute(f"SELECT COUNT(*) FROM ai_solution_knowledge {where_sql}", params)
                 total = (await cur.fetchone() or {}).get("count", 0)
 
                 await cur.execute(
@@ -739,19 +933,21 @@ async def search_cases(
 
         items = []
         for row in rows:
-            items.append({
-                "case_id": str(row["id"]),
-                "plan_name": row["plan_name"],
-                "industry": row.get("industry_code", ""),
-                "target_indicators": row.get("target_indicators", []),
-                "achievement_rate": row.get("achievement_rate", 0),
-                "indicator_changes": row.get("indicator_changes", []),
-                "created_at": _ser(row["created_at"]),
-            })
+            items.append(
+                {
+                    "case_id": str(row["id"]),
+                    "plan_name": row["plan_name"],
+                    "industry": row.get("industry_code", ""),
+                    "target_indicators": row.get("target_indicators", []),
+                    "achievement_rate": row.get("achievement_rate", 0),
+                    "indicator_changes": row.get("indicator_changes", []),
+                    "created_at": _ser(row["created_at"]),
+                }
+            )
 
         return {"items": items, "total": total}
-    except Exception as e:
-        logger.error("搜索案例失败: %s", e)
+    except Exception:
+        logger.exception("搜索案例失败")
         return {"items": [], "total": 0}
 
 
@@ -789,19 +985,21 @@ async def get_similar_cases(
 
         items = []
         for row in rows:
-            items.append({
-                "case_id": str(row["id"]),
-                "plan_name": row["plan_name"],
-                "industry": row.get("industry_code", ""),
-                "target_indicators": row.get("target_indicators", []),
-                "achievement_rate": row.get("achievement_rate", 0),
-                "indicator_changes": row.get("indicator_changes", []),
-                "created_at": _ser(row["created_at"]),
-            })
+            items.append(
+                {
+                    "case_id": str(row["id"]),
+                    "plan_name": row["plan_name"],
+                    "industry": row.get("industry_code", ""),
+                    "target_indicators": row.get("target_indicators", []),
+                    "achievement_rate": row.get("achievement_rate", 0),
+                    "indicator_changes": row.get("indicator_changes", []),
+                    "created_at": _ser(row["created_at"]),
+                }
+            )
 
         return {"items": items, "total": len(items)}
-    except Exception as e:
-        logger.error("查询相似案例失败: %s", e)
+    except Exception:
+        logger.exception("查询相似案例失败")
         return {"items": [], "total": 0}
 
 
@@ -838,8 +1036,8 @@ async def get_case_detail(case_id: str):
     except ValueError:
         raise HTTPException(status_code=400, detail="无效的案例ID")
     except Exception as e:
-        logger.error("查询案例详情失败: %s", e)
-        raise HTTPException(status_code=500, detail="查询失败") from e
+        logger.exception("查询案例详情失败")
+        raise HTTPException(status_code=500, detail="查询失败，请稍后重试") from e
 
 
 @router.get("/snapshots/{snapshot_id}/dashboard", summary="快照看板")
@@ -871,11 +1069,12 @@ async def get_snapshot_dashboard(snapshot_id: str):
     except ValueError:
         raise HTTPException(status_code=400, detail="无效的快照ID")
     except Exception as e:
-        logger.error("查询快照看板失败: %s", e)
-        raise HTTPException(status_code=500, detail="查询失败") from e
+        logger.exception("查询快照看板失败")
+        raise HTTPException(status_code=500, detail="查询失败，请稍后重试") from e
 
 
 # ── 追踪摘要 ─────────────────────────────────────────────────────
+
 
 @router.get("/{tracking_id}", summary="追踪摘要")
 async def get_tracking_summary(tracking_id: str):
@@ -903,12 +1102,13 @@ async def get_tracking_summary(tracking_id: str):
             pr = await get_pending_review_by_thread(tracking_id)
             if pr:
                 due = pr["review_due_date"]
+                scheduled_score = await _get_diagnosis_health_score(cur, tracking_id)
                 return {
                     "tracking_id": tracking_id,
                     "plan_id": "",
                     "solution_name": "效果追踪（待自动复盘）",
                     "status": "scheduled",
-                    "current_score": None,
+                    "current_score": scheduled_score,
                     "snapshot_count": 0,
                     "started_at": _ser(due),
                     "last_snapshot_at": None,
@@ -924,14 +1124,22 @@ async def get_tracking_summary(tracking_id: str):
 
         # 仅使用方案计划总天数字段，不做兜底
         total_duration_days = td.get("total_duration_days")
+        effective_score = td.get("current_score")
+        if effective_score is None:
+            effective_score = td.get("overall_achievement_rate")
+        if effective_score is None:
+            try:
+                async with await AsyncConnection.connect(_conninfo()) as conn2:
+                    async with conn2.cursor(row_factory=dict_row) as cur2:
+                        effective_score = await _get_diagnosis_health_score(cur2, tracking_id)
+            except Exception:
+                pass
         return {
             "tracking_id": row["thread_id"],
             "plan_id": td.get("plan_id", ""),
             "solution_name": resolve_solution_name(td, adopted_plan_name),
             "status": _derive_tracking_status(td),
-            "current_score": td.get("current_score")
-            if td.get("current_score") is not None
-            else td.get("overall_achievement_rate"),
+            "current_score": effective_score,
             "snapshot_count": td.get("snapshot_count", 0),
             "started_at": td.get("started_at", _ser(row["created_at"])),
             "last_snapshot_at": td.get("last_snapshot_at"),
@@ -941,41 +1149,26 @@ async def get_tracking_summary(tracking_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("查询追踪摘要失败: %s", e)
-        raise HTTPException(status_code=500, detail="查询失败") from e
+        logger.exception("查询追踪摘要失败")
+        raise HTTPException(status_code=500, detail="查询失败，请稍后重试") from e
 
 
 # ── 采集快照 ─────────────────────────────────────────────────────
 
+
 @router.post("/{tracking_id}/snapshot", summary="采集快照")
 async def take_snapshot(tracking_id: str, body: SnapshotBody | None = None):
-    """采集指标快照。若尚无 ai_effect_tracking 行，请求体传 enterprise_id 则自动创建（诊断 thread_id = 追踪主键）。"""
-    import random
-
+    """采集指标快照（经 MCP metrics-server 拉真实指标并计算健康分）。若尚无 ai_effect_tracking 行，请求体传 enterprise_id 则自动创建。"""
     b = body or SnapshotBody()
     now = datetime.now(CN_TZ)
-    snapshot_data = {
-        "snapshot_at": now.isoformat(),
-        "health_score": round(random.uniform(55, 95), 1),
-        "indicators": {},
-        "snapshot_type": "periodic",
-    }
-
-    try:
-        from src.core.calculator import INDICATOR_META
-
-        for code, meta in INDICATOR_META.items():
-            base = 50.0
-            snapshot_data["indicators"][code] = {
-                "name": meta["name"],
-                "value": round(base + random.uniform(-20, 40), 2),
-                "unit": meta.get("unit", ""),
-            }
-    except Exception:
-        pass
+    auth_token = b.auth_token.strip() if b.auth_token and str(b.auth_token).strip() else None
 
     try:
         await ensure_ai_effect_tracking()
+        tenant_id: str = ""
+        store_id: str = ""
+        td: dict = {}
+
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -992,30 +1185,61 @@ async def take_snapshot(tracking_id: str, body: SnapshotBody | None = None):
                     store_id, tenant_id, td = await _ensure_effect_tracking_row(
                         cur, tracking_id, b.enterprise_id.strip()
                     )
-                    row = {"tenant_id": tenant_id, "store_id": store_id, "tracking_data": td}
                 else:
                     td = row["tracking_data"] or {}
                     if isinstance(td, str):
                         td = json.loads(td)
+                    tenant_id = row["tenant_id"]
+                    store_id = row["store_id"]
 
-                # 首次采集标记为基线快照
-                if (td.get("snapshot_count") or 0) <= 0:
-                    snapshot_data["snapshot_type"] = "baseline"
+                snapshot_count_before = int(td.get("snapshot_count") or 0)
+            await conn.commit()
 
-                td["snapshot_count"] = td.get("snapshot_count", 0) + 1
-                td["last_snapshot_at"] = now.isoformat()
-                td["current_score"] = snapshot_data.get("health_score")
+        try:
+            snapshot_data = await _build_effect_tracking_snapshot(
+                tenant_id,
+                store_id,
+                td,
+                snapshot_at=now,
+                auth_token=auth_token,
+            )
+        except MCPToolInvocationError as e:
+            logger.exception(
+                "采集快照 MCP 业务错误 tracking_id=%s enterprise_id=%s",
+                tracking_id,
+                (b.enterprise_id or "").strip() or "-",
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="指标采集失败，请稍后重试",
+            ) from e
+        except RuntimeError as e:
+            logger.exception(
+                "采集快照指标服务不可用 tracking_id=%s enterprise_id=%s",
+                tracking_id,
+                (b.enterprise_id or "").strip() or "-",
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="指标服务暂不可用，请稍后重试",
+            ) from e
 
+        snapshot_data["snapshot_type"] = "baseline" if snapshot_count_before <= 0 else "periodic"
+
+        td["snapshot_count"] = snapshot_count_before + 1
+        td["last_snapshot_at"] = now.isoformat()
+        td["current_score"] = snapshot_data.get("health_score")
+
+        async with await AsyncConnection.connect(_conninfo()) as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "UPDATE ai_effect_tracking SET tracking_data = %s WHERE thread_id = %s",
                     (json.dumps(td), tracking_id),
                 )
-
                 await cur.execute(
                     """INSERT INTO ai_effect_snapshot (thread_id, tenant_id, store_id, snapshot_data, snapshot_at)
                        VALUES (%s, %s, %s, %s, %s)""",
-                    (tracking_id, row["tenant_id"], row["store_id"],
-                     json.dumps(snapshot_data), now),
+                    (tracking_id, tenant_id, store_id, json.dumps(snapshot_data), now),
                 )
             await conn.commit()
 
@@ -1023,11 +1247,12 @@ async def take_snapshot(tracking_id: str, body: SnapshotBody | None = None):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("采集快照失败: %s", e)
-        raise HTTPException(status_code=500, detail="采集快照失败") from e
+        logger.exception("采集快照失败 tracking_id=%s", tracking_id)
+        raise HTTPException(status_code=500, detail="采集快照失败，请稍后重试") from e
 
 
 # ── 效果分析 ─────────────────────────────────────────────────────
+
 
 @router.get("/{tracking_id}/analyze", summary="效果分析")
 async def analyze_tracking(tracking_id: str):
@@ -1042,6 +1267,13 @@ async def analyze_tracking(tracking_id: str):
                 snapshots = await cur.fetchall()
 
         if not snapshots:
+            diagnosis_score = None
+            try:
+                async with await AsyncConnection.connect(_conninfo()) as conn2:
+                    async with conn2.cursor(row_factory=dict_row) as cur2:
+                        diagnosis_score = await _get_diagnosis_health_score(cur2, tracking_id)
+            except Exception:
+                pass
             recommendations = [
                 "建议先完成基线快照采集，再进行趋势分析",
                 "建议提高采集频次，至少形成 2-3 个时间点的数据",
@@ -1051,6 +1283,8 @@ async def analyze_tracking(tracking_id: str):
                 "trend": "no_data",
                 "snapshots": 0,
                 "analysis": "暂无快照数据",
+                "latest_score": diagnosis_score,
+                "first_score": diagnosis_score,
                 "score_change": 0,
                 "recommendations": recommendations,
                 "risk_hint": "⚠ 数据采集不足，无法准确评估风险",
@@ -1083,11 +1317,7 @@ async def analyze_tracking(tracking_id: str):
         falling_steps = sum(1 for d in recent_diffs if d < 0)
 
         avg_score = (sum(scores) / len(scores)) if scores else 0.0
-        volatility = (
-            (sum((x - avg_score) ** 2 for x in scores) / len(scores)) ** 0.5
-            if len(scores) >= 2
-            else 0.0
-        )
+        volatility = (sum((x - avg_score) ** 2 for x in scores) / len(scores)) ** 0.5 if len(scores) >= 2 else 0.0
 
         recommendations: list[str] = []
 
@@ -1169,8 +1399,8 @@ async def analyze_tracking(tracking_id: str):
             "recommendations": recommendations[:4],
             "risk_hint": risk_hint,
         }
-    except Exception as e:
-        logger.error("效果分析失败: %s", e)
+    except Exception:
+        logger.exception("效果分析失败")
         return {
             "tracking_id": tracking_id,
             "trend": "error",
@@ -1183,6 +1413,7 @@ async def analyze_tracking(tracking_id: str):
 
 
 # ── 完成追踪 ─────────────────────────────────────────────────────
+
 
 @router.post("/{tracking_id}/complete", summary="完成追踪")
 async def complete_tracking(tracking_id: str):
@@ -1264,12 +1495,14 @@ async def complete_tracking(tracking_id: str):
                         sd = json.loads(sd)
                     score = _to_float(sd.get("health_score"))
                     scores.append(score if score is not None else 0.0)
-                    snapshot_payload.append({
-                        "snapshot_at": sd.get("snapshot_at"),
-                        "health_score": sd.get("health_score"),
-                        "snapshot_type": sd.get("snapshot_type"),
-                        "indicators": sd.get("indicators", {}),
-                    })
+                    snapshot_payload.append(
+                        {
+                            "snapshot_at": sd.get("snapshot_at"),
+                            "health_score": sd.get("health_score"),
+                            "snapshot_type": sd.get("snapshot_type"),
+                            "indicators": sd.get("indicators", {}),
+                        }
+                    )
 
                 base_report = _build_base_report(tracking_id, td, now.isoformat(), scores)
                 await cur.execute(
@@ -1338,11 +1571,12 @@ async def complete_tracking(tracking_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("完成追踪失败: %s", e)
-        raise HTTPException(status_code=500, detail="完成追踪失败") from e
+        logger.exception("完成追踪失败")
+        raise HTTPException(status_code=500, detail="完成追踪失败，请稍后重试") from e
 
 
 # ── 取消追踪 ─────────────────────────────────────────────────────
+
 
 @router.post("/{tracking_id}/cancel", summary="取消追踪")
 async def cancel_tracking(tracking_id: str):
@@ -1373,11 +1607,12 @@ async def cancel_tracking(tracking_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("取消追踪失败: %s", e)
-        raise HTTPException(status_code=500, detail="取消失败") from e
+        logger.exception("取消追踪失败")
+        raise HTTPException(status_code=500, detail="取消失败，请稍后重试") from e
 
 
 # ── 指标趋势 ─────────────────────────────────────────────────────
+
 
 @router.get("/{tracking_id}/trends", summary="指标趋势")
 async def get_trends(tracking_id: str):
@@ -1409,12 +1644,13 @@ async def get_trends(tracking_id: str):
             "timestamps": timestamps,
             "indicators": trends,
         }
-    except Exception as e:
-        logger.error("查询趋势失败: %s", e)
+    except Exception:
+        logger.exception("查询趋势失败 tracking_id=%s", tracking_id)
         return {"tracking_id": tracking_id, "timestamps": [], "indicators": {}}
 
 
 # ── 复盘报告 ─────────────────────────────────────────────────────
+
 
 @router.get("/{tracking_id}/report", summary="复盘报告")
 async def get_report(tracking_id: str):
@@ -1470,12 +1706,14 @@ async def get_report(tracking_id: str):
                             sd = json.loads(sd)
                         score = _to_float(sd.get("health_score"))
                         scores.append(score if score is not None else 0.0)
-                        snapshot_payload.append({
-                            "snapshot_at": sd.get("snapshot_at") or _ser(sr.get("snapshot_at")),
-                            "health_score": sd.get("health_score"),
-                            "snapshot_type": sd.get("snapshot_type"),
-                            "indicators": sd.get("indicators", {}),
-                        })
+                        snapshot_payload.append(
+                            {
+                                "snapshot_at": sd.get("snapshot_at") or _ser(sr.get("snapshot_at")),
+                                "health_score": sd.get("health_score"),
+                                "snapshot_type": sd.get("snapshot_type"),
+                                "indicators": sd.get("indicators", {}),
+                            }
+                        )
                     await cur.execute(
                         """SELECT task_name, status, description, deadline
                            FROM ai_exec_task
@@ -1520,7 +1758,9 @@ async def get_report(tracking_id: str):
                 )
 
                 # 补齐后的结构回写，后续读取稳定一致（不含执行摘要/任务执行字段）。
-                if json.dumps(normalized, sort_keys=True, ensure_ascii=False) != json.dumps(report, sort_keys=True, ensure_ascii=False):
+                if json.dumps(normalized, sort_keys=True, ensure_ascii=False) != json.dumps(
+                    report, sort_keys=True, ensure_ascii=False
+                ):
                     await cur.execute(
                         "UPDATE ai_review_report SET report = %s WHERE thread_id = %s",
                         (json.dumps(normalized, ensure_ascii=False), tracking_id),
@@ -1531,11 +1771,12 @@ async def get_report(tracking_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("查询复盘报告失败: %s", e)
-        raise HTTPException(status_code=500, detail="查询失败") from e
+        logger.exception("查询复盘报告失败")
+        raise HTTPException(status_code=500, detail="查询失败，请稍后重试") from e
 
 
 # ── 快照列表 ─────────────────────────────────────────────────────
+
 
 @router.get("/{tracking_id}/snapshots", summary="快照列表")
 async def get_snapshots(tracking_id: str):
@@ -1576,36 +1817,41 @@ async def get_snapshots(tracking_id: str):
                 last_val = prev_indicators.get(code)
                 delta = None if last_val is None else round(num - last_val, 2)
                 current_indicators[code] = num
-                indicator_changes.append({
-                    "indicator_code": code,
-                    "name": name,
-                    "value": round(num, 2),
-                    "unit": unit,
-                    "delta_vs_prev": delta,
-                })
+                indicator_changes.append(
+                    {
+                        "indicator_code": code,
+                        "name": name,
+                        "value": round(num, 2),
+                        "unit": unit,
+                        "delta_vs_prev": delta,
+                    }
+                )
             # 变化幅度大的排前面，便于详情页直接展示关键差异
             indicator_changes.sort(
                 key=lambda x: abs(x["delta_vs_prev"]) if x["delta_vs_prev"] is not None else -1,
                 reverse=True,
             )
-            items.append({
-                "snapshot_id": str(row["id"]),
-                "snapshot_at": _ser(row["snapshot_at"]),
-                "health_score": sd.get("health_score"),
-                "snapshot_type": sd.get("snapshot_type", "periodic"),
-                "indicator_count": len(indicator_changes),
-                "indicator_changes": indicator_changes,
-            })
+            items.append(
+                {
+                    "snapshot_id": str(row["id"]),
+                    "snapshot_at": _ser(row["snapshot_at"]),
+                    "health_score": sd.get("health_score"),
+                    "snapshot_type": sd.get("snapshot_type", "periodic"),
+                    "indicator_count": len(indicator_changes),
+                    "indicator_changes": indicator_changes,
+                }
+            )
             prev_indicators = current_indicators
         # 前端时间线习惯按最近在前
         items.reverse()
         return {"items": items, "total": len(items)}
-    except Exception as e:
-        logger.error("查询快照列表失败: %s", e)
+    except Exception:
+        logger.exception("查询快照列表失败")
         return {"items": [], "total": 0}
 
 
 # ── 看板数据（简化版） ───────────────────────────────────────────
+
 
 @router.get("/{tracking_id}/dashboard/funnel", summary="转化漏斗")
 async def get_dashboard_funnel(tracking_id: str):

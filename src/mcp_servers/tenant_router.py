@@ -79,8 +79,30 @@ class TenantRouter:
             self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
         return self._redis
 
+    def _resolve_platform_tenant_from_config(self) -> TenantContext:
+        """中台租户仅存于配置（PLATFORM_CENTER_API_*），不查库、不写 Redis 缓存。"""
+        settings = get_settings()
+        base = (settings.platform_center_api_base or "").strip().rstrip("/")
+        if not base:
+            raise TenantNotFoundError(
+                "未配置 PLATFORM_CENTER_API_BASE：中台已不从 tenant_registry 读取，请在 .env 中设置该地址"
+            )
+        auth_type = (settings.platform_center_auth_type or "token").strip() or "token"
+        auth_headers = self._build_auth_headers(auth_type, settings.platform_center_auth_credential or "")
+        return TenantContext(
+            tenant_id=PLATFORM_TENANT_ID,
+            tenant_name="平台中台",
+            api_base_url=base,
+            auth_headers=auth_headers,
+            industry_code=None,
+            config={},
+        )
+
     async def resolve(self, tenant_id: str) -> TenantContext:
         """解析租户上下文。tenant_cache_ttl>0 时优先 Redis，否则每次查 PostgreSQL。"""
+        if tenant_id == PLATFORM_TENANT_ID:
+            return self._resolve_platform_tenant_from_config()
+
         settings = get_settings()
         use_redis_cache = settings.tenant_cache_ttl > 0
 
@@ -117,11 +139,7 @@ class TenantRouter:
             logger.error("租户不存在或已停用: tenant_id=%s", tenant_id)
             raise TenantNotFoundError(f"租户 {tenant_id} 不存在或已停用")
 
-        credential = row["auth_credential"]
-        # 平台租户优先使用独立的平台鉴权字段，避免与业务端 token 混用。
-        if tenant_id == PLATFORM_TENANT_ID and (row.get("platform_auth_credential") or "").strip():
-            credential = row["platform_auth_credential"]
-        auth_headers = self._build_auth_headers(row["auth_type"], credential)
+        auth_headers = self._build_auth_headers(row["auth_type"], row["auth_credential"])
         ctx = TenantContext(
             tenant_id=row["tenant_id"],
             tenant_name=row["tenant_name"],
@@ -157,6 +175,24 @@ class TenantRouter:
                 ctx.api_base_url,
             )
         return ctx
+
+    async def get_platform_api_auth_headers(self, enterprise_tenant_id: str) -> dict[str, str]:
+        """访问平台中台 API 时的请求头：优先该企业 platform_auth_credential，否则 auth_credential（auth_type 不变）。"""
+        async with await psycopg.AsyncConnection.connect(self._pg_conninfo) as conn:
+            async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                await cur.execute(
+                    "SELECT auth_type, auth_credential, platform_auth_credential "
+                    "FROM tenant_registry WHERE tenant_id=%s AND status=1",
+                    (enterprise_tenant_id,),
+                )
+                row = await cur.fetchone()
+        if not row:
+            logger.error("租户不存在或已停用: tenant_id=%s（中台鉴权）", enterprise_tenant_id)
+            raise TenantNotFoundError(f"租户 {enterprise_tenant_id} 不存在或已停用")
+        cred = (row.get("platform_auth_credential") or "").strip()
+        if not cred:
+            cred = row["auth_credential"]
+        return self._build_auth_headers(row["auth_type"], cred)
 
     async def get_client(self, tenant_id: str, ctx: TenantContext | None = None) -> httpx.AsyncClient:
         """获取面向指定租户的 HTTP Client（连接池复用）。默认不在 client 上绑鉴权头，由 BizAPIClient 每请求注入。"""

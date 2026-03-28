@@ -49,12 +49,6 @@ CREATE TABLE IF NOT EXISTS tenant_registry (
 );
 """
 
-SEED_PLATFORM = """
-INSERT INTO tenant_registry (tenant_id, tenant_name, api_base_url, auth_type, auth_credential, status)
-VALUES ('__platform__', '平台中台', 'https://platform-center.wlwq.com/api', 'token', 'mock', 1)
-ON CONFLICT (tenant_id) DO NOTHING;
-"""
-
 SEED_WLWQ_LOCAL = """
 INSERT INTO tenant_registry (tenant_id, tenant_name, api_base_url, auth_type, auth_credential, industry_code, status, config)
 VALUES ('wlwq_local', 'wlwq 本地模拟', 'http://localhost:8200', 'token', 'mock', 'retail_general', 1,
@@ -226,7 +220,11 @@ async def ensure_tenant_registry():
                 await cur.execute(
                     "ALTER TABLE tenant_registry ADD COLUMN IF NOT EXISTS platform_auth_credential TEXT"
                 )
-                await cur.execute(SEED_PLATFORM)
+                await cur.execute(
+                    "ALTER TABLE tenant_registry ADD COLUMN IF NOT EXISTS industry_name VARCHAR(128)"
+                )
+                # 中台不再入 tenant_registry；清理历史种子行
+                await cur.execute("DELETE FROM tenant_registry WHERE tenant_id = '__platform__'")
                 await cur.execute(SEED_WLWQ_LOCAL)
                 if settings.wlwq_business_api_base:
                     u = settings.wlwq_business_api_base.rstrip("/")
@@ -240,6 +238,15 @@ async def ensure_tenant_registry():
                     )
             await conn.commit()
         logger.info("tenant_registry 表已就绪")
+        if settings.tenant_cache_ttl > 0:
+            try:
+                import redis.asyncio as aioredis
+
+                rd = aioredis.from_url(settings.redis_url, decode_responses=True)
+                await rd.delete("tenant:__platform__")
+                await rd.aclose()
+            except Exception as re:
+                logger.debug("清理历史 tenant:__platform__ Redis 缓存: %s", re)
         if settings.wlwq_business_api_base:
             try:
                 import redis.asyncio as aioredis

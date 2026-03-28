@@ -39,8 +39,8 @@ async def _resume_track_effects(thread_id: str, config: dict):
         async for _ in astream_events_with_retry(None, config):
             pass
         logger.info("手动触发复盘完成: thread=%s", thread_id)
-    except Exception as e:
-        logger.error("手动触发复盘失败: thread=%s, error=%s", thread_id, e)
+    except Exception:
+        logger.exception("手动触发复盘失败 thread=%s", thread_id)
 
 
 @router.get("/knowledge/list", summary="查询方案沉淀知识库")

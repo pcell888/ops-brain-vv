@@ -30,6 +30,11 @@ from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger(__name__)
 
+
+class MCPToolInvocationError(RuntimeError):
+    """MCP 工具返回 isError（子进程内业务失败等），调用方应中止而非当作空结果。"""
+
+
 MCP_SERVER_MODULES: dict[str, str] = {
     "metrics-server": "src.mcp_servers.metrics_server",
     "crm-server": "src.mcp_servers.crm_server",
@@ -159,8 +164,8 @@ def _parse_call_tool_result(result: Any) -> Any:
             if isinstance(t, str) and t.strip():
                 parts.append(t.strip())
         msg = " | ".join(parts) if parts else "unknown error"
-        logger.warning("MCP tool 返回 isError: %s", msg[:800])
-        return {}
+        logger.error("MCP tool 返回 isError: %s", msg[:800])
+        raise MCPToolInvocationError(msg[:4000] if msg else "MCP 工具返回错误（无详情）")
 
     structured = getattr(result, "structuredContent", None)
     if structured is not None:
@@ -227,22 +232,34 @@ async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) 
 
         return unwrap_mcp_json_value(_parse_call_tool_result(result))
 
+    except MCPToolInvocationError:
+        raise
     except Exception as e:
         logger.error("MCP调用失败: %s.%s -> %s", server_name, tool_name, e)
         raise RuntimeError(f"MCP 服务 {server_name} 调用失败: {e}") from e
 
 
-def emit_progress(state: dict, message: str, percent: int | float | None = None):
-    """向 state 中追加进度消息（会被 LangGraph add_messages reducer 合并）；若已 set_progress_sender 则同时实时推送到 WS。"""
+def emit_progress(
+    state: dict,
+    message: str,
+    percent: int | float | None = None,
+    level: str = "info",
+):
+    """向 state 中追加进度消息（会被 LangGraph add_messages reducer 合并）；若已 set_progress_sender 则同时实时推送到 WS。
+
+    level: 'info' | 'warning' | 'error'  —— warning/error 会透传到前端用于差异化展示。
+    """
     state.setdefault("progress_messages", [])
     ts = datetime.now(CN_TZ).isoformat()
-    payload = {
+    payload: dict[str, Any] = {
         "type": "human",
         "content": message,
         "timestamp": ts,
     }
     if percent is not None:
         payload["percent"] = percent
+    if level and level != "info":
+        payload["level"] = level
     state["progress_messages"].append(payload)
 
     # 同步写入共享进度缓存，供 HTTP 轮询端点实时读取
@@ -251,7 +268,10 @@ def emit_progress(state: dict, message: str, percent: int | float | None = None)
 
         thread_id_key = state.get("thread_id", "")
         if thread_id_key:
-            progress_cache[thread_id_key] = {"message": message, "percent": percent, "timestamp": ts}
+            cache_entry: dict[str, Any] = {"message": message, "percent": percent, "timestamp": ts}
+            if level and level != "info":
+                cache_entry["level"] = level
+            progress_cache[thread_id_key] = cache_entry
     except Exception:
         pass
 
@@ -260,13 +280,15 @@ def emit_progress(state: dict, message: str, percent: int | float | None = None)
         thread_id, manager = sender
         try:
             loop = asyncio.get_running_loop()
-            ws_payload = {
+            ws_payload: dict[str, Any] = {
                 "type": "progress",
                 "message": message,
                 "timestamp": ts,
             }
             if percent is not None:
                 ws_payload["percent"] = percent
+            if level and level != "info":
+                ws_payload["level"] = level
             loop.create_task(manager.send_progress(thread_id, ws_payload))
         except RuntimeError:
             pass

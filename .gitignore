@@ -14,3 +14,5 @@ htmlcov/
 
 # Frontend: never commit local pnpm store or install artifacts
 frontend/.pnpm-store/
+node_modules/
+ops-frontend-main.7z

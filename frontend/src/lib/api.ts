@@ -529,11 +529,9 @@ export const trackingApi = {
   getSnapshots: (trackingId: string) =>
     api.get(`/tracking/${trackingId}/snapshots`),
   
-  // 搜索案例
-  searchCases: (params: { 
-    industry?: string; 
-    problem_type?: string;
-    min_score?: number;
+  // 搜索案例（方案名称模糊匹配）
+  searchCases: (params: {
+    plan_name?: string;
     skip?: number;
     limit?: number;
   }) => api.get('/tracking/cases/search', { params }),

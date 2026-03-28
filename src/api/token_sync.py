@@ -90,15 +90,6 @@ async def sync_runtime_tokens(tenant_id: str, biz_token: str | None, platform_to
                     """,
                     (biz_token, platform_token, tenant_id),
                 )
-                if platform_token:
-                    await cur.execute(
-                        """
-                        UPDATE tenant_registry
-                        SET platform_auth_credential = %s, updated_at = NOW()
-                        WHERE tenant_id = '__platform__'
-                        """,
-                        (platform_token,),
-                    )
             await conn.commit()
 
         settings = get_settings()
@@ -107,8 +98,6 @@ async def sync_runtime_tokens(tenant_id: str, biz_token: str | None, platform_to
 
             rd = aioredis.from_url(settings.redis_url, decode_responses=True)
             keys = [f"tenant:{tenant_id}"]
-            if platform_token:
-                keys.append("tenant:__platform__")
             await rd.delete(*keys)
             await rd.aclose()
     except Exception as e:

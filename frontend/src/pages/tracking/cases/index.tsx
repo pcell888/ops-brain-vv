@@ -1,13 +1,11 @@
 import { useMemo, useState } from 'react';
-import { Card, Table, Tag, Button, Empty, Spin, Select, Row, Col, Slider } from 'antd';
+import { Card, Table, Tag, Button, Empty, Spin, Input, Row, Col } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  BookOutlined,
   SearchOutlined,
   LoadingOutlined,
   EyeOutlined,
   StarOutlined,
-  FilterOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
@@ -102,18 +100,22 @@ function buildSummary(record: BackendCaseItem): string {
 
 export default function CasesPage() {
   const navigate = useNavigate();
-  const [filters, setFilters] = useState<{
-    industry?: string;
-    min_score?: number;
-    limit: number;
-  }>({
-    limit: 10,
-  });
-  const [showFilters, setShowFilters] = useState(false);
+  const [planNameDraft, setPlanNameDraft] = useState('');
+  const [planNameApplied, setPlanNameApplied] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
-  const skip = useMemo(() => (currentPage - 1) * filters.limit, [currentPage, filters.limit]);
+  const [pageSize, setPageSize] = useState(10);
+  const skip = useMemo(() => (currentPage - 1) * pageSize, [currentPage, pageSize]);
 
-  const { data, isLoading, refetch } = useCaseSearch({ ...filters, skip });
+  const searchParams = useMemo(
+    () => ({
+      plan_name: planNameApplied || undefined,
+      skip,
+      limit: pageSize,
+    }),
+    [planNameApplied, skip, pageSize],
+  );
+
+  const { data, isLoading, refetch } = useCaseSearch(searchParams);
   const response = (data ?? {}) as BackendCaseSearchResponse;
   const cases = response.items || [];
   const total = response.total || 0;
@@ -122,17 +124,14 @@ export default function CasesPage() {
     navigate(`/tracking/cases/${caseId}`);
   };
 
-  const updateFilter = (key: 'industry' | 'min_score' | 'limit', value: string | number | undefined) => {
-    setFilters((prev) => ({
-      ...prev,
-      [key]: value || undefined,
-    }));
+  const handleSearch = () => {
+    const next = planNameDraft.trim();
     setCurrentPage(1);
-  };
-
-  const resetFilters = () => {
-    setFilters({ limit: 10 });
-    setCurrentPage(1);
+    if (next === planNameApplied) {
+      void refetch();
+    } else {
+      setPlanNameApplied(next);
+    }
   };
 
   const columns: ColumnsType<BackendCaseItem> = [
@@ -247,70 +246,30 @@ export default function CasesPage() {
 
   return (
     <div className='space-y-6'>
-      <div className='flex justify-between items-center'>
-        <div>
-          {/* <h1 className='text-2xl font-bold text-[#303133] flex items-center gap-3'>
-            <span className='w-10 h-10 text-white rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20'>
-              <BookOutlined />
-            </span>
-            案例库
-          </h1> */}
-          <p className='text-[#303133] mt-2 text-sm'>
-            浏览效果追踪沉淀下来的真实案例与指标结果
-          </p>
-        </div>
-        <div className='flex gap-3'>
-          <Button icon={<FilterOutlined />} style={{ backgroundColor: '#ffffff', color: '#000000', border: '1px solid #d9d9d9' }} onClick={() => setShowFilters(!showFilters)}>
-            {showFilters ? '收起筛选' : '展开筛选'}
-          </Button>
-        </div>
+      <div>
+        <p className='text-[#303133] mt-2 text-sm'>
+          浏览效果追踪沉淀下来的真实案例与指标结果
+        </p>
       </div>
 
-      {showFilters && (
-        <Card size='small'>
-          <Row gutter={16} align='middle'>
-            <Col span={7}>
-              <div className='text-gray-400 text-xs mb-1'>行业</div>
-              <Select
-                placeholder='选择行业'
-                allowClear
-                style={{ width: '100%' }}
-                value={filters.industry}
-                onChange={(value) => updateFilter('industry', value)}
-                options={industryOptions}
-              />
-            </Col>
-            <Col span={8}>
-              <div className='text-gray-400 text-xs mb-1'>最低达成率: {filters.min_score || 0}%</div>
-              <Slider
-                min={0}
-                max={100}
-                value={filters.min_score || 0}
-                onChange={(value) => updateFilter('min_score', value > 0 ? value : undefined)}
-              />
-            </Col>
-            <Col span={5}>
-              <div className='text-gray-400 text-xs mb-1'>显示数量</div>
-              <Select
-                style={{ width: '100%' }}
-                value={filters.limit}
-                onChange={(value) => updateFilter('limit', value)}
-                options={[
-                  { value: 10, label: '10条' },
-                  { value: 20, label: '20条' },
-                  { value: 50, label: '50条' },
-                ]}
-              />
-            </Col>
-            <Col span={4} className='flex gap-2'>
-              <Button onClick={resetFilters} style={{ backgroundColor: '#ffffff', color: '#000000', border: '1px solid #d9d9d9' }}>重置</Button>
-              <Button type='primary' icon={<SearchOutlined />} onClick={() => refetch()}>
-                搜索
-              </Button>
-            </Col>
-          </Row>
-        </Card>
-      )}
+      <Card size='small'>
+        <Row gutter={16} align='middle' wrap={false}>
+          <Col flex='auto' style={{ minWidth: 200 }}>
+            <Input
+              placeholder='输入关键词，模糊匹配方案名称'
+              value={planNameDraft}
+              onChange={(e) => setPlanNameDraft(e.target.value)}
+              onPressEnter={handleSearch}
+              allowClear
+            />
+          </Col>
+          <Col>
+            <Button type='primary' icon={<SearchOutlined />} onClick={handleSearch}>
+              搜索
+            </Button>
+          </Col>
+        </Row>
+      </Card>
 
       {stats && (
         <Row gutter={16}>
@@ -347,20 +306,20 @@ export default function CasesPage() {
             rowKey='case_id'
             pagination={{
               current: currentPage,
-              pageSize: filters.limit,
+              pageSize,
               total,
               showTotal: (value) => `共 ${value} 个案例`,
               showSizeChanger: true,
               pageSizeOptions: ['10', '20', '50', '100'],
               onChange: (page, size) => {
                 setCurrentPage(page);
-                if (size !== filters.limit) {
-                  setFilters((prev) => ({ ...prev, limit: size }));
+                if (size !== pageSize) {
+                  setPageSize(size);
                   setCurrentPage(1);
                 }
               },
               onShowSizeChange: (_, size) => {
-                setFilters((prev) => ({ ...prev, limit: size }));
+                setPageSize(size);
                 setCurrentPage(1);
               },
             }}
