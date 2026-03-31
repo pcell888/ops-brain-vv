@@ -1,6 +1,8 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { message } from 'antd';
+import { SESSION_KEYS, clearAuthSession } from '@/lib/session';
+import { useAppStore } from '@/stores/app-store';
 
 /**
  * 说明：
@@ -40,21 +42,28 @@ function showApiErrorToast(text: string) {
   message.error(text);
 }
 
-// 请求拦截器
+// 请求拦截器（与后端 token_sync：Authorization=中台 platform，Token=业务 user）
 api.interceptors.request.use(
   (config) => {
-    // 添加认证token
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+    if (typeof window !== 'undefined') {
+      const platform =
+        localStorage.getItem(SESSION_KEYS.platformToken) || localStorage.getItem(SESSION_KEYS.token);
+      if (platform) {
+        // 中台要求 Authorization 为裸 token，不加 Bearer 前缀
+        const raw = platform.startsWith('Bearer ') ? platform.slice(7).trim() : platform;
+        config.headers.Authorization = raw;
+      }
+      const userTok = localStorage.getItem(SESSION_KEYS.userToken);
+      if (userTok) {
+        config.headers.Token = userTok;
+      }
+
+      const enterpriseId = localStorage.getItem(SESSION_KEYS.enterpriseId);
+      if (enterpriseId) {
+        config.headers['X-Enterprise-ID'] = enterpriseId;
+      }
     }
-    
-    // 添加企业ID
-    const enterpriseId = typeof window !== 'undefined' ? localStorage.getItem('enterpriseId') : null;
-    if (enterpriseId) {
-      config.headers['X-Enterprise-ID'] = enterpriseId;
-    }
-    
+
     return config;
   },
   (error) => {
@@ -73,10 +82,10 @@ api.interceptors.response.use(
       const { status, data } = error.response;
       
       if (status === 401) {
-        // 未认证，跳转登录
         if (typeof window !== 'undefined') {
-          localStorage.removeItem('token');
-          window.location.href = '/login';
+          clearAuthSession();
+          useAppStore.getState().setCurrentEnterprise(null);
+          window.location.href = '/embed';
         }
       }
 
@@ -132,9 +141,19 @@ export type DataQualityReport = {
   evaluated_at: string;
 };
 
+export type SyncEnterpriseBody = {
+  name: string;
+  store_id?: string;
+  industry?: string;
+  scale?: 'small' | 'medium' | 'large' | 'enterprise';
+  team_size?: number;
+};
+
 export const enterpriseApi = {
   list: () => api.get('/enterprises'),
   get: (enterpriseId: string) => api.get(`/enterprises/${enterpriseId}`),
+  sync: (enterpriseId: string, body: SyncEnterpriseBody) =>
+    api.put<{ enterprise: Record<string, unknown>; created: boolean }>(`/enterprises/${enterpriseId}`, body),
   updateConfig: (enterpriseId: string, config: EnterpriseConfig) =>
     api.patch(`/enterprises/${enterpriseId}/config`, config),
   updateContext: (enterpriseId: string, context: EnterpriseContext) =>

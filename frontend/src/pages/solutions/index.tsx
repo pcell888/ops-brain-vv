@@ -14,7 +14,6 @@ import {
   useDiagnosisSelection,
   useDiagnosisReport,
   useSolutionList,
-  useAdoptSolution,
 } from '@/lib/hooks';
 import { DiagnosisHistorySelect } from '@/components/diagnosis-history-select';
 import { useAppStore } from '@/stores/app-store';
@@ -46,22 +45,18 @@ function SolutionsPage() {
   const { data: diagnosisReport, isLoading: reportLoading } = useDiagnosisReport(
     isCompleted && selectedDiagnosisId ? selectedDiagnosisId : null,
   );
-  const { data: solutionData, isLoading: solutionsLoading, refetch } = useSolutionList(
+  const { data: solutionData, isLoading: solutionsLoading } = useSolutionList(
     isCompleted && selectedDiagnosisId ? selectedDiagnosisId : null,
   );
-  const adoptSolution = useAdoptSolution();
   const anySolutionAdopted = solutionData?.solutions?.some((s) => s.status === 'adopted') ?? false;
 
   const isLoading = listLoading || (isCompleted && (reportLoading || solutionsLoading));
 
-  const handleAdopt = async (solutionId: string) => {
-    try {
-      await adoptSolution.mutateAsync(solutionId);
-      message.success('方案已采纳');
-      refetch();
-    } catch {
-      message.error('采纳失败');
-    }
+  const handleAdopt = (solutionId: string) => {
+    if (!selectedDiagnosisId) return;
+    navigate(
+      `/solutions/${encodeURIComponent(selectedDiagnosisId)}?solution_id=${encodeURIComponent(solutionId)}&auto_adopt=1`,
+    );
   };
 
   const handleViewDetail = (solutionId: string) => {
@@ -170,7 +165,6 @@ function SolutionsPage() {
               onClick={() => handleAdopt(record.solution_id)}
               disabled={adoptDisabled}
               title={anySolutionAdopted && !isAdopted ? '已有方案被采纳' : undefined}
-              loading={adoptSolution.isPending}
             >
               {isAdopted ? '已采纳' : '采纳'}
             </Button>

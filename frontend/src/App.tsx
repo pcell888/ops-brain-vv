@@ -20,6 +20,7 @@ const TrackingReportPage = lazy(() => import('@/pages/tracking/[trackingId]/repo
 const TrackingCasesPage = lazy(() => import('@/pages/tracking/cases'));
 const TrackingCaseDetailPage = lazy(() => import('@/pages/tracking/cases/[caseId]'));
 const SettingsPage = lazy(() => import('@/pages/settings'));
+const EmbedPage = lazy(() => import('@/pages/embed'));
 
 const PageLoading = () => (
   <div className="flex items-center justify-center h-[60vh]">
@@ -31,6 +32,7 @@ export default function App() {
   return (
     <Suspense fallback={<PageLoading />}>
       <Routes>
+        <Route path="/embed" element={<EmbedPage />} />
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route element={<MainLayout />}>
           <Route path="/dashboard" element={<DashboardPage />} />

@@ -67,6 +67,8 @@ export function useDiagnosisStatus(
     refetchOnWindowFocus: 'always',
     refetchInterval: (query) => {
       if (!pollWhenActive) return false;
+      // WebSocket 已连接时由 WS 推送驱动，无需 HTTP 轮询
+      if (wsManager.isConnected()) return false;
       const s = (query.state.data as DiagnosisStatusResponse | undefined)?.status;
       return s === 'running' || s === 'pending' ? 2000 : false;
     },
@@ -883,6 +885,18 @@ export function useWebSocket(enterpriseId: string | null) {
 
       // 根据任务类型刷新对应的查询
       if (message.task_type === 'diagnosis') {
+        // 实时更新 diagnosis status 查询缓存，让 HTTP 轮询知晓最新状态
+        queryClient.setQueryData<DiagnosisStatusResponse>(
+          ['diagnosis', 'status', message.task_id],
+          (prev) => ({
+            diagnosis_id: message.task_id,
+            status: message.status,
+            progress: message.progress,
+            message: message.message ?? undefined,
+            health_score: prev?.health_score,
+          })
+        );
+
         // 仅完成后刷新列表。failed 时不在这里 invalidate，避免先于失败回调触发 refetch，
         // 与「暂停拉数 / 失败定格」竞态；失败后的列表刷新由页面 onFailed 等路径触发。
         if (message.status === 'completed') {

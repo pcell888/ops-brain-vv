@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { App, Button, Card, Empty, Modal, Spin, Tag } from 'antd';
 import {
@@ -12,7 +12,7 @@ import {
   SyncOutlined,
   TrophyOutlined,
 } from '@ant-design/icons';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import ReactECharts from 'echarts-for-react';
 import { DiagnosisHistorySelect } from '@/components/diagnosis-history-select';
@@ -111,6 +111,7 @@ function getTrackingDays(startedAt?: string, endedAt?: string): number {
 
 export default function TrackingDetailPage() {
   const { message } = App.useApp();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { currentEnterprise } = useAppStore();
@@ -152,6 +153,13 @@ export default function TrackingDetailPage() {
   const takeSnapshot = useTakeSnapshot();
   const completeTracking = useCompleteTracking();
   const cancelTracking = useCancelTracking();
+  const [isCompleting, setIsCompleting] = useState(false);
+  const [completeProgress, setCompleteProgress] = useState<{ message: string; type: string }>({
+    message: '',
+    type: '',
+  });
+  const completingFlowRef = useRef(false);
+  const completingTrackingIdRef = useRef('');
 
   const analyze = (analyzeData ?? {}) as AnalyzeResult;
   const trends = (trendsData ?? {}) as TrendsResult;
@@ -295,6 +303,54 @@ export default function TrackingDetailPage() {
     return '✅ 当前风险整体可控，请继续保持稳定采集与复盘';
   }, [analyze.risk_hint, analyze.score_change, analyze.snapshots, analyze.trend, targetRate]);
 
+  useEffect(() => {
+    if (!resolvedTrackingId) return;
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/api/v1/ws/diagnosis/${encodeURIComponent(resolvedTrackingId)}`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          stage?: string;
+          type?: string;
+          message?: string;
+        };
+        if (data.stage !== 'effect_track' || !completingFlowRef.current) return;
+
+        const line =
+          data.message ||
+          (data.type === 'error' ? '完成追踪失败' : '');
+        setCompleteProgress({
+          message: line,
+          type: data.type || 'progress',
+        });
+
+        if (data.type === 'completed') {
+          completingFlowRef.current = false;
+          message.success('追踪已完成');
+          void queryClient.invalidateQueries({ queryKey: ['tracking'] });
+          setTimeout(() => {
+            setIsCompleting(false);
+            setCompleteProgress({ message: '', type: '' });
+          }, 1500);
+        } else if (data.type === 'error') {
+          completingFlowRef.current = false;
+          message.error(data.message || '完成追踪失败');
+          setIsCompleting(false);
+        }
+      } catch (e) {
+        console.error('[Tracking complete] WS parse error:', e);
+      }
+    };
+
+    return () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    };
+  }, [resolvedTrackingId, message, queryClient]);
+
   /** 去掉历史遗留的 ?trackingId / ?snapshotId，本页仅以诊断选择为准 */
   useEffect(() => {
     if (searchParams.has('trackingId') || searchParams.has('snapshotId')) {
@@ -349,9 +405,36 @@ export default function TrackingDetailPage() {
       okText: '确认',
       cancelText: '取消',
       onOk: async () => {
-        await completeTracking.mutateAsync(resolvedTrackingId);
-        message.success('追踪已完成');
+        completingTrackingIdRef.current = resolvedTrackingId;
+        completingFlowRef.current = true;
+        setIsCompleting(true);
+        setCompleteProgress({ message: '正在提交完成追踪…', type: 'progress' });
+        try {
+          await completeTracking.mutateAsync(resolvedTrackingId);
+        } catch {
+          completingFlowRef.current = false;
+          setIsCompleting(false);
+          setCompleteProgress({ message: '', type: '' });
+        }
       },
+    });
+  };
+
+  const handleCancelCompleting = () => {
+    completingFlowRef.current = false;
+    setIsCompleting(false);
+    setCompleteProgress({ message: '', type: '' });
+  };
+
+  const handleRetryComplete = () => {
+    const tid = completingTrackingIdRef.current || resolvedTrackingId;
+    if (!tid) return;
+    completingFlowRef.current = true;
+    setCompleteProgress({ message: '正在重新完成追踪…', type: 'progress' });
+    void completeTracking.mutateAsync(tid).catch(() => {
+      completingFlowRef.current = false;
+      setIsCompleting(false);
+      setCompleteProgress({ message: '', type: '' });
     });
   };
 
@@ -372,6 +455,56 @@ export default function TrackingDetailPage() {
 
   return (
     <div className='space-y-5'>
+      <Modal
+        title='正在完成追踪'
+        open={isCompleting}
+        closable={completeProgress.type === 'completed' || completeProgress.type === 'error'}
+        maskClosable={false}
+        footer={
+          completeProgress.type === 'completed' ? (
+            <Button
+              type='primary'
+              onClick={() => {
+                setIsCompleting(false);
+                void queryClient.invalidateQueries({ queryKey: ['tracking'] });
+                const tid = completingTrackingIdRef.current || resolvedTrackingId;
+                navigate(`/tracking/${encodeURIComponent(tid)}/report`);
+              }}
+            >
+              查看复盘报告
+            </Button>
+          ) : completeProgress.type === 'error' ? (
+            <>
+              <Button onClick={handleCancelCompleting}>关闭</Button>
+              <Button type="primary" loading={completeTracking.isPending} onClick={handleRetryComplete}>
+                重试
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button onClick={handleCancelCompleting} disabled={completeTracking.isPending}>
+                关闭
+              </Button>
+            </>
+          )
+        }
+      >
+        <div className='flex flex-col items-center justify-center gap-4 py-4'>
+          {completeProgress.type !== 'completed' && completeProgress.type !== 'error' && (
+            <Spin size='large' />
+          )}
+          {completeProgress.type === 'completed' && (
+            <CheckCircleOutlined className='!text-5xl text-emerald-500' aria-hidden />
+          )}
+          <p
+            className={`text-center text-sm max-w-md ${
+              completeProgress.type === 'error' ? 'text-red-600' : 'text-[#606266]'
+            }`}
+          >
+            {completeProgress.message || '请稍候…'}
+          </p>
+        </div>
+      </Modal>
       <div className='flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between'>
         <div>
           <p className='mt-2 text-sm text-secondary text-[#303133]'>追踪状态、快照趋势与效果分析总览</p>

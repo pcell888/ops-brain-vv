@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Card, Row, Col, Tag, Button, Empty, Spin,
@@ -12,7 +12,6 @@ import {
 import {
   useSolutionList, useAdoptSolution, useDiagnosisReport,
 } from '@/lib/hooks';
-import { executionApi } from '@/lib/api';
 import { useAppStore } from '@/stores/app-store';
 import clsx from 'clsx';
 import type { SolutionSummary, SolutionGenerateResponse, DiagnosisReport, AIRecommendation } from '@/lib/types';
@@ -28,7 +27,7 @@ export default function SolutionDetailPage() {
   const { message } = App.useApp();
   const params = useParams();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const diagnosisId = params.diagnosisId as string;
 
   const solutionIdFromUrl = searchParams.get('solution_id');
@@ -40,6 +39,11 @@ export default function SolutionDetailPage() {
   const { data: diagnosisReport } = useDiagnosisReport(diagnosisId);
   const adoptSolution = useAdoptSolution();
 
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [executionProgress, setExecutionProgress] = useState<{ message: string; type: string }>({ message: '', type: '' });
+  const [isAdopting, setIsAdopting] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  const executedPlanIdRef = useRef<string | null>(null);
   const solutions = typedSolutionData?.solutions || [];
   const anySolutionAdopted = solutions.some((s) => s.status === 'adopted');
   const aiRecommendation: AIRecommendation | null = typedSolutionData?.ai_recommendation ?? null;
@@ -65,33 +69,138 @@ export default function SolutionDetailPage() {
     }
   }, [solutions, selectedSolutionId, solutionIdFromUrl]);
 
-  const selectedSolution = solutions.find(s => s.solution_id === selectedSolutionId);
+  const handleAdopt = useCallback(
+    async (solutionId: string, retry: boolean = false) => {
+      if (!retry) {
+        if (anySolutionAdopted && !solutions.find((s) => s.solution_id === solutionId && s.status === 'adopted')) {
+          message.warning('已有方案被采纳，不可再采纳其他方案');
+          return;
+        }
+        executedPlanIdRef.current = solutionId;
+        setIsExecuting(true);
+        setExecutionProgress({ message: '正在采纳方案...', type: 'progress' });
+      }
 
-  const handleAdopt = async (solutionId: string) => {
-    if (anySolutionAdopted && !solutions.find((s) => s.solution_id === solutionId && s.status === 'adopted')) {
-      message.warning('已有方案被采纳，不可再采纳其他方案');
+      setIsAdopting(true);
+      try {
+        await adoptSolution.mutateAsync(solutionId);
+        message.success('方案已采纳');
+        await refetch();
+      } catch {
+        message.error('采纳失败');
+        setIsExecuting(false);
+      } finally {
+        setIsAdopting(false);
+      }
+    },
+    [anySolutionAdopted, solutions, message, adoptSolution, refetch],
+  );
+
+  /** 从方案列表「采纳」跳转 ?auto_adopt=1 时，自动走同一套执行蒙层 + WS */
+  useEffect(() => {
+    if (searchParams.get('auto_adopt') !== '1') return;
+    if (solutionsLoading || typedSolutionData?.generating) return;
+
+    const sid = searchParams.get('solution_id');
+    const stripAuto = () => {
+      const next = new URLSearchParams(searchParams);
+      next.delete('auto_adopt');
+      setSearchParams(next, { replace: true });
+    };
+
+    if (!sid) {
+      stripAuto();
       return;
     }
-    try {
-      await adoptSolution.mutateAsync(solutionId);
-      message.success('方案已采纳');
-      await refetch();
-    } catch {
-      message.error('采纳失败');
-    }
-  };
 
-  const waitForExecutionPlanReady = async (planId: string) => {
-    for (let i = 0; i < 60; i++) {
-      try {
-        await executionApi.getPlanSummary(planId);
-        return;
-      } catch {
-        await new Promise((r) => setTimeout(r, 500));
-      }
+    if (!solutions.some((s) => s.solution_id === sid)) {
+      stripAuto();
+      message.warning('未找到该方案');
+      return;
     }
-    throw new Error('执行计划创建超时，请稍后刷新页面查看');
-  };
+
+    const dedupeKey = `${diagnosisId}:${sid}`;
+    if (typeof sessionStorage !== 'undefined') {
+      const sk = `auto_adopt:${dedupeKey}`;
+      if (sessionStorage.getItem(sk)) {
+        stripAuto();
+        return;
+      }
+      sessionStorage.setItem(sk, '1');
+    }
+
+    stripAuto();
+    setSelectedSolutionId(sid);
+    void handleAdopt(sid);
+  }, [
+    searchParams,
+    setSearchParams,
+    diagnosisId,
+    solutionsLoading,
+    typedSolutionData?.generating,
+    solutions,
+    handleAdopt,
+    message,
+  ]);
+
+  useEffect(() => {
+    if (!diagnosisId) return;
+
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/api/v1/ws/diagnosis/${diagnosisId}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('[Execution] WebSocket connected');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          stage?: string;
+          type?: string;
+          message?: string;
+          node?: string;
+        };
+        // 后端约定：采纳/执行任务进度均为 stage=execution；效果追踪为 effect_track，蒙层忽略
+        if (data.stage !== 'execution') return;
+
+        const line =
+          data.message ||
+          (data.type === 'node_complete' && data.node ? `节点已完成：${data.node}` : '') ||
+          (data.type === 'error' ? '执行失败' : '');
+
+        setExecutionProgress({
+          message: line,
+          type: data.type || 'progress',
+        });
+
+        if (data.type === 'completed') {
+          setTimeout(() => {
+            setIsExecuting(false);
+            navigate(`/execution/${encodeURIComponent(executedPlanIdRef.current!)}#execution-task-list`);
+          }, 1500);
+        } else if (data.type === 'error') {
+          message.error(data.message || '执行失败');
+        }
+      } catch (e) {
+        console.error('[Execution] Failed to parse message:', e);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log('[Execution] WebSocket disconnected');
+    };
+
+    return () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    };
+  }, [diagnosisId, navigate, message]);
+
+  const selectedSolution = solutions.find(s => s.solution_id === selectedSolutionId);
 
   const handleAdoptDetailWithConfirm = () => {
     if (!selectedSolution || selectedSolution.status === 'adopted') return;
@@ -102,22 +211,7 @@ export default function SolutionDetailPage() {
       content: '确认后将采纳该方案并进入任务详情中的执行列表。',
       okText: '执行',
       cancelText: '取消',
-      onOk: async () => {
-        try {
-          await adoptSolution.mutateAsync(sid);
-          message.success('方案已采纳');
-          await refetch();
-          try {
-            await waitForExecutionPlanReady(sid);
-            navigate(`/execution/${encodeURIComponent(sid)}#execution-task-list`);
-          } catch (e: any) {
-            message.warning(e?.message || '执行计划创建中，请稍后在执行列表中查看');
-            navigate(`/execution/${encodeURIComponent(sid)}#execution-task-list`);
-          }
-        } catch {
-          message.error('采纳失败');
-        }
-      },
+      onOk: () => handleAdopt(sid),
     });
   };
 
@@ -157,8 +251,67 @@ export default function SolutionDetailPage() {
     );
   }
 
+  const handleCancelExecution = () => {
+    setIsExecuting(false);
+    setExecutionProgress({ message: '', type: '' });
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+  };
+
+  const handleViewTasks = () => {
+    if (executedPlanIdRef.current) {
+      navigate(`/execution/${encodeURIComponent(executedPlanIdRef.current)}#execution-task-list`);
+    }
+  };
+
   return (
     <div className="space-y-6">
+      <Modal
+        title="正在执行方案"
+        open={isExecuting}
+        closable={executionProgress.type !== 'completed'}
+        maskClosable={false}
+        footer={
+          executionProgress.type === 'completed' ? (
+            <Button type="primary" onClick={handleViewTasks}>
+              查看执行任务
+            </Button>
+          ) : executionProgress.type === 'error' ? (
+            <>
+              <Button onClick={handleCancelExecution}>关闭</Button>
+              <Button 
+                type="primary" 
+                onClick={() => executedPlanIdRef.current && handleAdopt(executedPlanIdRef.current, true)}
+                loading={isAdopting}
+              >
+                重试
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button onClick={handleCancelExecution} disabled={isAdopting}>取消</Button>
+              <Button onClick={handleViewTasks}>查看详情</Button>
+            </>
+          )
+        }
+      >
+        <div className="flex flex-col items-center justify-center gap-4 py-4">
+          {executionProgress.type !== 'completed' && executionProgress.type !== 'error' && (
+            <Spin size="large" />
+          )}
+          {executionProgress.type === 'completed' && (
+            <CheckCircleOutlined className="!text-5xl text-emerald-500" aria-hidden />
+          )}
+          <p
+            className={`text-center text-sm max-w-md ${
+              executionProgress.type === 'error' ? 'text-red-600' : 'text-gray-600'
+            }`}
+          >
+            {executionProgress.message || '请稍候…'}
+          </p>
+        </div>
+      </Modal>
       <div className="flex items-center gap-4">
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
         <div>

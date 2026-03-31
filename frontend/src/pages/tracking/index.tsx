@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQueries } from '@tanstack/react-query';
+import { useQueries, useQueryClient } from '@tanstack/react-query';
 import {
   App,
   Button,
@@ -61,6 +61,7 @@ const statusConfig: Record<string, { color: string; icon: React.ReactNode; text:
 
 export default function TrackingPage() {
   const { message } = App.useApp();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { currentEnterprise } = useAppStore();
   const enterpriseId = currentEnterprise?.id || null;
@@ -81,6 +82,13 @@ export default function TrackingPage() {
   const completeTracking = useCompleteTracking();
   const cancelTracking = useCancelTracking();
   const startReviewNow = useStartReviewNow();
+  const [isCompleting, setIsCompleting] = useState(false);
+  const [completeProgress, setCompleteProgress] = useState<{ message: string; type: string }>({
+    message: '',
+    type: '',
+  });
+  const completingFlowRef = useRef(false);
+  const completingTrackingIdRef = useRef('');
 
   const activeRow = useMemo(
     () => items.find((t: TrackingSummary) => t.status === 'active') ?? null,
@@ -90,6 +98,56 @@ export default function TrackingPage() {
     () => items.find((t: TrackingSummary) => t.status === 'scheduled') ?? null,
     [items]
   );
+
+  const wsTrackingId = activeRow?.tracking_id ?? '';
+
+  useEffect(() => {
+    if (!wsTrackingId) return;
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/api/v1/ws/diagnosis/${encodeURIComponent(wsTrackingId)}`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          stage?: string;
+          type?: string;
+          message?: string;
+        };
+        if (data.stage !== 'effect_track' || !completingFlowRef.current) return;
+
+        const line =
+          data.message ||
+          (data.type === 'error' ? '完成追踪失败' : '');
+        setCompleteProgress({
+          message: line,
+          type: data.type || 'progress',
+        });
+
+        if (data.type === 'completed') {
+          completingFlowRef.current = false;
+          message.success('追踪已完成');
+          void queryClient.invalidateQueries({ queryKey: ['tracking'] });
+          setTimeout(() => {
+            setIsCompleting(false);
+            setCompleteProgress({ message: '', type: '' });
+          }, 1500);
+        } else if (data.type === 'error') {
+          completingFlowRef.current = false;
+          message.error(data.message || '完成追踪失败');
+          setIsCompleting(false);
+        }
+      } catch (e) {
+        console.error('[Tracking complete] WS parse error:', e);
+      }
+    };
+
+    return () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    };
+  }, [wsTrackingId, message, queryClient]);
 
   const snapshotQueries = useQueries({
     queries: items.map((t: TrackingSummary) => ({
@@ -196,9 +254,17 @@ export default function TrackingPage() {
         okText: '确认',
         cancelText: '取消',
         onOk: async () => {
-          await completeTracking.mutateAsync(activeRow.tracking_id);
-          message.success('追踪已完成，复盘报告已生成');
-          refetch();
+          completingTrackingIdRef.current = activeRow.tracking_id;
+          completingFlowRef.current = true;
+          setIsCompleting(true);
+          setCompleteProgress({ message: '正在提交完成追踪…', type: 'progress' });
+          try {
+            await completeTracking.mutateAsync(activeRow.tracking_id);
+          } catch {
+            completingFlowRef.current = false;
+            setIsCompleting(false);
+            setCompleteProgress({ message: '', type: '' });
+          }
         },
       });
       return;
@@ -270,8 +336,75 @@ export default function TrackingPage() {
     );
   }
 
+  const handleCancelCompleting = () => {
+    completingFlowRef.current = false;
+    setIsCompleting(false);
+    setCompleteProgress({ message: '', type: '' });
+  };
+
+  const handleRetryComplete = () => {
+    const tid = completingTrackingIdRef.current;
+    if (!tid) return;
+    completingFlowRef.current = true;
+    setCompleteProgress({ message: '正在重新完成追踪…', type: 'progress' });
+    void completeTracking.mutateAsync(tid).catch(() => {
+      completingFlowRef.current = false;
+      setIsCompleting(false);
+      setCompleteProgress({ message: '', type: '' });
+    });
+  };
+
   return (
     <div className="space-y-6">
+      <Modal
+        title="正在完成追踪"
+        open={isCompleting}
+        closable={completeProgress.type === 'completed' || completeProgress.type === 'error'}
+        maskClosable={false}
+        footer={
+          completeProgress.type === 'completed' ? (
+            <Button
+              type="primary"
+              onClick={() => {
+                setIsCompleting(false);
+                void queryClient.invalidateQueries({ queryKey: ['tracking'] });
+                const tid = completingTrackingIdRef.current;
+                if (tid) navigate(`/tracking/${encodeURIComponent(tid)}/report`);
+                else navigate('/tracking');
+              }}
+            >
+              查看复盘报告
+            </Button>
+          ) : completeProgress.type === 'error' ? (
+            <>
+              <Button onClick={handleCancelCompleting}>关闭</Button>
+              <Button type="primary" loading={completeTracking.isPending} onClick={handleRetryComplete}>
+                重试
+              </Button>
+            </>
+          ) : (
+            <Button onClick={handleCancelCompleting} disabled={completeTracking.isPending}>
+              关闭
+            </Button>
+          )
+        }
+      >
+        <div className="flex flex-col items-center justify-center gap-4 py-4">
+          {completeProgress.type !== 'completed' && completeProgress.type !== 'error' && (
+            <Spin size="large" />
+          )}
+          {completeProgress.type === 'completed' && (
+            <CheckCircleOutlined className="!text-5xl text-emerald-500" aria-hidden />
+          )}
+          <p
+            className={`text-center text-sm max-w-md ${
+              completeProgress.type === 'error' ? 'text-red-600' : 'text-[#606266]'
+            }`}
+          >
+            {completeProgress.message || '请稍候…'}
+          </p>
+        </div>
+      </Modal>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
