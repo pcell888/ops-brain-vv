@@ -540,6 +540,10 @@ export const trackingApi = {
   getTrends: (trackingId: string) =>
     api.get(`/tracking/${trackingId}/trends`),
   
+  /** 复盘/完成追踪进度（与 WS `effect_track`、progress_cache 同源，供轮询） */
+  getReviewProgress: (trackingId: string) =>
+    api.get(`/tracking/${trackingId}/review/progress`),
+
   // 获取复盘报告
   getReport: (trackingId: string) =>
     api.get(`/tracking/${trackingId}/report`),

@@ -17,8 +17,6 @@ import {
   useLatestDiagnosisReport,
   useStartDiagnosis,
   useCancelDiagnosis,
-  useWebSocket,
-  useDiagnosisTaskStatus,
   useSolutionList,
   useGenerateSolutions,
   useGenerationTask,
@@ -29,7 +27,7 @@ import { useAppStore } from '@/stores/app-store';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { enterpriseApi, diagnosisApi } from '@/lib/api';
 import dayjs from 'dayjs';
-import type { DiagnosisListResponse, SolutionGenerateResponse } from '@/lib/types';
+import type { SolutionGenerateResponse } from '@/lib/types';
 
 // 维度映射
 const dimensionMapping: Record<string, string> = {
@@ -161,29 +159,8 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
   const { currentEnterprise } = useAppStore();
   const enterpriseId = currentEnterprise?.id || null;
-  const latestIdRef = useRef<string | null>(null);
   const [localFailure, setLocalFailure] = useState<{ isFailed: boolean; message: string }>({ isFailed: false, message: '' });
   const [isCancelling, setCancelling] = useState(false);
-
-  useEffect(() => {
-    latestIdRef.current = null;
-  }, [enterpriseId]);
-
-  useWebSocket(enterpriseId);
-  const { tasks: diagnosisTasks, warnings: diagnosisWarnings } = useDiagnosisTaskStatus(enterpriseId, {
-    onFailed: (taskId, errorMsg) => {
-      if (taskId === latestIdRef.current) {
-        setLocalFailure({ isFailed: true, message: errorMsg });
-        setCancelling(false);
-        if (errorMsg.includes('已取消')) {
-          message.success('已取消诊断');
-        }
-        if (enterpriseId) {
-          queryClient.invalidateQueries({ queryKey: ['diagnosis', 'list', enterpriseId] });
-        }
-      }
-    }
-  });
 
   const { data: enterpriseDetail } = useQuery({
     queryKey: ['enterprise', enterpriseId],
@@ -320,32 +297,8 @@ export default function DashboardPage() {
     message,
   ]);
 
-  // 获取当前正在执行的诊断任务（优先 WebSocket 实时状态，轮询结果兜底）
+  // 当前执行中诊断：由 /diagnosis/{id}/status HTTP 轮询（useLatestDiagnosisReport → useDiagnosisStatus）
   const runningTask = useMemo(() => {
-    const wsTaskForLatest = latestDiagnosisId ? diagnosisTasks[latestDiagnosisId] : undefined;
-    if (wsTaskForLatest && (wsTaskForLatest.status === 'running' || wsTaskForLatest.status === 'pending')) {
-      return {
-        task_id: wsTaskForLatest.task_id,
-        status: wsTaskForLatest.status,
-        progress: wsTaskForLatest.progress || 0,
-        message: wsTaskForLatest.message || '处理中...',
-      };
-    }
-
-    const wsRunningTasks = Object.values(diagnosisTasks).filter(
-      (t) => t.status === 'running' || t.status === 'pending'
-    );
-    if (wsRunningTasks.length > 0) {
-      const wsNewest = wsRunningTasks.sort((a, b) => (b.progress || 0) - (a.progress || 0))[0];
-      return {
-        task_id: wsNewest.task_id,
-        status: wsNewest.status,
-        progress: wsNewest.progress || 0,
-        message: wsNewest.message || '处理中...',
-      };
-    }
-
-    // 兜底：使用轮询得到的最新状态
     if (latestDiagnosisStatus === 'running' || latestDiagnosisStatus === 'pending') {
       return {
         task_id: latestDiagnosisId || '',
@@ -354,9 +307,8 @@ export default function DashboardPage() {
         message: latestDiagnosisMessage || '处理中...',
       };
     }
-
     return null;
-  }, [diagnosisTasks, latestDiagnosisStatus, latestDiagnosisProgress, latestDiagnosisMessage, latestDiagnosisId]);
+  }, [latestDiagnosisStatus, latestDiagnosisProgress, latestDiagnosisMessage, latestDiagnosisId]);
 
   const isDiagnosing = !!runningTask;
 
@@ -389,7 +341,6 @@ export default function DashboardPage() {
     }
 
     setLocalFailure({ isFailed: false, message: '' });
-    latestIdRef.current = null;
 
     try {
       const result = await startDiagnosis.mutateAsync({
@@ -402,18 +353,7 @@ export default function DashboardPage() {
       } else if ((result as { already_running?: boolean }).already_running) {
         message.info('已有诊断任务在执行，已为您显示进度');
         await refetchList();
-        const listData = queryClient.getQueryData<DiagnosisListResponse>([
-          'diagnosis',
-          'list',
-          enterpriseId,
-          0,
-          1,
-        ]);
-        const rid = listData?.items?.[0]?.diagnosis_id;
-        if (rid) latestIdRef.current = rid;
       } else {
-        const rid = (result as { diagnosis_id?: string }).diagnosis_id;
-        if (rid) latestIdRef.current = rid;
         message.success('诊断任务已提交');
       }
     } catch (error: any) {
@@ -427,7 +367,7 @@ export default function DashboardPage() {
     cancelDiagnosis.mutate(runningTask.task_id, {
       onSuccess: () => {
         setCancelling(false);
-        // 不在此处弹「已取消诊断」，由 WebSocket onCancelled 统一弹一次，避免重复
+        // 不在此处弹「已取消诊断」，由轮询状态变化统一提示，避免重复
       },
       onError: (e: any) => {
         const isTimeout = e?.code === 'ECONNABORTED' || /timeout/i.test(e?.message || '');
@@ -694,16 +634,6 @@ export default function DashboardPage() {
           showInfo={false}
           size={{ height: 8 }}
         />
-        {/* 警告信息展示 */}
-        {diagnosisWarnings.length > 0 && (
-          <div className="mt-3 bg-orange-50 border border-orange-200 rounded-lg p-3 max-h-24 overflow-y-auto">
-            {diagnosisWarnings.slice(-3).map((w, i) => (
-              <p key={i} className="text-orange-700 text-xs leading-relaxed">
-                {w}
-              </p>
-            ))}
-          </div>
-        )}
       </div>
     );
   };

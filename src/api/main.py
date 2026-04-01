@@ -6,6 +6,7 @@ import logging
 
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from src.api.constants import API_PREFIX
 from src.api.routes import diagnosis, solutions, sys_config, track, review, ws, mcp
@@ -25,17 +26,21 @@ from src.core.db_init import (
 )
 from src.wlwq.database import close_pool as wlwq_close_pool, get_pool as wlwq_get_pool
 from src.core.logging_setup import setup_logging
+from src.core.tracing import setup_tracing, close_tracing
 from src.scheduler.weekly_diagnosis import start_scheduler
 
 logger = logging.getLogger(__name__)
 
 setup_logging("ops-brain")
+setup_tracing()
 
 app = FastAPI(
     title="企业运营AI智能诊断系统",
     description="基多租户 SaaS 智能诊断服务",
     version="0.1.0",
 )
+
+FastAPIInstrumentor.instrument_app(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -98,6 +103,7 @@ async def shutdown():
     await close_mcp_sessions()
     await reset_graph_app()
     await wlwq_close_pool()
+    close_tracing()
 
 
 @app.get("/health")

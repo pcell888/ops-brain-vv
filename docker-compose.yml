@@ -19,6 +19,8 @@ services:
       - LLM_MODEL=qwen-max
       - LLM_BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
+      - OTEL_SERVICE_NAME=ops-brain
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
     depends_on:
       - postgres
       - redis
@@ -78,6 +80,63 @@ services:
     image: redis:7-alpine
     ports:
       - "${REDIS_HOST_PORT:-6379}:6379"
+
+  # ── 可观测性：OTel Collector → Jaeger ──
+  otel-collector:
+    restart: unless-stopped
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./docker/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - jaeger
+
+  jaeger:
+    restart: unless-stopped
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  # ── 可观测性：Promtail → Loki ──
+  loki:
+    restart: unless-stopped
+    image: grafana/loki:3.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./docker/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - ./data/loki:/loki
+
+  promtail:
+    restart: unless-stopped
+    image: grafana/promtail:latest
+    volumes:
+      - ./logs:/var/log/app:ro
+      - ./docker/promtail/promtail-config.yaml:/etc/promtail/config.yaml:ro
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      - loki
+
+  # ── Grafana 统一 Dashboard ──
+  grafana:
+    restart: unless-stopped
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./data/grafana:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - loki
+      - jaeger
 
 volumes:
   frontend_node_modules:

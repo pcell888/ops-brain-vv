@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueries, useQueryClient } from '@tanstack/react-query';
 import {
@@ -35,6 +35,7 @@ import {
   useDiagnosisSelection,
   useStartReviewNow,
   useTakeSnapshot,
+  useTrackingCompletionPoll,
   useTrackingList,
 } from '@/lib/hooks';
 import type { TrackingSummary } from '@/lib/types';
@@ -89,6 +90,31 @@ export default function TrackingPage() {
   });
   const completingFlowRef = useRef(false);
   const completingTrackingIdRef = useRef('');
+  const [completionPollId, setCompletionPollId] = useState<string | null>(null);
+
+  useTrackingCompletionPoll(completionPollId, !!completionPollId && isCompleting, {
+    onProgress: ({ message: line }) => {
+      setCompleteProgress({ message: line, type: 'progress' });
+    },
+    onCompleted: () => {
+      completingFlowRef.current = false;
+      message.success('追踪已完成');
+      void queryClient.invalidateQueries({ queryKey: ['tracking'] });
+      setCompleteProgress({ message: '追踪已完成，复盘报告已生成', type: 'completed' });
+      setCompletionPollId(null);
+      setTimeout(() => {
+        setIsCompleting(false);
+        setCompleteProgress({ message: '', type: '' });
+      }, 1500);
+    },
+    onError: (errMsg) => {
+      completingFlowRef.current = false;
+      message.error(errMsg);
+      setCompleteProgress({ message: errMsg, type: 'error' });
+      setIsCompleting(false);
+      setCompletionPollId(null);
+    },
+  });
 
   const activeRow = useMemo(
     () => items.find((t: TrackingSummary) => t.status === 'active') ?? null,
@@ -98,56 +124,6 @@ export default function TrackingPage() {
     () => items.find((t: TrackingSummary) => t.status === 'scheduled') ?? null,
     [items]
   );
-
-  const wsTrackingId = activeRow?.tracking_id ?? '';
-
-  useEffect(() => {
-    if (!wsTrackingId) return;
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/api/v1/ws/diagnosis/${encodeURIComponent(wsTrackingId)}`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          stage?: string;
-          type?: string;
-          message?: string;
-        };
-        if (data.stage !== 'effect_track' || !completingFlowRef.current) return;
-
-        const line =
-          data.message ||
-          (data.type === 'error' ? '完成追踪失败' : '');
-        setCompleteProgress({
-          message: line,
-          type: data.type || 'progress',
-        });
-
-        if (data.type === 'completed') {
-          completingFlowRef.current = false;
-          message.success('追踪已完成');
-          void queryClient.invalidateQueries({ queryKey: ['tracking'] });
-          setTimeout(() => {
-            setIsCompleting(false);
-            setCompleteProgress({ message: '', type: '' });
-          }, 1500);
-        } else if (data.type === 'error') {
-          completingFlowRef.current = false;
-          message.error(data.message || '完成追踪失败');
-          setIsCompleting(false);
-        }
-      } catch (e) {
-        console.error('[Tracking complete] WS parse error:', e);
-      }
-    };
-
-    return () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      }
-    };
-  }, [wsTrackingId, message, queryClient]);
 
   const snapshotQueries = useQueries({
     queries: items.map((t: TrackingSummary) => ({
@@ -257,12 +233,14 @@ export default function TrackingPage() {
           completingTrackingIdRef.current = activeRow.tracking_id;
           completingFlowRef.current = true;
           setIsCompleting(true);
+          setCompletionPollId(activeRow.tracking_id);
           setCompleteProgress({ message: '正在提交完成追踪…', type: 'progress' });
           try {
             await completeTracking.mutateAsync(activeRow.tracking_id);
           } catch {
             completingFlowRef.current = false;
             setIsCompleting(false);
+            setCompletionPollId(null);
             setCompleteProgress({ message: '', type: '' });
           }
         },
@@ -343,6 +321,7 @@ export default function TrackingPage() {
   const handleCancelCompleting = () => {
     completingFlowRef.current = false;
     setIsCompleting(false);
+    setCompletionPollId(null);
     setCompleteProgress({ message: '', type: '' });
   };
 
@@ -350,10 +329,12 @@ export default function TrackingPage() {
     const tid = completingTrackingIdRef.current;
     if (!tid) return;
     completingFlowRef.current = true;
+    setCompletionPollId(tid);
     setCompleteProgress({ message: '正在重新完成追踪…', type: 'progress' });
     void completeTracking.mutateAsync(tid).catch(() => {
       completingFlowRef.current = false;
       setIsCompleting(false);
+      setCompletionPollId(null);
       setCompleteProgress({ message: '', type: '' });
     });
   };

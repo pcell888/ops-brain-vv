@@ -1757,6 +1757,7 @@ async def complete_tracking(tracking_id: str):
         async with _complete_tracking_lock:
             if tracking_id in _complete_tracking_inflight:
                 return {
+                    "tracking_id": tracking_id,
                     "status": "accepted",
                     "message": "完成追踪正在处理中，请留意页面进度",
                 }
@@ -1771,6 +1772,7 @@ async def complete_tracking(tracking_id: str):
 
         asyncio.create_task(_run())
         return {
+            "tracking_id": tracking_id,
             "status": "accepted",
             "message": "已开始完成追踪，耗时操作将在后台执行并通过 WebSocket 推送进度",
         }
@@ -1862,6 +1864,17 @@ async def get_trends(tracking_id: str):
     except Exception:
         logger.exception("查询趋势失败 tracking_id=%s", tracking_id)
         return {"tracking_id": tracking_id, "timestamps": [], "indicators": {}}
+
+
+# ── 复盘进度轮询 ─────────────────────────────────────────────────
+
+
+@router.get("/{tracking_id}/review/progress", summary="复盘进度(兼容)")
+async def compat_review_progress(tracking_id: str):
+    """兼容前端 GET /tracking/{trackingId}/review/progress，与 /review/{thread_id}/progress 一致。"""
+    from src.api.routes.review import build_review_progress
+
+    return await build_review_progress(tracking_id)
 
 
 # ── 复盘报告 ─────────────────────────────────────────────────────

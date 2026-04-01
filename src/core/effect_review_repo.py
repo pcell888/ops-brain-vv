@@ -73,3 +73,19 @@ async def save_review_report(
             await conn.commit()
     except Exception as e:
         logger.warning("复盘报告落库失败: %s", e)
+
+
+async def review_report_exists(thread_id: str) -> bool:
+    """是否已有复盘报告行（含兼容层「完成追踪」写入）。"""
+    await ensure_ai_review_report()
+    try:
+        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT 1 FROM ai_review_report WHERE thread_id = %s LIMIT 1",
+                    (thread_id[:128],),
+                )
+                return await cur.fetchone() is not None
+    except Exception as e:
+        logger.warning("查询复盘报告是否存在失败: %s", e)
+        return False

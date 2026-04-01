@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import hashlib
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from psycopg.rows import dict_row
@@ -52,6 +52,27 @@ def _score_to_status(score: float) -> str:
     if score >= 40:
         return "warning"
     return "danger"
+
+
+def _list_item_cn_time(raw: object) -> tuple[str, str | None]:
+    """列表项创建时间统一为中国时区：与 DB UTC 存库 + 前端本地展示对齐。"""
+    if raw is None:
+        return "诊断", None
+    dt: datetime | None = None
+    if isinstance(raw, datetime):
+        dt = raw
+    elif isinstance(raw, str) and raw:
+        s = raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
+        try:
+            dt = datetime.fromisoformat(s)
+        except (ValueError, TypeError):
+            return "诊断", raw
+    else:
+        return "诊断", None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    local = dt.astimezone(CN_TZ)
+    return local.strftime("诊断 %Y-%m-%d %H:%M"), local.isoformat(timespec="seconds")
 
 
 def _normalize_recommendations(val: object) -> list[str]:
@@ -241,19 +262,7 @@ async def compat_diagnosis_list(
                     error_message = "无法获取诊断状态"
 
         _created_at = row.get("created_at")
-        if hasattr(_created_at, "strftime"):
-            _name = _created_at.strftime("诊断 %Y-%m-%d %H:%M")
-            _created_at_str = _created_at.isoformat()
-        elif isinstance(_created_at, str) and _created_at:
-            try:
-                _dt = datetime.fromisoformat(_created_at)
-                _name = _dt.strftime("诊断 %Y-%m-%d %H:%M")
-            except (ValueError, TypeError):
-                _name = "诊断"
-            _created_at_str = _created_at
-        else:
-            _name = "诊断"
-            _created_at_str = None
+        _name, _created_at_str = _list_item_cn_time(_created_at)
 
         result_items.append(
             {
@@ -522,11 +531,57 @@ async def compat_benchmark_dimension_scores(
 # ── /diagnosis/status/{id} ──────────────────────────────────────
 
 
+async def _status_while_graph_running(diagnosis_id: str, report: dict | None) -> dict | None:
+    """报告已落库或仅在 state 中，但 LangGraph 任务仍在跑时，与 list 一致返回 running + 实时进度。"""
+    task = running_tasks.get(diagnosis_id)
+    if not task or task.done():
+        return None
+    progress = 0
+    msg = "诊断执行中..."
+    cached = progress_cache.get(diagnosis_id)
+    if cached:
+        msg = cached.get("message", msg)
+        try:
+            progress = int(float(cached.get("percent", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+    else:
+        try:
+            app = await get_graph_app()
+            config = {"configurable": {"thread_id": diagnosis_id}}
+            state = await app.aget_state(config)
+            values = state.values if state and state.values else {}
+            msgs = values.get("progress_messages") or []
+            if msgs:
+                last = msgs[-1] if isinstance(msgs[-1], dict) else {}
+                msg = str(last.get("content", "")) or msg
+                try:
+                    progress = int(float(last.get("percent", 0)))
+                except (TypeError, ValueError):
+                    pass
+        except Exception:
+            pass
+    health_score_val = None
+    if report:
+        hs = report.get("health_score", 0)
+        health_score_val = hs if not isinstance(hs, dict) else hs.get("total_score", 0)
+    return {
+        "diagnosis_id": diagnosis_id,
+        "status": "pending" if progress <= 0 else "running",
+        "progress": progress,
+        "message": msg,
+        "health_score": health_score_val,
+    }
+
+
 @router.get("/status/{diagnosis_id}", summary="诊断状态(兼容)")
 async def compat_diagnosis_status(diagnosis_id: str):
     """兼容前端 GET /diagnosis/status/{diagnosisId}。"""
     report = await get_report_from_db(diagnosis_id)
     if report:
+        running_body = await _status_while_graph_running(diagnosis_id, report)
+        if running_body is not None:
+            return running_body
         hs = report.get("health_score", 0)
         return {
             "diagnosis_id": diagnosis_id,
@@ -583,6 +638,9 @@ async def compat_diagnosis_status(diagnosis_id: str):
     values = state.values if state and state.values else {}
     state_report = values.get("diagnosis_report") if isinstance(values, dict) else None
     if isinstance(state_report, dict):
+        running_body = await _status_while_graph_running(diagnosis_id, state_report)
+        if running_body is not None:
+            return running_body
         hs = state_report.get("health_score", 0)
         return {
             "diagnosis_id": diagnosis_id,

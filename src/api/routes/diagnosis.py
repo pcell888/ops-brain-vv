@@ -39,9 +39,11 @@ from src.agent.tools import set_progress_sender, clear_progress_sender
 from src.mcp_servers.tenant_router import TenantRouter
 from src.mcp_servers.biz_api_client import BizAPIClient, BizAPIError
 from src.api.token_sync import resolve_biz_auth_token
+from src.core.tracing import get_tracer
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/diagnosis", tags=["诊断"])
+tracer = get_tracer("diagnosis")
 
 
 class CompatStartDiagnosisRequest(BaseModel):
@@ -289,69 +291,75 @@ async def _run_diagnosis_with_stream(
     }
 
     try:
-        set_progress_sender(thread_id, manager)
-        async for event in astream_events_with_retry(initial_state, config):
-            kind = event["event"]
+        with tracer.start_as_current_span("diagnosis.run", attributes={
+            "diagnosis.thread_id": thread_id,
+            "diagnosis.tenant_id": tenant_id,
+            "diagnosis.store_id": store_id,
+            "diagnosis.trigger_type": trigger_type,
+        }) as span:
+            set_progress_sender(thread_id, manager)
+            async for event in astream_events_with_retry(initial_state, config):
+                kind = event["event"]
 
-            if kind == "on_chain_start":
-                node_name = event.get("name", "")
-                if node_name in _WORKFLOW_NODES:
+                if kind == "on_chain_start":
+                    node_name = event.get("name", "")
+                    if node_name in _WORKFLOW_NODES:
+                        payload = {
+                            "type": "node_start",
+                            "node": node_name,
+                            "timestamp": datetime.now(CN_TZ).isoformat(),
+                        }
+                        if node_name in _NODE_START_PERCENT:
+                            payload["percent"] = _NODE_START_PERCENT[node_name]
+                        await manager.send_progress(thread_id, payload)
+
+                elif kind == "on_chain_end":
+                    node_name = event.get("name", "")
+                    output = event.get("data", {}).get("output", {})
+
+                    if node_name not in _WORKFLOW_NODES:
+                        continue
+
+                    if isinstance(output, dict) and "progress_messages" in output:
+                        for msg in output["progress_messages"]:
+                            content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+                            payload = {
+                                "type": "progress",
+                                "message": content,
+                                "timestamp": datetime.now(CN_TZ).isoformat(),
+                            }
+                            if isinstance(msg, dict) and msg.get("percent") is not None:
+                                payload["percent"] = msg.get("percent")
+                            await manager.send_progress(thread_id, payload)
+
                     payload = {
-                        "type": "node_start",
+                        "type": "node_complete",
                         "node": node_name,
                         "timestamp": datetime.now(CN_TZ).isoformat(),
                     }
-                    if node_name in _NODE_START_PERCENT:
-                        payload["percent"] = _NODE_START_PERCENT[node_name]
+                    if node_name in _NODE_COMPLETE_PERCENT:
+                        payload["percent"] = _NODE_COMPLETE_PERCENT[node_name]
                     await manager.send_progress(thread_id, payload)
 
-            elif kind == "on_chain_end":
-                node_name = event.get("name", "")
-                output = event.get("data", {}).get("output", {})
+                    if node_name == "diagnose" and isinstance(output, dict) and "health_score" in output:
+                        await manager.send_progress(
+                            thread_id,
+                            {
+                                "type": "diagnosis_result",
+                                "health_score": output["health_score"],
+                                "anomaly_count": len(output.get("anomalies", [])),
+                                "dimension_scores": output.get("dimension_scores"),
+                            },
+                        )
 
-                if node_name not in _WORKFLOW_NODES:
-                    continue
-
-                if isinstance(output, dict) and "progress_messages" in output:
-                    for msg in output["progress_messages"]:
-                        content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-                        payload = {
-                            "type": "progress",
-                            "message": content,
-                            "timestamp": datetime.now(CN_TZ).isoformat(),
-                        }
-                        if isinstance(msg, dict) and msg.get("percent") is not None:
-                            payload["percent"] = msg.get("percent")
-                        await manager.send_progress(thread_id, payload)
-
-                payload = {
-                    "type": "node_complete",
-                    "node": node_name,
-                    "timestamp": datetime.now(CN_TZ).isoformat(),
-                }
-                if node_name in _NODE_COMPLETE_PERCENT:
-                    payload["percent"] = _NODE_COMPLETE_PERCENT[node_name]
-                await manager.send_progress(thread_id, payload)
-
-                if node_name == "diagnose" and isinstance(output, dict) and "health_score" in output:
-                    await manager.send_progress(
-                        thread_id,
-                        {
-                            "type": "diagnosis_result",
-                            "health_score": output["health_score"],
-                            "anomaly_count": len(output.get("anomalies", [])),
-                            "dimension_scores": output.get("dimension_scores"),
-                        },
-                    )
-
-                if node_name == "generate_solutions" and isinstance(output, dict) and "solution_plans" in output:
-                    await manager.send_progress(
-                        thread_id,
-                        {
-                            "type": "solutions_ready",
-                            "plans": output["solution_plans"],
-                        },
-                    )
+                    if node_name == "generate_solutions" and isinstance(output, dict) and "solution_plans" in output:
+                        await manager.send_progress(
+                            thread_id,
+                            {
+                                "type": "solutions_ready",
+                                "plans": output["solution_plans"],
+                            },
+                        )
 
     except asyncio.CancelledError:
         logger.info("诊断流程已取消: thread=%s", thread_id)

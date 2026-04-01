@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.config import CN_TZ, get_settings
+from src.core.tracing import get_tracer
 
 # 由 API 在流式运行前设置，用于 emit_progress 时实时推送到 WebSocket
 _progress_sender: ContextVar[tuple[str, Any] | None] = ContextVar("progress_sender", default=None)
@@ -31,6 +32,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger(__name__)
+tracer = get_tracer("mcp_client")
 
 
 def mcp_stdio_env() -> dict[str, str]:
@@ -248,32 +250,41 @@ def _parse_call_tool_result(result: Any) -> Any:
 
 async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
     """通过 stdio 调用 MCP Server 的 Tool。"""
-    session = await _get_session(server_name)
+    with tracer.start_as_current_span(f"mcp.{server_name}.{tool_name}") as span:
+        span.set_attribute("mcp.server", server_name)
+        span.set_attribute("mcp.tool", tool_name)
+        try:
+            span.set_attribute("mcp.arguments", json.dumps(arguments, ensure_ascii=False)[:500])
+        except (TypeError, ValueError):
+            pass
 
-    # 业务 HTTP 实际在 MCP 子进程内发起，子进程 logger 不会进主服务日志；此处主进程打一条便于排查
-    try:
-        logger.info(
-            "mcp_call %s.%s json=%s",
-            server_name,
-            tool_name,
-            json.dumps(arguments, ensure_ascii=False),
-        )
-    except (TypeError, ValueError):
-        logger.info("mcp_call %s.%s args=%r", server_name, tool_name, arguments)
+        session = await _get_session(server_name)
 
-    try:
-        result = await asyncio.wait_for(
-            session.call_tool(tool_name, arguments),
-            timeout=MCP_CALL_TIMEOUT,
-        )
+        try:
+            logger.info(
+                "mcp_call %s.%s json=%s",
+                server_name,
+                tool_name,
+                json.dumps(arguments, ensure_ascii=False),
+            )
+        except (TypeError, ValueError):
+            logger.info("mcp_call %s.%s args=%r", server_name, tool_name, arguments)
 
-        return unwrap_mcp_json_value(_parse_call_tool_result(result))
+        try:
+            result = await asyncio.wait_for(
+                session.call_tool(tool_name, arguments),
+                timeout=MCP_CALL_TIMEOUT,
+            )
 
-    except MCPToolInvocationError:
-        raise
-    except Exception as e:
-        logger.error("MCP调用失败: %s.%s -> %s", server_name, tool_name, e)
-        raise RuntimeError(f"MCP 服务 {server_name} 调用失败: {e}") from e
+            return unwrap_mcp_json_value(_parse_call_tool_result(result))
+
+        except MCPToolInvocationError:
+            span.record_exception(MCPToolInvocationError("MCP tool returned isError"))
+            raise
+        except Exception as e:
+            span.record_exception(e)
+            logger.error("MCP调用失败: %s.%s -> %s", server_name, tool_name, e)
+            raise RuntimeError(f"MCP 服务 {server_name} 调用失败: {e}") from e
 
 
 def emit_progress(
@@ -313,6 +324,9 @@ def emit_progress(
             cache_entry: dict[str, Any] = {"message": message, "percent": percent, "timestamp": ts}
             if level and level != "info":
                 cache_entry["level"] = level
+            if not for_adoption_ui:
+                cache_entry["stage"] = "effect_track"
+                cache_entry["type"] = "progress"
             progress_cache[thread_id_key] = cache_entry
     except Exception:
         pass

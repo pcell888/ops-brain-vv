@@ -213,19 +213,10 @@ async def compat_solution_list(diagnosis_id: str):
     }
 
 
-@router.put("/{solution_id}/adopt", summary="采纳方案(兼容)")
-async def compat_adopt_solution(solution_id: str):
-    """兼容前端 PUT /solutions/{solutionId}/adopt。
-
-    前端按 solution_id（即 plan_id）采纳，后端需要 thread_id + plan_id。
-    优先从数据库 plan_ids 索引查找，找不到再遍历最近的诊断报告。
-    """
-    from src.api.routes.solutions import adopt_plan
-    from src.core.models import AdoptPlanRequest
-
+async def _thread_id_for_solution_plan(solution_id: str) -> str:
+    """由 plan_id（solution_id）解析诊断 thread_id，供采纳与进度查询共用。"""
     app = await get_graph_app()
 
-    # 方式 1：从数据库 plan_ids 索引快速查找
     try:
         from src.core.diagnosis_report_repo import find_thread_id_by_plan_id
 
@@ -237,11 +228,10 @@ async def compat_adopt_solution(solution_id: str):
                 plans = state.values.get("solution_plans") or []
                 plan_ids = {p.get("plan_id") for p in plans}
                 if solution_id in plan_ids:
-                    return await adopt_plan(thread_id, AdoptPlanRequest(plan_id=solution_id))
+                    return thread_id
     except Exception as e:
         logger.warning("从 plan_ids 索引查找失败: %s", e)
 
-    # 方式 2：遍历最近的诊断报告（兜底）
     from src.core.diagnosis_report_repo import list_reports
 
     page = 1
@@ -261,7 +251,6 @@ async def compat_adopt_solution(solution_id: str):
                 plans = state.values.get("solution_plans") or []
                 plan_ids = {p.get("plan_id") for p in plans}
                 if solution_id in plan_ids:
-                    # 找到后同步更新 plan_ids 到数据库
                     plan_id_list = [p.get("plan_id") for p in plans if p.get("plan_id")]
                     if plan_id_list:
                         try:
@@ -270,7 +259,7 @@ async def compat_adopt_solution(solution_id: str):
                             await update_plan_ids(thread_id, plan_id_list)
                         except Exception:
                             pass
-                    return await adopt_plan(thread_id, AdoptPlanRequest(plan_id=solution_id))
+                    return thread_id
             except Exception:
                 continue
 
@@ -279,6 +268,27 @@ async def compat_adopt_solution(solution_id: str):
         page += 1
 
     raise HTTPException(status_code=404, detail=f"未找到包含方案 {solution_id} 的诊断")
+
+
+@router.put("/{solution_id}/adopt", summary="采纳方案(兼容)")
+async def compat_adopt_solution(solution_id: str):
+    """兼容前端 PUT /solutions/{solutionId}/adopt。"""
+    from src.api.routes.solutions import adopt_plan
+    from src.core.models import AdoptPlanRequest
+
+    thread_id = await _thread_id_for_solution_plan(solution_id)
+    return await adopt_plan(thread_id, AdoptPlanRequest(plan_id=solution_id))
+
+
+@router.get("/{solution_id}/adopt/progress", summary="采纳方案执行进度(兼容)")
+async def compat_adopt_execution_progress(solution_id: str):
+    """兼容前端 GET /solutions/{solutionId}/adopt/progress，按 plan 解析 thread 后轮询。"""
+    from src.api.routes.solutions import build_adopt_execution_progress
+
+    thread_id = await _thread_id_for_solution_plan(solution_id)
+    data = await build_adopt_execution_progress(thread_id)
+    data["solution_id"] = solution_id
+    return data
 
 
 @router.get("/detail/{solution_id}", summary="方案详情(兼容)")

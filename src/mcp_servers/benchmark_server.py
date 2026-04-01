@@ -231,4 +231,6 @@ async def get_project_enterprise_info(tenant_id: str) -> dict:
 # ── stdio Transport ──────────────────────────────────────────────
 
 if __name__ == "__main__":
+    from src.core.logging_setup import setup_logging
+    setup_logging("mcp-servers", console=False)
     server.run(transport="stdio")

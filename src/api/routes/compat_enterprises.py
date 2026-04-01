@@ -278,7 +278,7 @@ async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody, request:
                     (
                         enterprise_id,
                         tenant_name,
-                        api_base_url,
+                        api_base_url + "/web/ai",
                         industry_code,
                         industry_name,
                         json.dumps(config, ensure_ascii=False),

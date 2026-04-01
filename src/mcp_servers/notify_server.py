@@ -272,4 +272,6 @@ async def send_customer_targeted_message(
 # ── stdio Transport ──────────────────────────────────────────────
 
 if __name__ == "__main__":
+    from src.core.logging_setup import setup_logging
+    setup_logging("mcp-servers", console=False)
     server.run(transport="stdio")

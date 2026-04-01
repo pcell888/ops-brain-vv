@@ -1,6 +1,6 @@
 
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Card, Table, Tag, Button, Empty, Spin, Progress, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { 
@@ -11,15 +11,9 @@ import {
   CloseCircleOutlined,
   EyeOutlined,
   LoadingOutlined,
-  WifiOutlined,
-  DisconnectOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
-import { 
-  useDiagnosisList, 
-  useWebSocket,
-  useDiagnosisTaskStatus,
-} from '@/lib/hooks';
+import { useDiagnosisList } from '@/lib/hooks';
 import { useAppStore } from '@/stores/app-store';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -48,47 +42,12 @@ export default function DiagnosisReportsPage() {
   // 分页状态
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const skip = useMemo(() => (currentPage - 1) * pageSize, [currentPage, pageSize]);
+  const skip = (currentPage - 1) * pageSize;
   
-  const { data, isLoading, refetch } = useDiagnosisList(enterpriseId, skip, pageSize);
-  const typedData = data as DiagnosisListResponse | undefined;
-
-  // WebSocket 连接
-  const { connected } = useWebSocket(enterpriseId);
-  
-  // 诊断任务状态监听 - 状态和进度直接在列表中显示
-  const { tasks } = useDiagnosisTaskStatus(enterpriseId, {
-    onCompleted: () => {
-      // 完成时刷新列表
-      refetch();
-    },
-    onFailed: () => {
-      // 失败时刷新列表
-      refetch();
-    },
+  const { data, isLoading } = useDiagnosisList(enterpriseId, skip, pageSize, false, {
+    pollWhenAnyActive: true,
   });
-
-  // 合并 WebSocket 实时状态到列表数据
-  const listDataWithRealtimeStatus = useMemo(() => {
-    if (!typedData?.items) return [];
-    
-    return typedData.items.map(item => {
-      // 查找对应的实时任务状态
-      const realtimeTask = Object.values(tasks).find(
-        t => t.task_id === item.diagnosis_id
-      );
-      
-      if (realtimeTask) {
-        return {
-          ...item,
-          status: realtimeTask.status,
-          progress: realtimeTask.progress,
-          message: realtimeTask.message || undefined,
-        };
-      }
-      return item;
-    });
-  }, [typedData?.items, tasks]);
+  const typedData = data as DiagnosisListResponse | undefined;
 
   // 查看报告详情 - 跳转到详情页
   const handleViewDetail = (diagnosisId: string) => {
@@ -272,21 +231,8 @@ export default function DiagnosisReportsPage() {
             查看历史诊断报告，追踪企业运营健康度变化趋势
           </p>
         </div>
-        <div className="flex gap-3 items-center">
-          {/* WebSocket 连接状态指示器 */}
-          <div className="flex items-center gap-1.5 text-xs">
-            {connected ? (
-              <>
-                <WifiOutlined className="text-accent-emerald" />
-                <span className="text-accent-emerald">实时连接</span>
-              </>
-            ) : (
-              <>
-                <DisconnectOutlined className="text-muted" />
-                <span className="text-muted">离线</span>
-              </>
-            )}
-          </div>
+        <div className="flex gap-3 items-center text-xs text-muted">
+          运行中任务每 2 秒自动刷新
         </div>
       </div>
 
@@ -299,7 +245,7 @@ export default function DiagnosisReportsPage() {
         ) : (
           <Table
             columns={columns}
-            dataSource={listDataWithRealtimeStatus}
+            dataSource={typedData?.items ?? []}
             rowKey="diagnosis_id"
             pagination={{
               current: currentPage,

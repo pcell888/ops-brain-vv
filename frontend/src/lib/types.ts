@@ -354,6 +354,21 @@ export interface GanttData {
 
 // ============ 追踪模块类型 ============
 
+/** GET /tracking/{id}/review/progress */
+export interface TrackingReviewProgress {
+  thread_id: string;
+  tracking_id: string;
+  status: string;
+  is_running?: boolean;
+  stage?: string | null;
+  percent?: number;
+  message?: string | null;
+  last_timestamp?: string | null;
+  event_type?: string | null;
+  node?: string | null;
+  review_due_date?: string | null;
+}
+
 export interface TrackingSummary {
   tracking_id: string;
   plan_id: string;

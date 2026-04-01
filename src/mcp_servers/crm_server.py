@@ -10,7 +10,7 @@ import logging
 from mcp.server import FastMCP
 
 from src.mcp_servers.tenant_router import TenantRouter
-from src.mcp_servers.biz_api_client import BizAPIClient
+from src.mcp_servers.biz_api_client import BizAPIClient, BizAPIError
 from src.mcp_servers.biz_scope import effective_store_id_for_biz
 
 logger = logging.getLogger(__name__)
@@ -18,6 +18,28 @@ logger = logging.getLogger(__name__)
 server = FastMCP("crm-server")
 router = TenantRouter()
 biz = BizAPIClient(router)
+
+
+def _minimal_store_profile(tenant_id: str, store_id: str) -> dict:
+    """业务侧无该店铺（404）时仍返回与成功路径一致的结构，供快照/诊断降级。"""
+    return {
+        "tenant_id": tenant_id,
+        "store_id": store_id,
+        "store_name": "",
+        "store_type": "",
+        "business_mode": "hybrid",
+        "industry_code": "",
+        "industry_name": "",
+        "province": "",
+        "city": "",
+        "county": "",
+        "customer_count": 0,
+        "monthly_gmv": 0,
+        "employee_count": 0,
+        "created_days": 0,
+        "admin_account_ids": [],
+        "store_not_found": True,
+    }
 
 
 @server.tool()
@@ -31,7 +53,17 @@ async def get_store_profile(tenant_id: str, store_id: str = "", auth_token: str 
     if not store_id:
         return await _get_tenant_profile(tenant_id, auth_token)
 
-    store_data = await biz.get(tenant_id, f"/store/{store_id}", auth_token=auth_token)
+    try:
+        store_data = await biz.get(tenant_id, f"/store/{store_id}", auth_token=auth_token)
+    except BizAPIError as e:
+        if e.status_code == 404:
+            logger.warning(
+                "get_store_profile: store not found tenant=%s store_id=%s, minimal profile",
+                tenant_id,
+                store_id,
+            )
+            return _minimal_store_profile(tenant_id, store_id)
+        raise
 
     class_id = store_data.get("classId")
     class_data = {}
@@ -265,4 +297,6 @@ async def _fetch_dept_tree(tenant_id: str, store_id: str, auth_token: str | None
 # ── stdio Transport ──────────────────────────────────────────────
 
 if __name__ == "__main__":
+    from src.core.logging_setup import setup_logging
+    setup_logging("mcp-servers", console=False)
     server.run(transport="stdio")

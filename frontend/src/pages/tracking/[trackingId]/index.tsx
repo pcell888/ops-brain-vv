@@ -25,6 +25,7 @@ import {
   useStartReviewNow,
   useTrackingSnapshots,
   useTakeSnapshot,
+  useTrackingCompletionPoll,
   useTrackingSummary,
 } from '@/lib/hooks';
 import { trackingApi } from '@/lib/api';
@@ -164,6 +165,31 @@ export default function TrackingDetailPage() {
   const completingTrackingIdRef = useRef('');
   /** scheduled 待复盘走 /review/start（LangGraph），否则走 HTTP 完成追踪 */
   const completeModeRef = useRef<'http' | 'graph'>('http');
+  const [completionPollId, setCompletionPollId] = useState<string | null>(null);
+
+  useTrackingCompletionPoll(completionPollId, !!completionPollId && isCompleting, {
+    onProgress: ({ message: line }) => {
+      setCompleteProgress({ message: line, type: 'progress' });
+    },
+    onCompleted: () => {
+      completingFlowRef.current = false;
+      message.success('追踪已完成');
+      void queryClient.invalidateQueries({ queryKey: ['tracking'] });
+      setCompleteProgress({ message: '追踪已完成，复盘报告已生成', type: 'completed' });
+      setCompletionPollId(null);
+      setTimeout(() => {
+        setIsCompleting(false);
+        setCompleteProgress({ message: '', type: '' });
+      }, 1500);
+    },
+    onError: (errMsg) => {
+      completingFlowRef.current = false;
+      message.error(errMsg);
+      setCompleteProgress({ message: errMsg, type: 'error' });
+      setIsCompleting(false);
+      setCompletionPollId(null);
+    },
+  });
 
   const analyze = (analyzeData ?? {}) as AnalyzeResult;
   const trends = (trendsData ?? {}) as TrendsResult;
@@ -307,54 +333,6 @@ export default function TrackingDetailPage() {
     return '✅ 当前风险整体可控，请继续保持稳定采集与复盘';
   }, [analyze.risk_hint, analyze.score_change, analyze.snapshots, analyze.trend, targetRate]);
 
-  useEffect(() => {
-    if (!resolvedTrackingId) return;
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/api/v1/ws/diagnosis/${encodeURIComponent(resolvedTrackingId)}`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          stage?: string;
-          type?: string;
-          message?: string;
-        };
-        if (data.stage !== 'effect_track' || !completingFlowRef.current) return;
-
-        const line =
-          data.message ||
-          (data.type === 'error' ? '完成追踪失败' : '');
-        setCompleteProgress({
-          message: line,
-          type: data.type || 'progress',
-        });
-
-        if (data.type === 'completed') {
-          completingFlowRef.current = false;
-          message.success('追踪已完成');
-          void queryClient.invalidateQueries({ queryKey: ['tracking'] });
-          setTimeout(() => {
-            setIsCompleting(false);
-            setCompleteProgress({ message: '', type: '' });
-          }, 1500);
-        } else if (data.type === 'error') {
-          completingFlowRef.current = false;
-          message.error(data.message || '完成追踪失败');
-          setIsCompleting(false);
-        }
-      } catch (e) {
-        console.error('[Tracking complete] WS parse error:', e);
-      }
-    };
-
-    return () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      }
-    };
-  }, [resolvedTrackingId, message, queryClient]);
-
   /** 去掉历史遗留的 ?trackingId / ?snapshotId，本页仅以诊断选择为准 */
   useEffect(() => {
     if (searchParams.has('trackingId') || searchParams.has('snapshotId')) {
@@ -389,8 +367,7 @@ export default function TrackingDetailPage() {
         const fromAnalyze =
           analyze.latest_score == null ? null : Math.max(0, Math.round(Number(analyze.latest_score)));
         const s = summary?.current_score;
-        const fromSummary =
-          s == null || s === '' ? null : Math.max(0, Math.round(Number(s)));
+        const fromSummary = s == null ? null : Math.max(0, Math.round(Number(s)));
         return fromAnalyze ?? fromSummary ?? 0;
       })()
     : 0;
@@ -431,12 +408,14 @@ export default function TrackingDetailPage() {
           completingFlowRef.current = true;
           completeModeRef.current = 'graph';
           setIsCompleting(true);
+          setCompletionPollId(resolvedTrackingId);
           setCompleteProgress({ message: '正在启动立即复盘…', type: 'progress' });
           try {
             await startReviewNow.mutateAsync(resolvedTrackingId);
           } catch {
             completingFlowRef.current = false;
             setIsCompleting(false);
+            setCompletionPollId(null);
             setCompleteProgress({ message: '', type: '' });
           }
         },
@@ -453,12 +432,14 @@ export default function TrackingDetailPage() {
         completingFlowRef.current = true;
         completeModeRef.current = 'http';
         setIsCompleting(true);
+        setCompletionPollId(resolvedTrackingId);
         setCompleteProgress({ message: '正在提交完成追踪…', type: 'progress' });
         try {
           await completeTracking.mutateAsync(resolvedTrackingId);
         } catch {
           completingFlowRef.current = false;
           setIsCompleting(false);
+          setCompletionPollId(null);
           setCompleteProgress({ message: '', type: '' });
         }
       },
@@ -468,6 +449,7 @@ export default function TrackingDetailPage() {
   const handleCancelCompleting = () => {
     completingFlowRef.current = false;
     setIsCompleting(false);
+    setCompletionPollId(null);
     setCompleteProgress({ message: '', type: '' });
   };
 
@@ -475,6 +457,7 @@ export default function TrackingDetailPage() {
     const tid = completingTrackingIdRef.current || resolvedTrackingId;
     if (!tid) return;
     completingFlowRef.current = true;
+    setCompletionPollId(tid);
     setCompleteProgress({ message: '正在重新完成追踪…', type: 'progress' });
     const run =
       completeModeRef.current === 'graph'
@@ -483,6 +466,7 @@ export default function TrackingDetailPage() {
     void run.catch(() => {
       completingFlowRef.current = false;
       setIsCompleting(false);
+      setCompletionPollId(null);
       setCompleteProgress({ message: '', type: '' });
     });
   };

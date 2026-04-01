@@ -58,8 +58,6 @@ dev: deps kill-local-ports
 		wait \
 	)
 
-# 兼容旧命令
-run-local: dev
 
 # Docker 启动全部服务（含 API、MCP、wlwq、frontend 开发服务器）
 # 默认 --build：代码变更后否则会一直跑镜像里旧的 COPY，刷新页面也看不到效果

@@ -24,6 +24,7 @@ import type {
   TaskStats,
   GanttData,
   TrackingSummary,
+  TrackingReviewProgress,
 } from './types';
 
 // ============ 诊断模块 Hooks ============
@@ -67,8 +68,6 @@ export function useDiagnosisStatus(
     refetchOnWindowFocus: 'always',
     refetchInterval: (query) => {
       if (!pollWhenActive) return false;
-      // WebSocket 已连接时由 WS 推送驱动，无需 HTTP 轮询
-      if (wsManager.isConnected()) return false;
       const s = (query.state.data as DiagnosisStatusResponse | undefined)?.status;
       return s === 'running' || s === 'pending' ? 2000 : false;
     },
@@ -76,12 +75,24 @@ export function useDiagnosisStatus(
 }
 
 // 获取诊断历史列表
-export function useDiagnosisList(enterpriseId: string | null, skip = 0, limit = 20, pauseFetching = false) {
+export function useDiagnosisList(
+  enterpriseId: string | null,
+  skip = 0,
+  limit = 20,
+  pauseFetching = false,
+  options?: { pollWhenAnyActive?: boolean }
+) {
+  const pollWhenAnyActive = options?.pollWhenAnyActive ?? false;
   return useQuery<DiagnosisListResponse>({
     queryKey: ['diagnosis', 'list', enterpriseId, skip, limit],
     queryFn: () => diagnosisApi.list({ enterprise_id: enterpriseId!, skip, limit }),
     enabled: !!enterpriseId && !pauseFetching,
     staleTime: 0,
+    refetchInterval: (query) => {
+      if (!pollWhenAnyActive) return false;
+      const items = (query.state.data as DiagnosisListResponse | undefined)?.items ?? [];
+      return items.some((i) => i.status === 'running' || i.status === 'pending') ? 2000 : false;
+    },
   });
 }
 
@@ -120,13 +131,16 @@ export function useDiagnosisSelection(enterpriseId: string | null) {
 export function useLatestDiagnosisReport(enterpriseId: string | null, options?: { pauseFetching?: boolean }) {
   const pause = options?.pauseFetching ?? false;
   
-  // 先获取列表，找到最新的诊断
-  const listQuery = useDiagnosisList(enterpriseId, 0, 1, pause);
+  // 先获取列表，找到最新的诊断；进行中时每 2s 轮询列表，与 status 轮询配合避免仅依赖 WS
+  const listQuery = useDiagnosisList(enterpriseId, 0, 1, pause, {
+    pollWhenAnyActive: !pause,
+  });
   const latestDiagnosis = listQuery.data?.items?.[0];
   const latestDiagnosisId = latestDiagnosis?.diagnosis_id;
+  // 有最新诊断 ID 即允许 status 查询；是否每 2s 轮询由 useDiagnosisStatus 内根据接口返回的 status 决定（避免列表滞后导致不轮询）
   const latestStatusQuery = useDiagnosisStatus(latestDiagnosisId ?? null, {
     enabled: !!latestDiagnosisId && !pause,
-    pollWhenActive: !pause && (latestDiagnosis?.status === 'running' || latestDiagnosis?.status === 'pending'),
+    pollWhenActive: !pause,
   });
   const runtimeStatus = latestStatusQuery.data;
 
@@ -760,6 +774,85 @@ export function useCompleteTracking() {
       queryClient.invalidateQueries({ queryKey: ['tracking', 'list'] });
     },
   });
+}
+
+/**
+ * 完成追踪 / 立即复盘（LangGraph）提交后，轮询复盘进度（与 WebSocket 同源缓存）。
+ * active 为 false 或 trackingId 为空时停止。
+ */
+export function useTrackingCompletionPoll(
+  trackingId: string | null,
+  active: boolean,
+  callbacks: {
+    onProgress: (p: { message: string; percent: number }) => void;
+    onCompleted: () => void;
+    onError: (message: string) => void;
+  }
+) {
+  const cbRef = useRef(callbacks);
+  cbRef.current = callbacks;
+
+  useEffect(() => {
+    const cb = cbRef.current;
+    if (!active || !trackingId) return;
+
+    let cancelled = false;
+    let stopped = false;
+    let attempts = 0;
+    const maxAttempts = 300;
+    const intervalMs = 2000;
+
+    const tick = async () => {
+      if (cancelled || stopped) return;
+      attempts += 1;
+      if (attempts > maxAttempts) {
+        stopped = true;
+        if (!cancelled) cb.onError('处理超时，请刷新页面后查看追踪状态');
+        return;
+      }
+      try {
+        const data = (await trackingApi.getReviewProgress(
+          trackingId
+        )) as TrackingReviewProgress;
+        if (cancelled || stopped) return;
+
+        const msg = (data.message && String(data.message).trim()) || '处理中…';
+        const pct =
+          typeof data.percent === 'number' && !Number.isNaN(data.percent)
+            ? Math.max(0, Math.min(100, data.percent))
+            : 0;
+        cb.onProgress({ message: msg, percent: pct });
+
+        const ev = data.event_type;
+        const st = data.status;
+        // 后端可能在报告已落库后仍发 progress（如沉淀方案）；不能以 percent/status 单独当完成
+        const isTerminalDone =
+          ev === 'completed' || (st === 'completed' && ev !== 'progress');
+        if (isTerminalDone) {
+          stopped = true;
+          cb.onCompleted();
+          return;
+        }
+        if (st === 'failed' || ev === 'error') {
+          stopped = true;
+          cb.onError(msg || '完成追踪失败');
+          return;
+        }
+      } catch {
+        // 单次失败不终止，继续下一轮轮询
+      }
+    };
+
+    const id = window.setInterval(() => {
+      void tick();
+    }, intervalMs);
+    void tick();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [active, trackingId]);
 }
 
 export function useCancelTracking() {

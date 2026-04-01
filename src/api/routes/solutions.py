@@ -170,6 +170,127 @@ async def adopt_plan(thread_id: str, request: AdoptPlanRequest):
     return {"status": "resumed", "adopted_plan_id": request.plan_id}
 
 
+async def build_adopt_execution_progress(thread_id: str) -> dict:
+    """供 HTTP 轮询：采纳后执行进度（与 WS `stage=execution` 及 progress_cache 一致）。"""
+    app = await get_graph_app()
+    config = {"configurable": {"thread_id": thread_id}}
+    state = await app.aget_state(config)
+    values = state.values if state and state.values else {}
+    next_nodes = list(state.next) if state and state.next else []
+    wait_adopt = "wait_adoption" in next_nodes
+
+    cached = progress_cache.get(thread_id) or {}
+    event_type = cached.get("type")
+    stage = cached.get("stage")
+    message = str(cached.get("message", "") or "").strip()
+    last_ts = cached.get("timestamp")
+    pct_raw = cached.get("percent")
+    try:
+        percent = int(float(pct_raw)) if pct_raw is not None else None
+    except (TypeError, ValueError):
+        percent = None
+
+    task = running_tasks.get(thread_id)
+    is_running = task is not None and not task.done()
+
+    pending = values.get("pending_adopt_plan_id")
+    adopted = (values.get("adopted_plan_ids") or [])[:1]
+
+    node = cached.get("node") if isinstance(cached.get("node"), str) else None
+
+    if stage == "execution" and event_type == "error":
+        return {
+            "thread_id": thread_id,
+            "status": "failed",
+            "is_running": False,
+            "percent": 0,
+            "message": message or "采纳执行失败",
+            "last_timestamp": last_ts,
+            "event_type": event_type,
+            "node": node,
+            "pending_adopt_plan_id": pending,
+            "adopted_plan_ids": adopted,
+        }
+
+    if stage == "execution" and event_type == "completed":
+        return {
+            "thread_id": thread_id,
+            "status": "completed",
+            "is_running": False,
+            "percent": 100,
+            "message": message or "方案执行任务已全部创建",
+            "last_timestamp": last_ts,
+            "event_type": event_type,
+            "node": node,
+            "pending_adopt_plan_id": pending,
+            "adopted_plan_ids": adopted,
+        }
+
+    if adopted and not pending and not wait_adopt:
+        p = 100 if percent is None else max(0, min(100, percent))
+        return {
+            "thread_id": thread_id,
+            "status": "completed",
+            "is_running": is_running,
+            "percent": p,
+            "message": message or "方案执行任务已全部创建",
+            "last_timestamp": last_ts,
+            "event_type": event_type,
+            "node": node,
+            "pending_adopt_plan_id": pending,
+            "adopted_plan_ids": adopted,
+        }
+
+    if wait_adopt and not pending:
+        return {
+            "thread_id": thread_id,
+            "status": "pending_adoption",
+            "is_running": False,
+            "percent": 0,
+            "message": "方案已生成，等待采纳",
+            "last_timestamp": last_ts,
+            "event_type": event_type,
+            "node": node,
+            "pending_adopt_plan_id": pending,
+            "adopted_plan_ids": adopted,
+        }
+
+    adoption_exec_running = is_running and (pending is not None or (stage == "execution"))
+    if adoption_exec_running:
+        p = 50 if percent is None else max(0, min(100, percent))
+        return {
+            "thread_id": thread_id,
+            "status": "running",
+            "is_running": True,
+            "percent": p,
+            "message": message or "正在执行采纳方案…",
+            "last_timestamp": last_ts,
+            "event_type": event_type,
+            "node": node,
+            "pending_adopt_plan_id": pending,
+            "adopted_plan_ids": adopted,
+        }
+
+    return {
+        "thread_id": thread_id,
+        "status": "idle",
+        "is_running": False,
+        "percent": 0,
+        "message": message,
+        "last_timestamp": last_ts,
+        "event_type": event_type,
+        "node": node,
+        "pending_adopt_plan_id": pending,
+        "adopted_plan_ids": adopted,
+    }
+
+
+@router.get("/{thread_id}/adopt-progress", summary="查询采纳方案执行进度")
+async def get_adopt_execution_progress(thread_id: str):
+    """轮询采纳后的任务派发与执行进度（与 WebSocket 推送同源缓存）。"""
+    return await build_adopt_execution_progress(thread_id)
+
+
 async def _send_progress(thread_id: str, payload: dict):
     """发送进度并缓存，供重连时使用。"""
     # 写入缓存
