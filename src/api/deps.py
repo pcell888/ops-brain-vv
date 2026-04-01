@@ -39,6 +39,14 @@ class ConnectionManager:
                 self.disconnect(thread_id)
 
 
+async def send_thread_progress(thread_id: str, payload: dict) -> None:
+    """写入 progress_cache 并推送到该 thread 的 WebSocket（重连可读缓存）。"""
+    data = dict(payload)
+    data["timestamp"] = datetime.now(CN_TZ).isoformat()
+    progress_cache[thread_id] = data
+    await manager.send_progress(thread_id, data)
+
+
 manager = ConnectionManager()
 
 # 运行中的诊断任务，用于支持取消

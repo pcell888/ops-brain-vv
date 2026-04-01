@@ -7,7 +7,6 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-import httpx
 from langchain_openai import ChatOpenAI
 
 from src.agent.state import DiagnosisState
@@ -50,7 +49,7 @@ async def _llm_generate_review(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         temperature=0.3,
-        timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10),
+        timeout=settings.llm_httpx_timeout(),
     )
 
     snapshots_text = ""
@@ -114,7 +113,7 @@ DIMENSION_STATE_KEY: dict[str, str] = {
 
 
 async def track_effects_node(state: DiagnosisState) -> dict:
-    emit_progress(state, "正在采集最新指标数据进行效果对比...")
+    emit_progress(state, "正在采集最新指标数据进行效果对比...", for_adoption_ui=False)
 
     active_dims, _active_inds = resolve_active_indicators(
         state.get("selected_dimensions"),
@@ -156,7 +155,7 @@ async def track_effects_node(state: DiagnosisState) -> dict:
     thread_id = state.get("thread_id", "")
     snapshots = await list_snapshots(thread_id)
 
-    emit_progress(state, "AI正在生成复盘分析报告...")
+    emit_progress(state, "AI正在生成复盘分析报告...", for_adoption_ui=False)
 
     adopted_ids = (state.get("adopted_plan_ids") or [])[:1]
     adopted_plans = [p for p in state.get("solution_plans", []) if p.get("plan_id") in adopted_ids]
@@ -252,9 +251,9 @@ async def track_effects_node(state: DiagnosisState) -> dict:
                 )
             except Exception as e:
                 logger.warning("方案沉淀失败 [%s]: %s", plan.get("plan_id"), e)
-        emit_progress(state, f"已沉淀 {len(adopted_plans)} 个有效方案到知识库")
+        emit_progress(state, f"已沉淀 {len(adopted_plans)} 个有效方案到知识库", for_adoption_ui=False)
 
-    emit_progress(state, "复盘报告已生成并推送")
+    emit_progress(state, "复盘报告已生成并推送", for_adoption_ui=False)
 
     tracking_data["status"] = "completed"
     tracking_data["completed_at"] = now

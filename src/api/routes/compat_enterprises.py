@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -146,13 +147,9 @@ def _platform_enterprise_fields(payload: dict, fallback_name: str) -> dict:
         tenant_name = fallback_name.strip()
     if not tenant_name:
         raise ValueError("中台未返回 customerName 且请求体 name 为空")
-    industry_code = _coerce_industry_code(
-        core.get("businessClassCode") or core.get("business_class_code")
-    )
+    industry_code = _coerce_industry_code(core.get("businessClassCode") or core.get("business_class_code"))
     in_raw = (
-        core.get("businessClassName")
-        if core.get("businessClassName") is not None
-        else core.get("business_class_name")
+        core.get("businessClassName") if core.get("businessClassName") is not None else core.get("business_class_name")
     )
     industry_name = str(in_raw).strip() if in_raw is not None and str(in_raw).strip() else None
     return {
@@ -164,8 +161,19 @@ def _platform_enterprise_fields(payload: dict, fallback_name: str) -> dict:
 
 
 async def _fetch_project_info_for_sync(enterprise_id: str, auth_override: str | None) -> dict:
-    """中台 projectInfo：query 仅 projectId（与入库 tenant_id 同源时等同企业 ID）。"""
+    """中台 projectInfo：query 仅 projectId（与入库 tenant_id 同源时等同企业 ID）。
+
+    请求携带 Authorization（中台 platform token）时优先用它调中台，避免已入库租户仍用库中凭证
+    从而绕过对当次请求的 token 校验（embed 场景）。
+    """
     params = {"projectId": enterprise_id}
+    ov = (auth_override or "").strip()
+    if ov:
+        return await _platform_biz.platform_get(
+            "ai/customer/projectInfo",
+            params,
+            auth_authorization_override=ov,
+        )
     try:
         return await _platform_biz.platform_get(
             "ai/customer/projectInfo",
@@ -173,17 +181,10 @@ async def _fetch_project_info_for_sync(enterprise_id: str, auth_override: str | 
             auth_tenant_id=enterprise_id,
         )
     except TenantNotFoundError:
-        ov = (auth_override or "").strip()
-        if not ov:
-            raise HTTPException(
-                status_code=401,
-                detail="租户尚未入库，请携带 Authorization 请求中台以完成首次同步",
-            ) from None
-        return await _platform_biz.platform_get(
-            "ai/customer/projectInfo",
-            params,
-            auth_authorization_override=ov,
-        )
+        raise HTTPException(
+            status_code=401,
+            detail="租户尚未入库，请携带 Authorization 请求中台以完成首次同步",
+        ) from None
 
 
 async def _invalidate_tenant_cache(tenant_id: str) -> None:
@@ -240,6 +241,11 @@ async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody, request:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except BizAPIError as e:
         raise HTTPException(status_code=502, detail=f"中台请求失败: {e.message}") from e
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail="中台请求超时，请稍后重试") from e
+    except Exception as e:
+        logger.exception("同步企业失败 enterprise_id=%s", enterprise_id)
+        raise HTTPException(status_code=500, detail="同步企业失败，请稍后重试") from e
 
     tenant_name = pf["tenant_name"]
     api_base_url = pf["api_base_url"]
@@ -255,40 +261,29 @@ async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody, request:
                 )
                 row = await cur.fetchone()
                 config = _merge_sync_config(row.get("config") if row else None, body)
-
-                if row:
-                    await cur.execute(
-                        "UPDATE tenant_registry "
-                        "SET tenant_name = %s, api_base_url = %s, "
-                        "industry_code = COALESCE(%s, industry_code), "
-                        "industry_name = COALESCE(%s, industry_name), "
-                        "status = 1, config = %s::jsonb, updated_at = NOW() "
-                        "WHERE tenant_id = %s",
-                        (
-                            tenant_name,
-                            api_base_url,
-                            industry_code,
-                            industry_name,
-                            json.dumps(config, ensure_ascii=False),
-                            enterprise_id,
-                        ),
-                    )
-                else:
-                    created = True
-                    await cur.execute(
-                        "INSERT INTO tenant_registry "
-                        "(tenant_id, tenant_name, api_base_url, auth_type, auth_credential, "
-                        "industry_code, industry_name, status, config) "
-                        "VALUES (%s, %s, %s, 'token', 'pending', %s, %s, 1, %s::jsonb)",
-                        (
-                            enterprise_id,
-                            tenant_name,
-                            api_base_url,
-                            industry_code,
-                            industry_name,
-                            json.dumps(config, ensure_ascii=False),
-                        ),
-                    )
+                created = not row
+                await cur.execute(
+                    "INSERT INTO tenant_registry "
+                    "(tenant_id, tenant_name, api_base_url, auth_type, auth_credential, "
+                    "industry_code, industry_name, status, config) "
+                    "VALUES (%s, %s, %s, 'token', 'pending', %s, %s, 1, %s::jsonb) "
+                    "ON CONFLICT (tenant_id) DO UPDATE SET "
+                    "tenant_name = EXCLUDED.tenant_name, "
+                    "api_base_url = EXCLUDED.api_base_url, "
+                    "industry_code = COALESCE(EXCLUDED.industry_code, tenant_registry.industry_code), "
+                    "industry_name = COALESCE(EXCLUDED.industry_name, tenant_registry.industry_name), "
+                    "status = 1, "
+                    "config = EXCLUDED.config, "
+                    "updated_at = NOW()",
+                    (
+                        enterprise_id,
+                        tenant_name,
+                        api_base_url,
+                        industry_code,
+                        industry_name,
+                        json.dumps(config, ensure_ascii=False),
+                    ),
+                )
             await conn.commit()
     except Exception as e:
         logger.exception("同步企业失败 enterprise_id=%s", enterprise_id)
@@ -312,9 +307,7 @@ async def update_enterprise_config(enterprise_id: str, config: dict = Body(...))
     if "analysis_period_days" in config:
         patch["analysis_period_days"] = config["analysis_period_days"]
     if "auto_diagnosis_frequency" in config:
-        patch["diagnosis_trigger_mode"] = normalize_diagnosis_trigger_mode(
-            config["auto_diagnosis_frequency"]
-        )
+        patch["diagnosis_trigger_mode"] = normalize_diagnosis_trigger_mode(config["auto_diagnosis_frequency"])
     if "solution_sort_strategy" in config:
         patch["solution_sort_strategy"] = config["solution_sort_strategy"]
 

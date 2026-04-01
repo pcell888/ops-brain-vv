@@ -393,32 +393,40 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
                 seen_task_name.add(name)
                 rule_tasks.append(t)
     if rule_tasks and exec_push_enabled:
-        result = await mcp_call(
-            "task-server",
-            "create_execution_tasks",
-            {
-                "tenant_id": tenant_id,
-                "store_id": store_id,
-                "plan_id": RULE_PLAN_ID,
-                "tasks": rule_tasks,
-            },
-        )
-        created = result.get("created_tasks", rule_tasks) if isinstance(result, dict) else rule_tasks
-        all_tasks.extend(created)
-        emit_progress(state, f"已按规范推送 {len(rule_tasks)} 项指标动作任务")
-        await _send_task_notifications(tenant_id, store_id, created)
-        to_save = _merge_task_ids(rule_tasks, result.get("created_tasks") if isinstance(result, dict) else None)
-        await save_exec_tasks(state.get("thread_id", ""), tenant_id, store_id, RULE_PLAN_ID, to_save)
-        await save_push_log(
-            state.get("thread_id", ""),
-            tenant_id,
-            store_id,
-            "task",
-            "exec_task",
-            "5.2.3 指标动作任务",
-            f"已推送 {len(rule_tasks)} 项指标动作任务",
-            {"plan_id": RULE_PLAN_ID, "count": len(rule_tasks), "task_names": [t.get("task_name") for t in rule_tasks]},
-        )
+        try:
+            result = await mcp_call(
+                "task-server",
+                "create_execution_tasks",
+                {
+                    "tenant_id": tenant_id,
+                    "store_id": store_id,
+                    "plan_id": RULE_PLAN_ID,
+                    "tasks": rule_tasks,
+                },
+            )
+            created = result.get("created_tasks", rule_tasks) if isinstance(result, dict) else rule_tasks
+            all_tasks.extend(created)
+            emit_progress(state, f"已按规范推送 {len(rule_tasks)} 项指标动作任务")
+            await _send_task_notifications(tenant_id, store_id, created)
+            to_save = _merge_task_ids(rule_tasks, result.get("created_tasks") if isinstance(result, dict) else None)
+            await save_exec_tasks(state.get("thread_id", ""), tenant_id, store_id, RULE_PLAN_ID, to_save)
+            await save_push_log(
+                state.get("thread_id", ""),
+                tenant_id,
+                store_id,
+                "task",
+                "exec_task",
+                "5.2.3 指标动作任务",
+                f"已推送 {len(rule_tasks)} 项指标动作任务",
+                {
+                    "plan_id": RULE_PLAN_ID,
+                    "count": len(rule_tasks),
+                    "task_names": [t.get("task_name") for t in rule_tasks],
+                },
+            )
+        except Exception as e:
+            emit_progress(state, f"指标动作任务派发失败: {e}", level="warning")
+            logger.warning("指标动作任务派发失败: %s", e)
 
     if exec_push_enabled:
         seen_coupon_ind: set[str] = set()
@@ -435,16 +443,8 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
                     now = datetime.now(CN_TZ)
                     cfg["start_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
                     cfg["end_time"] = (now + timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
-                await mcp_call(
-                    "task-server",
-                    "create_coupon_campaign",
-                    {
-                        "tenant_id": tenant_id,
-                        "store_id": store_id,
-                        "campaign_config": cfg,
-                    },
-                )
-                emit_progress(state, f"已创建规则优惠券: {cfg.get('coupon_name', '')}")
+                emit_progress(state, f"已跳过规则优惠券创建: {cfg.get('coupon_name', '')}")
+                logger.info("已屏蔽 create_coupon_campaign 调用（规则动作）: tenant=%s store=%s", tenant_id, store_id)
             msg_cfg = rule.get("message")
             if msg_cfg:
                 key = (ind or "", msg_cfg.get("type", ""))
@@ -550,16 +550,8 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
             action_type = action.get("type", "")
             config = action.get("config", {})
             if action_type == "coupon_campaign":
-                await mcp_call(
-                    "task-server",
-                    "create_coupon_campaign",
-                    {
-                        "tenant_id": tenant_id,
-                        "store_id": store_id,
-                        "campaign_config": config,
-                    },
-                )
-                emit_progress(state, f"已自动创建优惠券活动: {config.get('coupon_name', '')}")
+                emit_progress(state, f"已跳过自动优惠券创建: {config.get('coupon_name', '')}")
+                logger.info("已屏蔽 create_coupon_campaign 调用（自动动作）: tenant=%s store=%s", tenant_id, store_id)
             elif action_type == "seckill_activity":
                 await mcp_call(
                     "task-server",

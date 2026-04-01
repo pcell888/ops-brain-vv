@@ -6,7 +6,6 @@ import json
 import logging
 import uuid
 
-import httpx
 from langchain_openai import ChatOpenAI
 
 from src.agent.state import DiagnosisState
@@ -136,8 +135,7 @@ def _step_from_mandatory_spec(spec: dict, step_no: int, anomalies: list[dict]) -
         "action": action[:200],
         "owner_dept": od,
         "timeline": spec.get("timeline") or "3天内",
-        "data_context": _anomaly_data_context_line(anomalies, ind)
-        + "（本步为 5.2.3 规则保底补全，与 mandatory_task_specs 一致）",
+        "data_context": _anomaly_data_context_line(anomalies, ind),
         "implementation_steps": impl_list,
     }
 
@@ -290,7 +288,7 @@ async def _llm_generate_solutions(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         temperature=0.5,
-        timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10),
+        timeout=settings.llm_httpx_timeout(),
     )
 
     cases_text = ""

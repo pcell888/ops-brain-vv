@@ -14,7 +14,6 @@ import uuid
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
-import httpx
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from psycopg import AsyncConnection
@@ -36,11 +35,15 @@ from src.core.pending_review_repo import cancel_pending_review, get_pending_revi
 from src.core.solution_knowledge_repo import save_effective_plan
 from src.core.tracking_report_enrichment import needs_llm_enrichment
 from src.core.tenant_config import get_tenant_config
+from src.api.deps import send_thread_progress
 from src.core.tracking_names import resolve_solution_name
 from src.mcp_servers.biz_scope import effective_store_id_for_biz
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tracking", tags=["效果追踪"])
+
+_complete_tracking_inflight: set[str] = set()
+_complete_tracking_lock = asyncio.Lock()
 
 
 def _conninfo() -> str:
@@ -113,6 +116,52 @@ async def _get_diagnosis_health_score(cur, thread_id: str) -> float | None:
         return None
 
 
+async def _scheduled_row_enrichment(thread_id: str) -> tuple[str, float | None]:
+    """待自动复盘且无 ai_effect_tracking 行时：采纳方案名 + 诊断 health_score。"""
+    adopted_label: str | None = None
+    health: float | None = None
+    try:
+        async with await AsyncConnection.connect(_conninfo()) as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                adopted_label = await _derive_adopted_plan_name(cur, thread_id, {})
+                health = await _get_diagnosis_health_score(cur, thread_id)
+    except Exception:
+        logger.exception("待复盘行展示字段查询失败 thread=%s", thread_id)
+    solution_name = resolve_solution_name({}, adopted_label)
+    return solution_name, health
+
+
+async def _earliest_exec_task_created_at(thread_id: str) -> datetime | None:
+    try:
+        async with await AsyncConnection.connect(_conninfo()) as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT MIN(created_at) AS t FROM ai_exec_task WHERE thread_id = %s",
+                    (thread_id,),
+                )
+                row = await cur.fetchone()
+                t = (row or {}).get("t")
+                if t is None:
+                    return None
+                if isinstance(t, datetime):
+                    return t
+                return _parse_dt(str(t))
+    except Exception:
+        return None
+
+
+async def _scheduled_tracking_started_at(pr: dict, thread_id: str) -> datetime | None:
+    """待自动复盘时「开始时间」语义：进入效果追踪等待期（写入 ai_pending_review）的时刻；否则最早执行任务。"""
+    ca = pr.get("created_at")
+    if ca is not None:
+        if isinstance(ca, datetime):
+            return ca
+        parsed = _parse_dt(str(ca))
+        if parsed:
+            return parsed
+    return await _earliest_exec_task_created_at(thread_id)
+
+
 def _extract_plan_name_from_desc(desc: object) -> str | None:
     text = str(desc or "").strip()
     if not text:
@@ -135,10 +184,16 @@ def _safe_json_dict(text: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+class LLMReviewReportError(Exception):
+    """完成追踪等场景在 strict_llm 下要求 LLM 成功；失败时不静默回退规则模板。"""
+
+
 async def _llm_review_report(
     tracking_data: dict,
     snapshots: list[dict],
     exec_tasks: list[dict],
+    *,
+    strict_llm: bool = False,
 ) -> dict | None:
     settings = get_settings()
     if not settings.llm_enabled or not settings.llm_api_key:
@@ -149,7 +204,8 @@ async def _llm_review_report(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         temperature=0.3,
-        timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10),
+        timeout=settings.llm_httpx_timeout(),
+        max_retries=0,
     )
     user_msg = REVIEW_ANALYSIS_USER.format(
         tracking_data=json.dumps(tracking_data, ensure_ascii=False, indent=2),
@@ -165,13 +221,17 @@ async def _llm_review_report(
             ]
         )
     except Exception as e:
-        logger.warning("LLM 复盘生成失败，回退规则模板: %s", e)
+        logger.warning("LLM 复盘生成失败: %s", e)
+        if strict_llm:
+            raise LLMReviewReportError("AI 复盘生成失败，请稍后重试") from e
         return None
 
     content = resp.content if isinstance(resp.content, str) else str(resp.content)
     parsed = _safe_json_dict(content)
     if not parsed:
-        logger.warning("LLM 复盘生成解析失败，回退规则模板")
+        logger.warning("LLM 复盘生成解析失败")
+        if strict_llm:
+            raise LLMReviewReportError("AI 复盘结果解析失败，请重试")
         return None
     return parsed
 
@@ -666,7 +726,7 @@ async def _ensure_effect_tracking_row(
     )
     et = await cur.fetchone()
     plan_id = (et["plan_id"] or "") if et else ""
-    store_id = (et["store_id"] or "st_001") if et else "st_001"
+    store_id = (et["store_id"] or "") if et else ""
     now = datetime.now(CN_TZ)
     now_iso = now.isoformat()
     td = {
@@ -728,7 +788,7 @@ async def start_tracking(data: dict):
                 await cur.execute(
                     """INSERT INTO ai_effect_tracking (thread_id, tenant_id, store_id, tracking_data, created_at)
                        VALUES (%s, %s, %s, %s, %s)""",
-                    (thread_id, enterprise_id, "st_001", json.dumps(tracking_data), now),
+                    (thread_id, enterprise_id, "", json.dumps(tracking_data), now),
                 )
             await conn.commit()
 
@@ -745,17 +805,21 @@ def _pending_list_item(
     thread_id: str,
     diagnosis_id: str,
     review_due_date,
+    *,
+    solution_name: str | None = None,
+    current_score: float | None = None,
+    tracking_started_at=None,
 ) -> dict:
     due = _ser(review_due_date)
     return {
         "tracking_id": thread_id,
         "plan_id": "",
         "diagnosis_id": diagnosis_id,
-        "solution_name": "效果追踪（待自动复盘）",
+        "solution_name": solution_name or "效果追踪",
         "status": "scheduled",
-        "current_score": None,
+        "current_score": current_score,
         "snapshot_count": 0,
-        "started_at": due,
+        "started_at": _ser(tracking_started_at) if tracking_started_at is not None else None,
         "last_snapshot_at": None,
         "completed_at": None,
         "review_due_date": due,
@@ -836,11 +900,16 @@ async def list_trackings(
 
         items = []
         if pending_bonus and pending_row and skip == 0:
+            sol, sc = await _scheduled_row_enrichment(pending_row["thread_id"])
+            track_started = await _scheduled_tracking_started_at(pending_row, pending_row["thread_id"])
             items.append(
                 _pending_list_item(
                     pending_row["thread_id"],
                     diagnosis_id or pending_row["thread_id"],
                     pending_row["review_due_date"],
+                    solution_name=sol,
+                    current_score=sc,
+                    tracking_started_at=track_started,
                 )
             )
 
@@ -1102,15 +1171,16 @@ async def get_tracking_summary(tracking_id: str):
             pr = await get_pending_review_by_thread(tracking_id)
             if pr:
                 due = pr["review_due_date"]
-                scheduled_score = await _get_diagnosis_health_score(cur, tracking_id)
+                sol, scheduled_score = await _scheduled_row_enrichment(tracking_id)
+                track_started = await _scheduled_tracking_started_at(pr, tracking_id)
                 return {
                     "tracking_id": tracking_id,
                     "plan_id": "",
-                    "solution_name": "效果追踪（待自动复盘）",
+                    "solution_name": sol,
                     "status": "scheduled",
                     "current_score": scheduled_score,
                     "snapshot_count": 0,
-                    "started_at": _ser(due),
+                    "started_at": _ser(track_started) if track_started else None,
                     "last_snapshot_at": None,
                     "completed_at": None,
                     "review_due_date": _ser(due),
@@ -1401,12 +1471,21 @@ async def analyze_tracking(tracking_id: str):
         }
     except Exception:
         logger.exception("效果分析失败")
+        diag_score: float | None = None
+        try:
+            async with await AsyncConnection.connect(_conninfo()) as conn_e:
+                async with conn_e.cursor(row_factory=dict_row) as cur_e:
+                    diag_score = await _get_diagnosis_health_score(cur_e, tracking_id)
+        except Exception:
+            pass
         return {
             "tracking_id": tracking_id,
             "trend": "error",
             "snapshots": 0,
             "score_change": 0,
             "analysis": "分析失败",
+            "latest_score": diag_score,
+            "first_score": diag_score,
             "recommendations": ["分析服务暂不可用，请稍后重试", "建议先检查快照采集是否正常"],
             "risk_hint": "⚠ 分析服务异常，当前结果仅供参考",
         }
@@ -1415,10 +1494,27 @@ async def analyze_tracking(tracking_id: str):
 # ── 完成追踪 ─────────────────────────────────────────────────────
 
 
-@router.post("/{tracking_id}/complete", summary="完成追踪")
-async def complete_tracking(tracking_id: str):
+async def _complete_tracking_background(tracking_id: str):
     now = datetime.now(CN_TZ)
+    settings = get_settings()
     try:
+        await send_thread_progress(
+            tracking_id,
+            {
+                "type": "progress",
+                "stage": "effect_track",
+                "message": "正在完成追踪（收尾快照与数据汇总）…",
+            },
+        )
+        row: dict | None = None
+        td_work: dict = {}
+        closing_data: dict | None = None
+        should_create_closing_snapshot = False
+        snapshot_payload: list[dict] = []
+        scores: list[float] = []
+        report: dict = {}
+        exec_tasks: list[dict] = []
+
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -1427,14 +1523,23 @@ async def complete_tracking(tracking_id: str):
                 )
                 row = await cur.fetchone()
                 if not row:
-                    raise HTTPException(status_code=404, detail="追踪不存在")
+                    await send_thread_progress(
+                        tracking_id,
+                        {
+                            "type": "error",
+                            "stage": "effect_track",
+                            "message": "追踪不存在或已删除",
+                        },
+                    )
+                    return
 
                 td = row["tracking_data"] or {}
                 if isinstance(td, str):
                     td = json.loads(td)
 
-                td["status"] = "completed"
-                td["completed_at"] = now.isoformat()
+                td_work = dict(td)
+                td_work["status"] = "completed"
+                td_work["completed_at"] = now.isoformat()
 
                 await cur.execute(
                     """SELECT id, snapshot_data FROM ai_effect_snapshot
@@ -1454,7 +1559,7 @@ async def complete_tracking(tracking_id: str):
                 if should_create_closing_snapshot:
                     closing_data = {
                         "snapshot_at": now.isoformat(),
-                        "health_score": td.get("current_score"),
+                        "health_score": td_work.get("current_score"),
                         "indicators": {},
                         "snapshot_type": "closing",
                     }
@@ -1465,20 +1570,9 @@ async def complete_tracking(tracking_id: str):
                         closing_data["indicators"] = latest_sd.get("indicators", {}) or {}
                         if latest_sd.get("health_score") is not None:
                             closing_data["health_score"] = latest_sd.get("health_score")
-
-                    await cur.execute(
-                        """INSERT INTO ai_effect_snapshot (thread_id, tenant_id, store_id, snapshot_data, snapshot_at)
-                           VALUES (%s, %s, %s, %s, %s)""",
-                        (tracking_id, row["tenant_id"], row["store_id"], json.dumps(closing_data), now),
-                    )
-                    td["snapshot_count"] = (td.get("snapshot_count") or 0) + 1
-                    td["last_snapshot_at"] = now.isoformat()
-                    td["current_score"] = closing_data.get("health_score")
-
-                await cur.execute(
-                    "UPDATE ai_effect_tracking SET tracking_data = %s WHERE thread_id = %s",
-                    (json.dumps(td), tracking_id),
-                )
+                    td_work["snapshot_count"] = (td_work.get("snapshot_count") or 0) + 1
+                    td_work["last_snapshot_at"] = now.isoformat()
+                    td_work["current_score"] = closing_data.get("health_score")
 
                 await cur.execute(
                     """SELECT snapshot_data FROM ai_effect_snapshot
@@ -1487,8 +1581,6 @@ async def complete_tracking(tracking_id: str):
                 )
                 snap_rows = await cur.fetchall()
 
-                scores = []
-                snapshot_payload: list[dict] = []
                 for sr in snap_rows:
                     sd = sr["snapshot_data"] or {}
                     if isinstance(sd, str):
@@ -1504,7 +1596,19 @@ async def complete_tracking(tracking_id: str):
                         }
                     )
 
-                base_report = _build_base_report(tracking_id, td, now.isoformat(), scores)
+                if should_create_closing_snapshot and closing_data:
+                    cscore = _to_float(closing_data.get("health_score"))
+                    scores.append(cscore if cscore is not None else 0.0)
+                    snapshot_payload.append(
+                        {
+                            "snapshot_at": closing_data.get("snapshot_at"),
+                            "health_score": closing_data.get("health_score"),
+                            "snapshot_type": closing_data.get("snapshot_type"),
+                            "indicators": closing_data.get("indicators", {}),
+                        }
+                    )
+
+                base_report = _build_base_report(tracking_id, td_work, now.isoformat(), scores)
                 await cur.execute(
                     """SELECT task_name, status, description, deadline
                        FROM ai_exec_task
@@ -1512,21 +1616,54 @@ async def complete_tracking(tracking_id: str):
                        ORDER BY created_at ASC""",
                     (tracking_id,),
                 )
-                exec_tasks = await cur.fetchall()
-                llm_tracking_data = {
-                    **td,
-                    "tracking_id": tracking_id,
-                    "score_change": base_report.get("score_change"),
-                    "total_snapshots": len(scores),
-                    "started_at": base_report.get("started_at"),
-                    "completed_at": base_report.get("completed_at"),
-                }
-                llm_report = await _llm_review_report(
-                    tracking_data=llm_tracking_data,
-                    snapshots=snapshot_payload,
-                    exec_tasks=exec_tasks or [],
+                exec_tasks = await cur.fetchall() or []
+
+        llm_tracking_data = {
+            **td_work,
+            "tracking_id": tracking_id,
+            "score_change": base_report.get("score_change"),
+            "total_snapshots": len(scores),
+            "started_at": base_report.get("started_at"),
+            "completed_at": base_report.get("completed_at"),
+        }
+
+        strict = bool(settings.llm_enabled and settings.llm_api_key)
+        if strict:
+            await send_thread_progress(
+                tracking_id,
+                {
+                    "type": "progress",
+                    "stage": "effect_track",
+                    "message": "正在生成 AI 复盘报告，请稍候…",
+                },
+            )
+        llm_report = await _llm_review_report(
+            tracking_data=llm_tracking_data,
+            snapshots=snapshot_payload,
+            exec_tasks=exec_tasks,
+            strict_llm=strict,
+        )
+        report = _merge_llm_report(base_report, llm_report)
+
+        async with await AsyncConnection.connect(_conninfo()) as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                if should_create_closing_snapshot and closing_data:
+                    await cur.execute(
+                        """INSERT INTO ai_effect_snapshot (thread_id, tenant_id, store_id, snapshot_data, snapshot_at)
+                           VALUES (%s, %s, %s, %s, %s)""",
+                        (
+                            tracking_id,
+                            row["tenant_id"],
+                            row["store_id"],
+                            json.dumps(closing_data),
+                            now,
+                        ),
+                    )
+
+                await cur.execute(
+                    "UPDATE ai_effect_tracking SET tracking_data = %s WHERE thread_id = %s",
+                    (json.dumps(td_work), tracking_id),
                 )
-                report = _merge_llm_report(base_report, llm_report)
 
                 await cur.execute(
                     """INSERT INTO ai_review_report (thread_id, tenant_id, store_id, report, created_at)
@@ -1536,6 +1673,14 @@ async def complete_tracking(tracking_id: str):
                 )
             await conn.commit()
 
+        await send_thread_progress(
+            tracking_id,
+            {
+                "type": "progress",
+                "stage": "effect_track",
+                "message": "正在沉淀有效方案…",
+            },
+        )
         try:
             achievement = 0.0
             if len(scores) >= 2:
@@ -1555,8 +1700,8 @@ async def complete_tracking(tracking_id: str):
                     row["store_id"],
                     tracking_id,
                     {
-                        "plan_id": td.get("plan_id", ""),
-                        "plan_name": td.get("solution_name", "效果追踪"),
+                        "plan_id": td_work.get("plan_id", ""),
+                        "plan_name": td_work.get("solution_name", "效果追踪"),
                         "target_indicators": [],
                     },
                     achievement,
@@ -1567,11 +1712,74 @@ async def complete_tracking(tracking_id: str):
         except Exception as e:
             logger.warning("完成追踪后方案沉淀失败: %s", e)
 
-        return {"status": "ok", "message": "追踪已完成，复盘报告已生成，有效方案已尝试沉淀"}
+        await send_thread_progress(
+            tracking_id,
+            {
+                "type": "completed",
+                "stage": "effect_track",
+                "message": "追踪已完成，复盘报告已生成",
+            },
+        )
+    except LLMReviewReportError as e:
+        logger.warning("完成追踪：LLM 失败 %s", e)
+        await send_thread_progress(
+            tracking_id,
+            {
+                "type": "error",
+                "stage": "effect_track",
+                "message": str(e) or "AI 复盘失败，请稍后重试",
+            },
+        )
+    except Exception:
+        logger.exception("完成追踪失败")
+        await send_thread_progress(
+            tracking_id,
+            {
+                "type": "error",
+                "stage": "effect_track",
+                "message": "完成追踪失败，请稍后重试",
+            },
+        )
+
+
+@router.post("/{tracking_id}/complete", summary="完成追踪")
+async def complete_tracking(tracking_id: str):
+    try:
+        async with await AsyncConnection.connect(_conninfo()) as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT 1 FROM ai_effect_tracking WHERE thread_id = %s",
+                    (tracking_id,),
+                )
+                if not await cur.fetchone():
+                    raise HTTPException(status_code=404, detail="追踪不存在")
+
+        async with _complete_tracking_lock:
+            if tracking_id in _complete_tracking_inflight:
+                return {
+                    "status": "accepted",
+                    "message": "完成追踪正在处理中，请留意页面进度",
+                }
+            _complete_tracking_inflight.add(tracking_id)
+
+        async def _run():
+            try:
+                await _complete_tracking_background(tracking_id)
+            finally:
+                async with _complete_tracking_lock:
+                    _complete_tracking_inflight.discard(tracking_id)
+
+        asyncio.create_task(_run())
+        return {
+            "status": "accepted",
+            "message": "已开始完成追踪，耗时操作将在后台执行并通过 WebSocket 推送进度",
+        }
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("完成追踪失败")
+        logger.exception("完成追踪任务启动失败")
+        async with _complete_tracking_lock:
+            _complete_tracking_inflight.discard(tracking_id)
         raise HTTPException(status_code=500, detail="完成追踪失败，请稍后重试") from e
 
 
@@ -1581,6 +1789,7 @@ async def complete_tracking(tracking_id: str):
 @router.post("/{tracking_id}/cancel", summary="取消追踪")
 async def cancel_tracking(tracking_id: str):
     try:
+        row = None
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -1588,22 +1797,28 @@ async def cancel_tracking(tracking_id: str):
                     (tracking_id,),
                 )
                 row = await cur.fetchone()
-                if not row:
-                    raise HTTPException(status_code=404, detail="追踪不存在")
+                if row:
+                    td = row["tracking_data"] or {}
+                    if isinstance(td, str):
+                        td = json.loads(td)
 
-                td = row["tracking_data"] or {}
-                if isinstance(td, str):
-                    td = json.loads(td)
+                    td["status"] = "cancelled"
 
-                td["status"] = "cancelled"
-
-                await cur.execute(
-                    "UPDATE ai_effect_tracking SET tracking_data = %s WHERE thread_id = %s",
-                    (json.dumps(td), tracking_id),
-                )
+                    await cur.execute(
+                        "UPDATE ai_effect_tracking SET tracking_data = %s WHERE thread_id = %s",
+                        (json.dumps(td), tracking_id),
+                    )
             await conn.commit()
 
-        return {"status": "ok", "message": "追踪已停止"}
+        if row:
+            return {"status": "ok", "message": "追踪已停止"}
+
+        pr = await get_pending_review_by_thread(tracking_id)
+        if pr:
+            await cancel_pending_review(tracking_id)
+            return {"status": "ok", "message": "已取消待复盘调度"}
+
+        raise HTTPException(status_code=404, detail="追踪不存在")
     except HTTPException:
         raise
     except Exception as e:

@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import httpx
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 与 CWD 无关：始终尝试加载仓库根目录 .env（避免从子目录启动时仍用默认 effect_track_delay_days=7）
@@ -27,6 +28,8 @@ class Settings(BaseSettings):
     llm_model: str = "qwen3.5-plus"
     llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     llm_enabled: bool = True
+    # 兼容模式接口首包可能较慢；可用环境变量 LLM_HTTP_READ_TIMEOUT 覆盖（秒）
+    llm_http_read_timeout: float = 300.0
 
     credential_encrypt_key: str = ""
 
@@ -36,7 +39,7 @@ class Settings(BaseSettings):
     benchmark_cache_ttl: int = 600
 
     # 为 True 时启用旧版双轨：先按 5.2.3 单独落库 rule_5.2.3 任务并执行规则券/消息；为 False（默认）时仅采纳方案落库
-    exec_push_rule_tasks: bool = True
+    exec_push_rule_tasks: bool = False
 
     # 方案执行后延迟多少天再执行效果追踪复盘（0 = 立即执行，不延迟）
     effect_track_delay_days: int = 7
@@ -46,6 +49,14 @@ class Settings(BaseSettings):
 
     log_dir: str = "logs"
     log_level: str = "DEBUG"  # DEBUG / INFO / WARNING / ERROR
+
+    def llm_httpx_timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(
+            connect=10.0,
+            read=self.llm_http_read_timeout,
+            write=10.0,
+            pool=10.0,
+        )
 
     model_config = SettingsConfigDict(
         env_file=_ENV_FILE if _ENV_FILE.is_file() else Path(".env"),

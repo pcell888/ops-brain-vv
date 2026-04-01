@@ -42,6 +42,7 @@ export default function SolutionDetailPage() {
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionProgress, setExecutionProgress] = useState<{ message: string; type: string }>({ message: '', type: '' });
   const [isAdopting, setIsAdopting] = useState(false);
+  const isExecutingRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const executedPlanIdRef = useRef<string | null>(null);
   const solutions = typedSolutionData?.solutions || [];
@@ -144,6 +145,10 @@ export default function SolutionDetailPage() {
   ]);
 
   useEffect(() => {
+    isExecutingRef.current = isExecuting;
+  }, [isExecuting]);
+
+  useEffect(() => {
     if (!diagnosisId) return;
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -165,6 +170,8 @@ export default function SolutionDetailPage() {
         };
         // 后端约定：采纳/执行任务进度均为 stage=execution；效果追踪为 effect_track，蒙层忽略
         if (data.stage !== 'execution') return;
+        // 忽略历史 execution 缓存，避免进入详情页即被 completed 跳转
+        if (!isExecutingRef.current) return;
 
         const line =
           data.message ||
@@ -179,7 +186,7 @@ export default function SolutionDetailPage() {
         if (data.type === 'completed') {
           setTimeout(() => {
             setIsExecuting(false);
-            navigate(`/execution/${encodeURIComponent(executedPlanIdRef.current!)}#execution-task-list`);
+            navigate('/execution');
           }, 1500);
         } else if (data.type === 'error') {
           message.error(data.message || '执行失败');
@@ -260,9 +267,7 @@ export default function SolutionDetailPage() {
   };
 
   const handleViewTasks = () => {
-    if (executedPlanIdRef.current) {
-      navigate(`/execution/${encodeURIComponent(executedPlanIdRef.current)}#execution-task-list`);
-    }
+    navigate('/execution');
   };
 
   return (

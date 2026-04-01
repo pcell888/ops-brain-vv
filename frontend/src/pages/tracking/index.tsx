@@ -281,16 +281,20 @@ export default function TrackingPage() {
   };
 
   const handleStop = () => {
-    if (!activeRow?.tracking_id) return;
+    const tid = activeRow?.tracking_id ?? scheduledRow?.tracking_id;
+    if (!tid) return;
+    const pendingOnly = !!scheduledRow && !activeRow;
     Modal.confirm({
       title: '确认停止追踪',
-      content: '停止后将无法继续采集数据，是否确认？',
+      content: pendingOnly
+        ? '将取消待自动复盘调度，是否确认？'
+        : '停止后将无法继续采集数据，是否确认？',
       okText: '确认停止',
       cancelText: '取消',
       okButtonProps: { danger: true },
       onOk: async () => {
-        await cancelTracking.mutateAsync(activeRow.tracking_id);
-        message.success('追踪已停止');
+        await cancelTracking.mutateAsync(tid);
+        message.success(pendingOnly ? '已取消待复盘调度' : '追踪已停止');
         refetch();
       },
     });
@@ -447,7 +451,7 @@ export default function TrackingPage() {
             >
               立即复盘
             </Button>
-            {activeRow && (
+            {(activeRow || scheduledRow) && (
               <Button danger icon={<StopOutlined />} loading={cancelTracking.isPending} onClick={handleStop}>
                 停止追踪
               </Button>

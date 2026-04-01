@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from contextvars import ContextVar
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from src.core.config import CN_TZ
+from src.core.config import CN_TZ, get_settings
 
 # 由 API 在流式运行前设置，用于 emit_progress 时实时推送到 WebSocket
 _progress_sender: ContextVar[tuple[str, Any] | None] = ContextVar("progress_sender", default=None)
@@ -29,6 +31,40 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger(__name__)
+
+
+def mcp_stdio_env() -> dict[str, str]:
+    """stdio 子进程环境。须传父进程完整 os.environ：mcp 库会把 env 与极小的 get_default_environment 合并，
+    若只传少量键，子进程仍缺 REDIS_URL 等，Settings 会回落到 localhost；与主进程不一致。
+    """
+    st = get_settings()
+    # 复制父进程环境（字符串化），避免 None
+    out: dict[str, str] = {k: str(v) for k, v in os.environ.items() if v is not None and v != ""}
+    log_dir = Path(st.log_dir).expanduser()
+    if not log_dir.is_absolute():
+        log_dir = Path.cwd() / log_dir
+    out["LOG_DIR"] = str(log_dir.resolve())
+    out["POSTGRES_URI"] = st.postgres_uri
+    out["REDIS_URL"] = st.redis_url
+    if st.wlwq_business_api_base:
+        out["WLWQ_BUSINESS_API_BASE"] = st.wlwq_business_api_base
+    if st.wlwq_postgres_uri:
+        out["WLWQ_POSTGRES_URI"] = st.wlwq_postgres_uri
+    if (st.platform_center_api_base or "").strip():
+        out["PLATFORM_CENTER_API_BASE"] = st.platform_center_api_base.strip()
+    out["PLATFORM_CENTER_AUTH_TYPE"] = st.platform_center_auth_type or "token"
+    if st.platform_center_auth_credential:
+        out["PLATFORM_CENTER_AUTH_CREDENTIAL"] = st.platform_center_auth_credential
+    if st.credential_encrypt_key:
+        out["CREDENTIAL_ENCRYPT_KEY"] = st.credential_encrypt_key
+    if st.llm_api_key:
+        out["LLM_API_KEY"] = st.llm_api_key
+    out["LLM_MODEL"] = st.llm_model
+    out["LLM_BASE_URL"] = st.llm_base_url
+    out["TENANT_CACHE_TTL"] = str(st.tenant_cache_ttl)
+    if not (out.get("PYTHONPATH") or "").strip():
+        out["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    return out
 
 
 class MCPToolInvocationError(RuntimeError):
@@ -57,6 +93,7 @@ async def _server_lifecycle(server_name: str, module: str, ready: asyncio.Event)
     server_params = StdioServerParameters(
         command=sys.executable,
         args=["-m", module],
+        env=mcp_stdio_env(),
     )
 
     try:
@@ -244,10 +281,13 @@ def emit_progress(
     message: str,
     percent: int | float | None = None,
     level: str = "info",
+    *,
+    for_adoption_ui: bool = True,
 ):
     """向 state 中追加进度消息（会被 LangGraph add_messages reducer 合并）；若已 set_progress_sender 则同时实时推送到 WS。
 
     level: 'info' | 'warning' | 'error'  —— warning/error 会透传到前端用于差异化展示。
+    for_adoption_ui: 为 False 时（如效果追踪），WS 使用 stage=effect_track；默认真时 WS 使用 stage=execution，与采纳蒙层约定一致。
     """
     state.setdefault("progress_messages", [])
     ts = datetime.now(CN_TZ).isoformat()
@@ -260,6 +300,8 @@ def emit_progress(
         payload["percent"] = percent
     if level and level != "info":
         payload["level"] = level
+    if not for_adoption_ui:
+        payload["stage"] = "effect_track"
     state["progress_messages"].append(payload)
 
     # 同步写入共享进度缓存，供 HTTP 轮询端点实时读取
@@ -284,6 +326,7 @@ def emit_progress(
                 "type": "progress",
                 "message": message,
                 "timestamp": ts,
+                "stage": "effect_track" if not for_adoption_ui else "execution",
             }
             if percent is not None:
                 ws_payload["percent"] = percent

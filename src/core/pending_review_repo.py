@@ -83,7 +83,7 @@ async def get_pending_review(tenant_id: str, thread_id: str) -> dict | None:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT thread_id, tenant_id, review_due_date, status
+                    SELECT thread_id, tenant_id, review_due_date, status, created_at
                     FROM ai_pending_review
                     WHERE tenant_id = %s AND thread_id = %s AND status = 'pending'
                     """,
@@ -104,7 +104,7 @@ async def get_pending_review_by_thread(thread_id: str) -> dict | None:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT thread_id, tenant_id, review_due_date, status
+                    SELECT thread_id, tenant_id, review_due_date, status, created_at
                     FROM ai_pending_review
                     WHERE thread_id = %s AND status = 'pending'
                     """,

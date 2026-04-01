@@ -70,6 +70,12 @@ CREATE INDEX IF NOT EXISTS ix_ai_diagnosis_report_tenant_store ON ai_diagnosis_r
 CREATE INDEX IF NOT EXISTS ix_ai_diagnosis_report_created_at ON ai_diagnosis_report (created_at DESC);
 """
 
+# 迁移：添加 plan_ids 列（存储该诊断报告生成的所有方案 ID）
+_MIGRATE_AI_DIAGNOSIS_REPORT_ADD_PLAN_IDS = """
+ALTER TABLE IF EXISTS ai_diagnosis_report
+  ADD COLUMN IF NOT EXISTS plan_ids JSONB DEFAULT '[]'::jsonb;
+"""
+
 # 旧库为 timestamp without time zone：按中国墙钟解读后存为 timestamptz（内部 UTC）
 _MIGRATE_AI_DIAGNOSIS_REPORT_CREATED_AT = """
 DO $migrate$
@@ -217,12 +223,8 @@ async def ensure_tenant_registry():
         async with await AsyncConnection.connect(conninfo) as conn:
             async with conn.cursor() as cur:
                 await cur.execute(TENANT_REGISTRY_DDL)
-                await cur.execute(
-                    "ALTER TABLE tenant_registry ADD COLUMN IF NOT EXISTS platform_auth_credential TEXT"
-                )
-                await cur.execute(
-                    "ALTER TABLE tenant_registry ADD COLUMN IF NOT EXISTS industry_name VARCHAR(128)"
-                )
+                await cur.execute("ALTER TABLE tenant_registry ADD COLUMN IF NOT EXISTS platform_auth_credential TEXT")
+                await cur.execute("ALTER TABLE tenant_registry ADD COLUMN IF NOT EXISTS industry_name VARCHAR(128)")
                 # 中台不再入 tenant_registry；清理历史种子行
                 await cur.execute("DELETE FROM tenant_registry WHERE tenant_id = '__platform__'")
                 await cur.execute(SEED_WLWQ_LOCAL)
@@ -273,6 +275,7 @@ async def ensure_ai_diagnosis_report():
             async with conn.cursor() as cur:
                 await cur.execute(AI_DIAGNOSIS_REPORT_DDL)
                 await cur.execute(_MIGRATE_AI_DIAGNOSIS_REPORT_CREATED_AT)
+                await cur.execute(_MIGRATE_AI_DIAGNOSIS_REPORT_ADD_PLAN_IDS)
             await conn.commit()
         logger.info("ai_diagnosis_report 表已就绪")
     except Exception as e:
@@ -304,12 +307,8 @@ async def ensure_ai_exec_task():
                     stmt = stmt.strip()
                     if stmt:
                         await cur.execute(stmt)
-                await cur.execute(
-                    "ALTER TABLE ai_exec_task ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ"
-                )
-                await cur.execute(
-                    "ALTER TABLE ai_exec_task ALTER COLUMN related_resources SET DEFAULT '{}'::jsonb"
-                )
+                await cur.execute("ALTER TABLE ai_exec_task ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ")
+                await cur.execute("ALTER TABLE ai_exec_task ALTER COLUMN related_resources SET DEFAULT '{}'::jsonb")
                 # 历史数据：已派发仍占 pending 的行与采纳后自动执行语义对齐
                 await cur.execute(
                     """

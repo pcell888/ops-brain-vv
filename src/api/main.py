@@ -18,6 +18,7 @@ from src.core.db_init import (
     ensure_ai_diagnosis_report,
     ensure_ai_push_log,
     ensure_ai_exec_task,
+    ensure_ai_effect_snapshot,
     ensure_ai_effect_tracking,
     ensure_ai_review_report,
     ensure_ai_solution_knowledge,
@@ -74,6 +75,7 @@ async def startup():
     await ensure_ai_diagnosis_report()
     await ensure_ai_push_log()
     await ensure_ai_exec_task()
+    await ensure_ai_effect_snapshot()
     await ensure_ai_effect_tracking()
     await ensure_ai_review_report()
     await ensure_ai_solution_knowledge()

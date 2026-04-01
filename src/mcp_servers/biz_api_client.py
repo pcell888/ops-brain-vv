@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from src.mcp_servers.tenant_router import PLATFORM_TENANT_ID, TenantContext, TenantRouter
+from src.mcp_servers.tenant_router import PLATFORM_TENANT_ID, TenantContext, TenantNotFoundError, TenantRouter
 
 logger = logging.getLogger(__name__)
 
@@ -307,8 +307,8 @@ class BizAPIClient:
             platform_auth_authorization_override=auth_authorization_override,
         )
 
-    # 租户解析(Redis/PG)或请求 wlwq 无响应时会阻塞，整次请求加超时后降级 mock
-    _REQUEST_TIMEOUT = 15.0
+    # 租户解析(Redis/PG) + 取鉴权头 + HTTP 共享此时长；须 ≤ TenantRouter 中 httpx.AsyncClient 的 timeout
+    _REQUEST_TIMEOUT = 30.0
     _MAX_RETRIES = 3
     _RETRY_DELAY = 1.0  # 秒
 
@@ -430,44 +430,40 @@ class BizAPIClient:
                 )
             except httpx.HTTPStatusError as e:
                 elapsed = time.time() - start_time
-                last_exception = e
-                # 4xx错误不重试
-                if 400 <= e.response.status_code < 500:
-                    logger.error(
-                        "业务API客户端错误(不重试): tenant=%s base_url=%s %s %s 状态码=%s 耗时=%.2fs",
-                        tenant_id,
-                        base_url,
-                        method,
-                        path,
-                        e.response.status_code,
-                        elapsed,
-                    )
-                    raise
-                logger.warning(
-                    "业务API服务端错误: tenant=%s base_url=%s %s %s 状态码=%s 耗时=%.2fs 尝试=%d/%d",
+                logger.error(
+                    "业务API HTTP错误(不重试): tenant=%s base_url=%s %s %s 状态码=%s 耗时=%.2fs",
                     tenant_id,
                     base_url,
                     method,
                     path,
                     e.response.status_code,
                     elapsed,
-                    attempt,
-                    self._MAX_RETRIES,
                 )
-            except Exception as e:
+                raise
+            except TenantNotFoundError as e:
                 elapsed = time.time() - start_time
-                last_exception = e
-                logger.warning(
-                    "业务API请求异常: tenant=%s base_url=%s %s %s 耗时=%.2fs 错误=%s 尝试=%d/%d",
+                logger.error(
+                    "业务API请求失败(不可重试): tenant=%s base_url=%s %s %s 耗时=%.2fs 错误=%s",
                     tenant_id,
                     base_url,
                     method,
                     path,
                     elapsed,
                     str(e),
-                    attempt,
-                    self._MAX_RETRIES,
                 )
+                raise
+            except Exception as e:
+                elapsed = time.time() - start_time
+                logger.error(
+                    "业务API请求异常(不重试): tenant=%s base_url=%s %s %s 耗时=%.2fs 错误=%s",
+                    tenant_id,
+                    base_url,
+                    method,
+                    path,
+                    elapsed,
+                    str(e),
+                )
+                raise
 
             # 如果不是最后一次尝试，等待后重试
             if attempt < self._MAX_RETRIES:
@@ -497,11 +493,46 @@ class BizAPIClient:
         full_url = _full_request_url(client, method, path, params, json_data)
         base_url = str(client.base_url).rstrip("/")
         try:
-            resp = await client.request(
-                method, url, params=params, json=json_data, headers=dict(headers or {})
-            )
+            resp = await client.request(method, url, params=params, json=json_data, headers=dict(headers or {}))
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
+            # 兼容历史配置：若 base_url 误带 /web/ai，404 时自动回退到去前缀地址再试一次
+            if e.response.status_code == 404 and base_url.endswith("/web/ai"):
+                fallback_base = base_url[: -len("/web/ai")].rstrip("/")
+                fallback_url = f"{fallback_base}/{str(path).lstrip('/')}"
+                logger.warning(
+                    "业务API 404，尝试去掉 /web/ai 前缀重试: %s %s -> %s",
+                    method,
+                    full_url,
+                    fallback_url,
+                )
+                try:
+                    resp = await client.request(
+                        method,
+                        fallback_url,
+                        params=params,
+                        json=json_data,
+                        headers=dict(headers or {}),
+                    )
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError:
+                    pass
+                except httpx.RequestError:
+                    pass
+                else:
+                    body = resp.json()
+                    logger.info(
+                        "业务API前缀回退成功: %s %s 状态码=%s",
+                        method,
+                        fallback_url,
+                        resp.status_code,
+                    )
+                    if isinstance(body, dict) and "code" in body:
+                        if body["code"] not in (0, 200, "0", "200"):
+                            error_msg = body.get("msg") or body.get("message") or "unknown error"
+                            raise BizAPIError(resp.status_code, error_msg, str(path))
+                        return body.get("data", body)
+                    return body
             logger.error(
                 "业务API HTTP错误: base_url=%s %s %s 状态码=%s 响应=%s",
                 base_url,
@@ -527,14 +558,16 @@ class BizAPIClient:
 
         if isinstance(body, dict) and "code" in body:
             if body["code"] not in (0, 200, "0", "200"):
-                error_msg = body.get("msg", "unknown error")
+                # 支持 msg 和 message 两种错误字段格式
+                error_msg = body.get("msg") or body.get("message") or "unknown error"
                 logger.error(
-                    "业务API业务错误: base_url=%s %s %s code=%s msg=%s",
+                    "业务API业务错误: base_url=%s %s %s code=%s msg=%s 响应体=%s",
                     base_url,
                     method,
                     full_url,
                     body["code"],
                     error_msg,
+                    json.dumps(body, ensure_ascii=False)[:1000],
                 )
                 raise BizAPIError(resp.status_code, error_msg, str(url))
             return body.get("data", body)

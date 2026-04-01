@@ -22,6 +22,7 @@ import {
   useCompleteTracking,
   useDiagnosisSelection,
   useMetricTrends,
+  useStartReviewNow,
   useTrackingSnapshots,
   useTakeSnapshot,
   useTrackingSummary,
@@ -153,6 +154,7 @@ export default function TrackingDetailPage() {
   const takeSnapshot = useTakeSnapshot();
   const completeTracking = useCompleteTracking();
   const cancelTracking = useCancelTracking();
+  const startReviewNow = useStartReviewNow();
   const [isCompleting, setIsCompleting] = useState(false);
   const [completeProgress, setCompleteProgress] = useState<{ message: string; type: string }>({
     message: '',
@@ -160,6 +162,8 @@ export default function TrackingDetailPage() {
   });
   const completingFlowRef = useRef(false);
   const completingTrackingIdRef = useRef('');
+  /** scheduled 待复盘走 /review/start（LangGraph），否则走 HTTP 完成追踪 */
+  const completeModeRef = useRef<'http' | 'graph'>('http');
 
   const analyze = (analyzeData ?? {}) as AnalyzeResult;
   const trends = (trendsData ?? {}) as TrendsResult;
@@ -380,15 +384,31 @@ export default function TrackingDetailPage() {
     : summary!.status === 'completed'
       ? <CheckCircleOutlined className='text-[11px]' />
       : <ClockCircleOutlined className='text-[11px]' />) : null;
-  const score = !hasNoData ? (analyze.latest_score == null ? 0 : Math.max(0, Math.round(Number(analyze.latest_score)))) : 0;
+  const score = !hasNoData
+    ? (() => {
+        const fromAnalyze =
+          analyze.latest_score == null ? null : Math.max(0, Math.round(Number(analyze.latest_score)));
+        const s = summary?.current_score;
+        const fromSummary =
+          s == null || s === '' ? null : Math.max(0, Math.round(Number(s)));
+        return fromAnalyze ?? fromSummary ?? 0;
+      })()
+    : 0;
   const days = !hasNoData ? getTrackingDays(summary!.started_at, summary!.completed_at) : 0;
   const totalDaysRaw = !hasNoData ? Number(summary!.total_duration_days) : 0;
   const totalDays = Number.isFinite(totalDaysRaw) && totalDaysRaw > 0 ? Math.round(totalDaysRaw) : null;
-  const canOperate = !!resolvedTrackingId && !hasNoData && summary!.status === 'active';
+  const canOperate =
+    !!resolvedTrackingId &&
+    !hasNoData &&
+    (summary!.status === 'active' || summary!.status === 'scheduled');
   const snapshotItems = ((snapshotsData as { items?: SnapshotItem[] } | undefined)?.items ?? []).slice();
 
   const handleSnapshot = async () => {
     if (!resolvedTrackingId) return;
+    if (!enterpriseId) {
+      message.warning('请先选择企业');
+      return;
+    }
     try {
       await takeSnapshot.mutateAsync({ trackingId: resolvedTrackingId, enterpriseId });
       message.success('快照已采集');
@@ -398,7 +418,31 @@ export default function TrackingDetailPage() {
   };
 
   const handleComplete = () => {
-    if (!resolvedTrackingId) return;
+    if (!resolvedTrackingId || !summary) return;
+    if (summary.status === 'scheduled') {
+      Modal.confirm({
+        title: '立即复盘',
+        content:
+          '当前为待自动复盘（到期后系统仍会复盘）。确认跳过等待并立即执行效果追踪与复盘？',
+        okText: '确认',
+        cancelText: '取消',
+        onOk: async () => {
+          completingTrackingIdRef.current = resolvedTrackingId;
+          completingFlowRef.current = true;
+          completeModeRef.current = 'graph';
+          setIsCompleting(true);
+          setCompleteProgress({ message: '正在启动立即复盘…', type: 'progress' });
+          try {
+            await startReviewNow.mutateAsync(resolvedTrackingId);
+          } catch {
+            completingFlowRef.current = false;
+            setIsCompleting(false);
+            setCompleteProgress({ message: '', type: '' });
+          }
+        },
+      });
+      return;
+    }
     Modal.confirm({
       title: '完成追踪',
       content: '确认完成当前追踪并进入复盘阶段？',
@@ -407,6 +451,7 @@ export default function TrackingDetailPage() {
       onOk: async () => {
         completingTrackingIdRef.current = resolvedTrackingId;
         completingFlowRef.current = true;
+        completeModeRef.current = 'http';
         setIsCompleting(true);
         setCompleteProgress({ message: '正在提交完成追踪…', type: 'progress' });
         try {
@@ -431,24 +476,35 @@ export default function TrackingDetailPage() {
     if (!tid) return;
     completingFlowRef.current = true;
     setCompleteProgress({ message: '正在重新完成追踪…', type: 'progress' });
-    void completeTracking.mutateAsync(tid).catch(() => {
+    const run =
+      completeModeRef.current === 'graph'
+        ? startReviewNow.mutateAsync(tid)
+        : completeTracking.mutateAsync(tid);
+    void run.catch(() => {
       completingFlowRef.current = false;
       setIsCompleting(false);
       setCompleteProgress({ message: '', type: '' });
     });
   };
 
+  const completeOrReviewPending =
+    completeTracking.isPending || startReviewNow.isPending;
+
   const handleStop = () => {
-    if (!resolvedTrackingId) return;
+    if (!resolvedTrackingId || !summary) return;
+    const pendingOnly = summary.status === 'scheduled';
     Modal.confirm({
       title: '停止追踪',
-      content: '确认停止当前追踪？停止后将不再继续采集。',
+      content: pendingOnly
+        ? '确认取消待自动复盘？取消后需通过其他方式再次进入复盘流程。'
+        : '确认停止当前追踪？停止后将不再继续采集。',
       okText: '确认停止',
       cancelText: '取消',
       okButtonProps: { danger: true },
       onOk: async () => {
         await cancelTracking.mutateAsync(resolvedTrackingId);
-        message.success('追踪已停止');
+        void queryClient.invalidateQueries({ queryKey: ['tracking'] });
+        message.success(pendingOnly ? '已取消待复盘调度' : '追踪已停止');
       },
     });
   };
@@ -476,13 +532,13 @@ export default function TrackingDetailPage() {
           ) : completeProgress.type === 'error' ? (
             <>
               <Button onClick={handleCancelCompleting}>关闭</Button>
-              <Button type="primary" loading={completeTracking.isPending} onClick={handleRetryComplete}>
+              <Button type="primary" loading={completeOrReviewPending} onClick={handleRetryComplete}>
                 重试
               </Button>
             </>
           ) : (
             <>
-              <Button onClick={handleCancelCompleting} disabled={completeTracking.isPending}>
+              <Button onClick={handleCancelCompleting} disabled={completeOrReviewPending}>
                 关闭
               </Button>
             </>
@@ -644,8 +700,21 @@ export default function TrackingDetailPage() {
             <div className='col-span-2 bg-gray-100 px-4 py-2.5 text-secondary text-sm'>方案名称</div>
             <div className='col-span-10 px-4 py-2.5 text-primary text-sm'>{summary.solution_name || '-'}</div>
           </div>
+          {summary.review_due_date ? (
+            <div className='grid grid-cols-12 border-b border-gray-200'>
+              <div className='col-span-2 bg-gray-100 px-4 py-2.5 text-secondary text-sm'>预定自动复盘</div>
+              <div className='col-span-10 px-4 py-2.5 text-primary text-sm'>
+                {dayjs(summary.review_due_date).format('YYYY-MM-DD HH:mm')}
+              </div>
+            </div>
+          ) : null}
           <div className='grid grid-cols-12'>
-            <div className='col-span-2 bg-gray-100 px-4 py-2.5 text-secondary text-sm'>开始时间</div>
+            <div
+              className='col-span-2 bg-gray-100 px-4 py-2.5 text-secondary text-sm'
+              title='进入效果追踪等待期的时间（执行完成后产生）；首次采集快照后会更新为追踪数据中的开始时间'
+            >
+              开始时间
+            </div>
             <div className='col-span-4 px-4 py-2.5 text-primary text-sm'>
               {summary.started_at ? dayjs(summary.started_at).format('YYYY-MM-DD HH:mm') : '-'}
             </div>

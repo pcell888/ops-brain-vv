@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from src.core.models import AdoptPlanRequest
 from src.core.config import CN_TZ, get_settings
-from src.api.deps import astream_events_with_retry, get_graph_app, manager, running_tasks
+from src.api.deps import astream_events_with_retry, get_graph_app, manager, running_tasks, progress_cache
 from src.agent.tools import set_progress_sender, clear_progress_sender
 from src.core.exec_task_repo import get_tasks_by_plan_id, update_task_status
 from src.core.diagnosis_errors import public_diagnosis_error_message
@@ -170,8 +170,19 @@ async def adopt_plan(thread_id: str, request: AdoptPlanRequest):
     return {"status": "resumed", "adopted_plan_id": request.plan_id}
 
 
+async def _send_progress(thread_id: str, payload: dict):
+    """发送进度并缓存，供重连时使用。"""
+    # 写入缓存
+    payload_copy = dict(payload)
+    payload_copy["timestamp"] = datetime.now(CN_TZ).isoformat()
+    progress_cache[thread_id] = payload_copy
+    # 推送
+    await manager.send_progress(thread_id, payload_copy)
+
+
 async def _resume_after_adoption(thread_id: str, config: dict):
-    """Resume LangGraph 执行。"""
+    """Resume LangGraph 执行。采纳蒙层只展示 execute_plans；track_effects 在后台进行，不推送到该 UI。"""
+    adoption_completed_sent = False
     try:
         set_progress_sender(thread_id, manager)
         async for event in astream_events_with_retry(None, config):
@@ -183,32 +194,55 @@ async def _resume_after_adoption(thread_id: str, config: dict):
                 if node_name not in _WORKFLOW_NODES:
                     continue
 
+                # 效果追踪（复盘）进度不进入「采纳并执行」WebSocket 蒙层
+                if node_name == "track_effects":
+                    continue
+
                 if isinstance(output, dict) and "progress_messages" in output:
                     for msg in output["progress_messages"]:
+                        if isinstance(msg, dict) and msg.get("stage") == "effect_track":
+                            continue
                         content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-                        await manager.send_progress(
+                        await _send_progress(
                             thread_id,
                             {
                                 "type": "progress",
+                                "stage": "execution",
                                 "message": content,
-                                "timestamp": datetime.now(CN_TZ).isoformat(),
                             },
                         )
 
-                await manager.send_progress(
+                await _send_progress(
                     thread_id,
                     {
                         "type": "node_complete",
+                        "stage": "execution",
                         "node": node_name,
-                        "timestamp": datetime.now(CN_TZ).isoformat(),
                     },
                 )
+
+                if node_name == "execute_plans":
+                    delay = get_settings().effect_track_delay_days
+                    if delay > 0:
+                        done_msg = f"方案执行任务已全部创建，效果追踪将在 {delay} 天后自动执行"
+                    else:
+                        done_msg = "方案执行任务已全部创建"
+                    await _send_progress(
+                        thread_id,
+                        {
+                            "type": "completed",
+                            "stage": "execution",
+                            "message": done_msg,
+                        },
+                    )
+                    adoption_completed_sent = True
     except Exception as e:
         logger.exception("恢复执行异常 thread_id=%s", thread_id)
-        await manager.send_progress(
+        await _send_progress(
             thread_id,
             {
                 "type": "error",
+                "stage": "execution",
                 "message": public_diagnosis_error_message(e),
             },
         )
@@ -216,25 +250,28 @@ async def _resume_after_adoption(thread_id: str, config: dict):
     finally:
         clear_progress_sender()
 
-    app = await get_graph_app()
-    state = await app.aget_state(config)
-    if state.next and "track_effects" in state.next:
-        delay = get_settings().effect_track_delay_days
-        await manager.send_progress(
-            thread_id,
-            {
-                "type": "completed",
-                "message": f"方案执行任务已全部创建，效果追踪将在 {delay} 天后自动执行",
-            },
-        )
-    else:
-        await manager.send_progress(
-            thread_id,
-            {
-                "type": "completed",
-                "message": "方案执行任务已全部创建",
-            },
-        )
+    if not adoption_completed_sent:
+        app = await get_graph_app()
+        state = await app.aget_state(config)
+        if state.next and "track_effects" in state.next:
+            delay = get_settings().effect_track_delay_days
+            await _send_progress(
+                thread_id,
+                {
+                    "type": "completed",
+                    "stage": "execution",
+                    "message": f"方案执行任务已全部创建，效果追踪将在 {delay} 天后自动执行",
+                },
+            )
+        else:
+            await _send_progress(
+                thread_id,
+                {
+                    "type": "completed",
+                    "stage": "execution",
+                    "message": "方案执行任务已全部创建",
+                },
+            )
 
 
 @router.post("/{thread_id}/plans/{plan_id}/redistribute", summary="重新派发任务")

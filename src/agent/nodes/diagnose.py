@@ -6,7 +6,6 @@ import json
 import logging
 from datetime import datetime
 
-import httpx
 from langchain_openai import ChatOpenAI
 
 from src.agent.state import DiagnosisState
@@ -135,7 +134,7 @@ async def _llm_root_cause_analysis(
         base_url=settings.llm_base_url,
         temperature=0.3,
         max_tokens=8192,
-        timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10),
+        timeout=settings.llm_httpx_timeout(),
     )
 
     required_codes = json.dumps(

@@ -32,3 +32,8 @@ _file_handler.setFormatter(_formatter)
 logging.getLogger().addHandler(_handler)
 logging.getLogger().addHandler(_file_handler)
 logging.getLogger().setLevel(logging.DEBUG)
+
+logging.getLogger("mcp_servers.bootstrap").info(
+    "MCP 子进程已初始化 log_dir=%s（mcp-servers.log）",
+    log_dir.resolve(),
+)

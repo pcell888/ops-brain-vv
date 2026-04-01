@@ -113,3 +113,46 @@ async def list_reports(
     except Exception as e:
         logger.warning("列表诊断报告失败: %s", e)
         return [], 0
+
+
+async def update_plan_ids(thread_id: str, plan_ids: list[str]) -> None:
+    """更新指定诊断报告的 plan_ids 列表。"""
+    await ensure_ai_diagnosis_report()
+    plan_ids_json = json.dumps(plan_ids, ensure_ascii=False)
+    try:
+        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE ai_diagnosis_report
+                    SET plan_ids = %s::jsonb
+                    WHERE thread_id = %s
+                    """,
+                    (plan_ids_json, thread_id),
+                )
+            await conn.commit()
+    except Exception as e:
+        logger.warning("更新 plan_ids 失败: thread_id=%s, error=%s", thread_id, e)
+
+
+async def find_thread_id_by_plan_id(plan_id: str) -> str | None:
+    """通过 plan_id 查找对应的 thread_id。"""
+    await ensure_ai_diagnosis_report()
+    try:
+        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT thread_id
+                    FROM ai_diagnosis_report
+                    WHERE plan_ids @> %s::jsonb
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (json.dumps([plan_id]),),
+                )
+                row = await cur.fetchone()
+                return row.get("thread_id") if row else None
+    except Exception as e:
+        logger.warning("通过 plan_id 查找 thread_id 失败: plan_id=%s, error=%s", plan_id, e)
+        return None

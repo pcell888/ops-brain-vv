@@ -33,14 +33,16 @@ def _normalize_steps(steps: list) -> list[dict]:
         except (TypeError, ValueError):
             step_no = i + 1
         action = raw.get("action") or raw.get("description") or ""
-        out.append({
-            "step": step_no,
-            "action": str(action).strip(),
-            "owner_dept": str(raw.get("owner_dept", "") or "").strip(),
-            "timeline": str(raw.get("timeline", "") or "").strip(),
-            "data_context": str(raw.get("data_context", "") or "").strip(),
-            "implementation_steps": _parse_impl_steps(raw),
-        })
+        out.append(
+            {
+                "step": step_no,
+                "action": str(action).strip(),
+                "owner_dept": str(raw.get("owner_dept", "") or "").strip(),
+                "timeline": str(raw.get("timeline", "") or "").strip(),
+                "data_context": str(raw.get("data_context", "") or "").strip(),
+                "implementation_steps": _parse_impl_steps(raw),
+            }
+        )
     return out
 
 
@@ -112,21 +114,23 @@ def _steps_to_tasks(solution_id: str, steps: list) -> list[dict]:
             dur_int = 7
         step_no = raw.get("step", i + 1)
         name = f"步骤{step_no}" if step_no is not None else f"步骤{i + 1}"
-        tasks.append({
-            "id": f"{solution_id}_task_{i}",
-            "task_id": raw.get("task_id", f"step_{i}"),
-            "name": name,
-            "description": raw.get("action", "") or raw.get("description", ""),
-            "owner_dept": raw.get("owner_dept", ""),
-            "timeline": raw.get("timeline", ""),
-            "data_context": raw.get("data_context", ""),
-            "implementation_steps": _parse_impl_steps(raw),
-            "duration_days": dur_int,
-            "execution_type": raw.get("execution_type", "manual"),
-            "dependencies": raw.get("dependencies", []),
-            "start_offset": offset,
-            "end_offset": offset + dur_int,
-        })
+        tasks.append(
+            {
+                "id": f"{solution_id}_task_{i}",
+                "task_id": raw.get("task_id", f"step_{i}"),
+                "name": name,
+                "description": raw.get("action", "") or raw.get("description", ""),
+                "owner_dept": raw.get("owner_dept", ""),
+                "timeline": raw.get("timeline", ""),
+                "data_context": raw.get("data_context", ""),
+                "implementation_steps": _parse_impl_steps(raw),
+                "duration_days": dur_int,
+                "execution_type": raw.get("execution_type", "manual"),
+                "dependencies": raw.get("dependencies", []),
+                "start_offset": offset,
+                "end_offset": offset + dur_int,
+            }
+        )
         offset += dur_int
     return tasks
 
@@ -175,10 +179,17 @@ async def compat_solution_list(diagnosis_id: str):
         }
 
     adopted_set = set(adopted_ids)
-    solutions = [
-        _plan_to_list_item(plan, rank, anomalies, adopted_set)
-        for rank, plan in enumerate(plans, 1)
-    ]
+    solutions = [_plan_to_list_item(plan, rank, anomalies, adopted_set) for rank, plan in enumerate(plans, 1)]
+
+    # 同步更新 plan_ids 到数据库，便于后续采纳时快速查找
+    plan_ids = [p.get("plan_id") for p in plans if p.get("plan_id")]
+    if plan_ids:
+        try:
+            from src.core.diagnosis_report_repo import update_plan_ids
+
+            await update_plan_ids(diagnosis_id, plan_ids)
+        except Exception as e:
+            logger.warning("同步 plan_ids 失败: %s", e)
 
     ai_recommendation = None
     if len(plans) >= 2:
@@ -207,29 +218,65 @@ async def compat_adopt_solution(solution_id: str):
     """兼容前端 PUT /solutions/{solutionId}/adopt。
 
     前端按 solution_id（即 plan_id）采纳，后端需要 thread_id + plan_id。
-    遍历 running_tasks 和 graph state 找到包含该 plan_id 的 thread。
+    优先从数据库 plan_ids 索引查找，找不到再遍历最近的诊断报告。
     """
     from src.api.routes.solutions import adopt_plan
     from src.core.models import AdoptPlanRequest
 
     app = await get_graph_app()
 
-    from src.core.diagnosis_report_repo import list_reports
-    items, _ = await list_reports(None, None, 1, 50)
+    # 方式 1：从数据库 plan_ids 索引快速查找
+    try:
+        from src.core.diagnosis_report_repo import find_thread_id_by_plan_id
 
-    for row in items:
-        thread_id = row.get("thread_id", "")
-        config = {"configurable": {"thread_id": thread_id}}
-        try:
+        thread_id = await find_thread_id_by_plan_id(solution_id)
+        if thread_id:
+            config = {"configurable": {"thread_id": thread_id}}
             state = await app.aget_state(config)
-            if not state or not state.values:
+            if state and state.values:
+                plans = state.values.get("solution_plans") or []
+                plan_ids = {p.get("plan_id") for p in plans}
+                if solution_id in plan_ids:
+                    return await adopt_plan(thread_id, AdoptPlanRequest(plan_id=solution_id))
+    except Exception as e:
+        logger.warning("从 plan_ids 索引查找失败: %s", e)
+
+    # 方式 2：遍历最近的诊断报告（兜底）
+    from src.core.diagnosis_report_repo import list_reports
+
+    page = 1
+    page_size = 100
+    while True:
+        items, total = await list_reports(None, None, page, page_size)
+        if not items:
+            break
+
+        for row in items:
+            thread_id = row.get("thread_id", "")
+            config = {"configurable": {"thread_id": thread_id}}
+            try:
+                state = await app.aget_state(config)
+                if not state or not state.values:
+                    continue
+                plans = state.values.get("solution_plans") or []
+                plan_ids = {p.get("plan_id") for p in plans}
+                if solution_id in plan_ids:
+                    # 找到后同步更新 plan_ids 到数据库
+                    plan_id_list = [p.get("plan_id") for p in plans if p.get("plan_id")]
+                    if plan_id_list:
+                        try:
+                            from src.core.diagnosis_report_repo import update_plan_ids
+
+                            await update_plan_ids(thread_id, plan_id_list)
+                        except Exception:
+                            pass
+                    return await adopt_plan(thread_id, AdoptPlanRequest(plan_id=solution_id))
+            except Exception:
                 continue
-            plans = state.values.get("solution_plans") or []
-            plan_ids = {p.get("plan_id") for p in plans}
-            if solution_id in plan_ids:
-                return await adopt_plan(thread_id, AdoptPlanRequest(plan_id=solution_id))
-        except Exception:
-            continue
+
+        if page * page_size >= total:
+            break
+        page += 1
 
     raise HTTPException(status_code=404, detail=f"未找到包含方案 {solution_id} 的诊断")
 
@@ -271,16 +318,18 @@ async def compat_solution_detail(solution_id: str):
                 for code in plan.get("target_indicators", []):
                     for a in anomalies:
                         if a.get("indicator_code") == code:
-                            related_anomalies.append({
-                                "id": a.get("indicator_code"),
-                                "rule_name": a.get("indicator_name", code),
-                                "metric_name": code,
-                                "dimension": a.get("dimension", ""),
-                                "current_value": a.get("current_value", 0),
-                                "benchmark_value": a.get("benchmark_avg"),
-                                "gap_percentage": abs(a.get("deviation_pct", 0)),
-                                "severity": a.get("severity", "medium"),
-                            })
+                            related_anomalies.append(
+                                {
+                                    "id": a.get("indicator_code"),
+                                    "rule_name": a.get("indicator_name", code),
+                                    "metric_name": code,
+                                    "dimension": a.get("dimension", ""),
+                                    "current_value": a.get("current_value", 0),
+                                    "benchmark_value": a.get("benchmark_avg"),
+                                    "gap_percentage": abs(a.get("deviation_pct", 0)),
+                                    "severity": a.get("severity", "medium"),
+                                }
+                            )
 
                 tasks = _steps_to_tasks(solution_id, steps)
 

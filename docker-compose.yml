@@ -1,5 +1,6 @@
 services:
   ops-brain-api:
+    restart: unless-stopped
     build: .
     command: uvicorn src.api.main:app --host 0.0.0.0 --port ${OPS_BRAIN_API_PORT:-8000}
     ports:
@@ -7,69 +8,34 @@ services:
     environment:
       - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
       - REDIS_URL=redis://redis:6379/0
+      - LOG_DIR=/logs
       # 容器内访问 wlwq 模拟服务须用 Compose 服务名，不能用 localhost
       - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
+      # 中台：镜像内无 .env 时需由 Compose 注入（与仓库 .env.example 一致；可被宿主 .env 覆盖）
+      - PLATFORM_CENTER_API_BASE=${PLATFORM_CENTER_API_BASE:-https://platform-center.wlwq.com/api}
+      - PLATFORM_CENTER_AUTH_TYPE=${PLATFORM_CENTER_AUTH_TYPE:-token}
+      - PLATFORM_CENTER_AUTH_CREDENTIAL=${PLATFORM_CENTER_AUTH_CREDENTIAL:-}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=qwen-max
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
     depends_on:
       - postgres
       - redis
       - wlwq-enterprise
-
-  mcp-metrics:
-    build: .
-    command: python -m src.mcp_servers.metrics_server
-    environment:
-      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
-      - REDIS_URL=redis://redis:6379/0
-      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
-      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
-
-  mcp-crm:
-    build: .
-    command: python -m src.mcp_servers.crm_server
-    environment:
-      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
-      - REDIS_URL=redis://redis:6379/0
-      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
-      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
-
-  mcp-benchmark:
-    build: .
-    command: python -m src.mcp_servers.benchmark_server
-    environment:
-      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
-      - REDIS_URL=redis://redis:6379/1
-      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
-      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
-
-  mcp-task:
-    build: .
-    command: python -m src.mcp_servers.task_server
-    environment:
-      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
-      - REDIS_URL=redis://redis:6379/0
-      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
-      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
-
-  mcp-notify:
-    build: .
-    command: python -m src.mcp_servers.notify_server
-    environment:
-      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
-      - REDIS_URL=redis://redis:6379/0
-      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
-      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
+    volumes:
+      - ./logs:/logs
 
   wlwq-enterprise:
+    restart: unless-stopped
     build: .
     command: uvicorn src.wlwq.app:app --host 0.0.0.0 --port ${WLWQ_ENTERPRISE_PORT:-8200}
     ports:
       - "${WLWQ_ENTERPRISE_PORT:-8200}:${WLWQ_ENTERPRISE_PORT:-8200}"
     environment:
-      # 容器内须用 Compose 服务名 postgres，不能用 localhost；与 ops_brain 共用库即可（wlwq 表名不冲突）
-      - WLWQ_POSTGRES_URI=postgresql+asyncpg://postgres:password@postgres:5432/ops_brain
+      - LOG_DIR=/logs
+      # 容器内须用 Compose 服务名 postgres；独立 mock 库 wlwq_mock（对应 wlwq-mock），不与 ops_brain 共用
+      - WLWQ_POSTGRES_URI=postgresql+asyncpg://postgres:password@postgres:5432/wlwq_mock
       - WLWQ_MYSQL_HOST=${WLWQ_MYSQL_HOST:-192.168.1.249}
       - WLWQ_MYSQL_PORT=${WLWQ_MYSQL_PORT:-3306}
       - WLWQ_MYSQL_USER=${WLWQ_MYSQL_USER:-wlwq}
@@ -77,8 +43,11 @@ services:
       - WLWQ_MYSQL_DATABASE=${WLWQ_MYSQL_DATABASE:-wlwq-enterprise-service}
     depends_on:
       - postgres
+    volumes:
+      - ./logs:/logs
 
   frontend:
+    restart: unless-stopped
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
@@ -93,20 +62,22 @@ services:
       - ops-brain-api
 
   postgres:
+    restart: unless-stopped
     image: postgres:16
     environment:
       POSTGRES_DB: ops_brain
       POSTGRES_PASSWORD: password
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./docker/postgres/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
     ports:
       - "${POSTGRES_HOST_PORT:-5432}:5432"
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     ports:
       - "${REDIS_HOST_PORT:-6379}:6379"
 
 volumes:
-  pgdata:
   frontend_node_modules:

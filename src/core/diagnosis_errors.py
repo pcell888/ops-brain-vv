@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
+import re
+
 _DEFAULT = "诊断未能正常完成，请稍后重试。"
+
+
+def _extract_mcp_tool_error(raw: str) -> str | None:
+    """从 MCP 工具错误消息中提取业务端原始错误。
+
+    典型格式: Error executing tool <tool>: [code] <path>: <business_error>
+    """
+    m = re.search(r"Error executing tool \w+:\s*\[\d+\]\s*\S+:\s*(.+)", raw, re.IGNORECASE)
+    if m:
+        detail = m.group(1).strip()
+        if detail:
+            return detail
+    return None
 
 
 def public_diagnosis_error_message(exc: BaseException) -> str:
@@ -43,6 +58,9 @@ def public_diagnosis_error_message(exc: BaseException) -> str:
         return "服务暂时异常，请稍后重试。"
 
     if "error executing tool" in low or "executing tool" in low:
+        detail = _extract_mcp_tool_error(raw)
+        if detail:
+            return f"执行任务创建失败: {detail}"
         return "分析过程中获取数据失败，请稍后重试。"
     if "数据缺失" in raw or "数据采集" in raw:
         return "数据采集失败，无法完成诊断，请检查业务系统连通性后重试。"

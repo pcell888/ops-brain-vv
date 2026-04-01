@@ -208,10 +208,13 @@ class TenantRouter:
                 del self._http_clients[tenant_id]
         if tenant_id not in self._http_clients:
             logger.debug("创建新的HTTP客户端: tenant_id=%s base_url=%s", tenant_id, base)
+            # trust_env=False：与 stdlib http.client 一致，不因 HTTP_PROXY 等环境变量把内网请求送去代理导致挂死。
+            # Accept-Encoding: identity：避免 httpx 默认带上 gzip/deflate/zstd，少数网关/旧服务对协商异常时会长时间无响应。
             self._http_clients[tenant_id] = httpx.AsyncClient(
                 base_url=base,
-                headers={},
+                headers={"Accept-Encoding": "identity"},
                 timeout=30.0,
+                trust_env=False,
             )
         else:
             logger.debug("复用已有HTTP客户端: tenant_id=%s", tenant_id)

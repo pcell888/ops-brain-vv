@@ -26,7 +26,7 @@ from mcp.client.stdio import stdio_client
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.agent.tools import MCP_SERVER_MODULES  # noqa: E402
+from src.agent.tools import MCP_SERVER_MODULES, mcp_stdio_env  # noqa: E402
 
 
 def _parse_kv(text: str) -> tuple[str, Any]:
@@ -74,6 +74,7 @@ async def _with_session(module: str):
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", module],
+        env=mcp_stdio_env(),
     )
     return stdio_client(params)
 

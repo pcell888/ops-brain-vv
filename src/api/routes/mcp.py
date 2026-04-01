@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from src.agent.tools import MCP_SERVER_MODULES, mcp_call
+from src.agent.tools import MCP_SERVER_MODULES, mcp_call, mcp_stdio_env
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/mcp", tags=["mcp"])
@@ -75,6 +75,7 @@ async def _list_tools(module: str) -> list[dict[str, Any]]:
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", module],
+        env=mcp_stdio_env(),
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:

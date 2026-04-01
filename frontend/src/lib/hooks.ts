@@ -779,8 +779,11 @@ export function useStartReviewNow() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (threadId: string) => reviewApi.start(threadId),
-    onSuccess: () => {
+    onSuccess: (_data, threadId) => {
       queryClient.invalidateQueries({ queryKey: ['tracking', 'list'] });
+      queryClient.invalidateQueries({ queryKey: ['tracking', 'summary', threadId] });
+      queryClient.invalidateQueries({ queryKey: ['tracking', 'analyze', threadId] });
+      queryClient.invalidateQueries({ queryKey: ['tracking', 'snapshots', threadId] });
     },
   });
 }
