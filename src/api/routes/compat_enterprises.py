@@ -32,7 +32,7 @@ _platform_biz = BizAPIClient(_platform_router)
 class SyncEnterpriseBody(BaseModel):
     """生态 APP 同步企业：有则更新，无则创建。"""
 
-    name: str = Field(..., min_length=1, max_length=256)
+    name: str = Field(default="", max_length=256)
     store_id: str | None = Field(default=None, max_length=64)
     industry: str | None = Field(default=None, max_length=64)
     scale: str | None = Field(default=None, pattern=r"^(small|medium|large|enterprise)$")

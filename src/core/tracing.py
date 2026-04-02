@@ -27,7 +27,7 @@ def setup_tracing(service_name: str | None = None) -> TracerProvider:
     resource = Resource.create({"service.name": name})
 
     provider = TracerProvider(resource=resource)
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    endpoint = (os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or "").strip()
 
     if endpoint:
         exporter = OTLPSpanExporter(endpoint=endpoint)

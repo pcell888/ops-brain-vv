@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from os import pread
 
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +39,7 @@ app = FastAPI(
     title="企业运营AI智能诊断系统",
     description="基多租户 SaaS 智能诊断服务",
     version="0.1.0",
+    docs_url="/docs",
 )
 
 FastAPIInstrumentor.instrument_app(app)
