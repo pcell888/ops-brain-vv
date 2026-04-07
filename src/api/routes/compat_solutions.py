@@ -176,6 +176,8 @@ async def compat_solution_list(diagnosis_id: str):
             "total": 0,
             "generated_at": None,
             "ai_recommendation": None,
+            "solution_generation_llm_usage": values.get("solution_generation_llm_usage"),
+            "llm_usage_summary": values.get("llm_usage_summary"),
         }
 
     adopted_set = set(adopted_ids)
@@ -194,7 +196,7 @@ async def compat_solution_list(diagnosis_id: str):
     ai_recommendation = None
     if len(plans) >= 2:
         best = max(plans, key=lambda p: p.get("priority_score", 0))
-        score = round(best.get("priority_score", 0), 2)
+        score = round(best.get("priority_score") or 0, 2)
         roi = best.get("expected_roi", 0)
         name = best.get("plan_name", "")
         ai_recommendation = {
@@ -210,6 +212,8 @@ async def compat_solution_list(diagnosis_id: str):
         "total": len(solutions),
         "generated_at": values.get("diagnosis_report", {}).get("generated_at"),
         "ai_recommendation": ai_recommendation,
+        "solution_generation_llm_usage": values.get("solution_generation_llm_usage"),
+        "llm_usage_summary": values.get("llm_usage_summary"),
     }
 
 

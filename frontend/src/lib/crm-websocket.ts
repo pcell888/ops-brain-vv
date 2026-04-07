@@ -121,24 +121,12 @@ class CRMWebSocketManager {
     this.enterpriseId = enterpriseId;
     this.isManualClose = false;
 
-    // 动态构建 WebSocket URL
+    // 与 task WebSocket 一致：经 Vite / nginx 反代时与页面同源（含端口），避免生产直连后端端口失败
     let wsBaseUrl = import.meta.env.VITE_WS_URL;
-    
     if (!wsBaseUrl && typeof window !== 'undefined') {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const hostname = window.location.hostname;
-      const port = window.location.port;
-      
-      let finalPort = port;
-      if (port === '13000') {
-        finalPort = '18000';
-      } else if (port === '3000' || !port) {
-        finalPort = '8000';
-      }
-      
-      wsBaseUrl = `${protocol}//${hostname}:${finalPort}`;
+      wsBaseUrl = `${protocol}//${window.location.host}`;
     }
-    
     wsBaseUrl = wsBaseUrl || 'ws://localhost:8000';
     
     const wsUrl = `${wsBaseUrl}/api/v1/ws/crm/${enterpriseId}`;

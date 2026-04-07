@@ -8,12 +8,21 @@ import logging
 from datetime import datetime, timedelta
 
 from langchain_openai import ChatOpenAI
+from langchain_core.runnables import RunnableConfig
 
 from src.agent.state import DiagnosisState
 from src.agent.tools import mcp_call, emit_progress
 from src.agent.prompts.review_analysis import REVIEW_ANALYSIS_SYSTEM, REVIEW_ANALYSIS_USER
 from src.core.calculator import calculate_effect_changes, resolve_active_indicators
 from src.core.config import CN_TZ, get_settings
+from src.core.tracing import (
+    extract_or_estimate_llm_usage,
+    llm_traced_ainvoke,
+    llm_usage_probe,
+    merge_llm_usage,
+    set_current_run_usage_metadata,
+    to_langsmith_usage_metadata,
+)
 from src.core.push_log_repo import save_push_log
 from src.core.effect_review_repo import save_effect_tracking, save_review_report
 from src.core.snapshot_repo import list_snapshots
@@ -33,7 +42,9 @@ async def _llm_generate_review(
     plans: list[dict],
     exec_tasks: list[dict],
     snapshots: list[dict] | None = None,
-) -> dict:
+    *,
+    runnable_config: RunnableConfig | None = None,
+) -> tuple[dict, dict | None]:
     settings = get_settings()
     if not settings.llm_enabled:
         logger.info("LLM_ENABLED=false，跳过复盘LLM分析")
@@ -43,7 +54,7 @@ async def _llm_generate_review(
             "total_tracked_indicators": 0,
             "summary": "LLM未启用，无法生成复盘报告",
             "lessons_learned": [],
-        }
+        }, None
     llm = ChatOpenAI(
         model=settings.llm_model,
         api_key=settings.llm_api_key,
@@ -64,12 +75,15 @@ async def _llm_generate_review(
     )
     logger.info("LLM复盘分析输入: %d chars", len(user_msg))
 
+    messages = [
+        {"role": "system", "content": REVIEW_ANALYSIS_SYSTEM},
+        {"role": "user", "content": user_msg},
+    ]
     try:
-        resp = await llm.ainvoke(
-            [
-                {"role": "system", "content": REVIEW_ANALYSIS_SYSTEM},
-                {"role": "user", "content": user_msg},
-            ]
+        resp = await llm_traced_ainvoke(
+            llm,
+            messages,
+            runnable_config=runnable_config,
         )
     except Exception as e:
         logger.warning("LLM 复盘报告调用失败（如 403 请检查 API Key/工作区权限）: %s", e)
@@ -79,13 +93,30 @@ async def _llm_generate_review(
             "total_tracked_indicators": 0,
             "summary": f"复盘生成暂不可用: {e!s}",
             "lessons_learned": [],
-        }
+        }, None
 
+    probe = llm_usage_probe(resp)
+    logger.info(
+        "LLM复盘分析 usage probe: usage_metadata=%s response_token_usage=%s response_metadata_keys=%s",
+        probe.get("usage_metadata"),
+        probe.get("response_token_usage"),
+        probe.get("response_metadata_keys"),
+    )
+    usage = extract_or_estimate_llm_usage(resp, llm=llm, messages=messages)
+    if usage:
+        logger.info(
+            "LLM复盘分析 tokens(%s): prompt=%s completion=%s total=%s calls=%s",
+            usage.get("usage_source", "unknown"),
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+            usage.get("total_tokens", 0),
+            usage.get("calls", 1),
+        )
     try:
         text = resp.content.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        return json.loads(text)
+        return json.loads(text), usage
     except (json.JSONDecodeError, IndexError):
         logger.warning("LLM复盘报告输出解析失败")
         return {
@@ -94,7 +125,7 @@ async def _llm_generate_review(
             "total_tracked_indicators": 0,
             "summary": resp.content,
             "lessons_learned": [],
-        }
+        }, usage
 
 
 DIMENSION_TOOL_MAP: dict[str, str] = {
@@ -112,7 +143,7 @@ DIMENSION_STATE_KEY: dict[str, str] = {
 }
 
 
-async def track_effects_node(state: DiagnosisState) -> dict:
+async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> dict:
     emit_progress(state, "正在采集最新指标数据进行效果对比...", for_adoption_ui=False)
 
     active_dims, _active_inds = resolve_active_indicators(
@@ -169,12 +200,44 @@ async def track_effects_node(state: DiagnosisState) -> dict:
         fallback_plan_name=primary_plan_name,
     )
 
-    review_report = await _llm_generate_review(
+    review_report, review_llm_usage = await _llm_generate_review(
         tracking_data=tracking_data,
         plans=adopted_plans,
         exec_tasks=state.get("exec_tasks", []),
         snapshots=snapshots if snapshots else None,
+        runnable_config=config,
     )
+    if review_llm_usage:
+        logger.info(
+            "复盘汇总 tokens: prompt=%s completion=%s total=%s calls=%s",
+            review_llm_usage.get("prompt_tokens", 0),
+            review_llm_usage.get("completion_tokens", 0),
+            review_llm_usage.get("total_tokens", 0),
+            review_llm_usage.get("calls", 0),
+        )
+        review_report["review_llm_usage"] = review_llm_usage
+
+    prior_summary = state.get("llm_usage_summary") if isinstance(state.get("llm_usage_summary"), dict) else None
+    llm_usage_summary = merge_llm_usage(prior_summary, review_llm_usage)
+    stages = dict((prior_summary or {}).get("stages") or {})
+    stages["root_cause"] = state.get("root_cause_llm_usage")
+    stages["solution_generation"] = state.get("solution_generation_llm_usage")
+    stages["review"] = review_llm_usage
+    if llm_usage_summary is None:
+        llm_usage_summary = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "calls": 0,
+        }
+    llm_usage_summary["stages"] = stages
+    review_report["llm_usage_summary"] = llm_usage_summary
+    langsmith_trace = {
+        "usage_metadata": to_langsmith_usage_metadata(llm_usage_summary),
+    }
+    set_current_run_usage_metadata(llm_usage_summary, runnable_config=config)
 
     try:
         await save_effect_tracking(thread_id, tenant_id, store_id, tracking_data)
@@ -261,4 +324,7 @@ async def track_effects_node(state: DiagnosisState) -> dict:
     return {
         "tracking_data": tracking_data,
         "review_report": review_report,
+        "review_llm_usage": review_llm_usage,
+        "llm_usage_summary": llm_usage_summary,
+        "langsmith_trace": langsmith_trace,
     }

@@ -16,19 +16,25 @@ RUN pnpm install --frozen-lockfile
 # 复制应用代码
 COPY . .
 
-# 构建应用
+# 构建时可覆盖（CDN 独立域名等场景）
+ARG VITE_API_URL=
+ARG VITE_WS_URL=
+ARG VITE_BASE_PATH=
+ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_WS_URL=${VITE_WS_URL}
+ENV VITE_BASE_PATH=${VITE_BASE_PATH}
+
 RUN pnpm run build
 
-# 运行阶段 - 使用 nginx 托管静态文件
+# 运行阶段 - 使用 nginx 托管静态文件（官方镜像 entrypoint 会对 templates 做 envsubst）
 FROM nginx:alpine AS runner
 
-# 复制构建输出到 nginx
+ENV API_UPSTREAM_HOST=ops-brain-api
+ENV API_UPSTREAM_PORT=8000
+
 COPY --from=builder /app/dist /usr/share/nginx/html
+COPY default.conf.template /etc/nginx/templates/default.conf.template
 
-# 复制 nginx 配置
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-# 暴露端口
 EXPOSE 3000
 
 CMD ["nginx", "-g", "daemon off;"]

@@ -14,6 +14,12 @@ import uuid
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
+
+# 防御式初始化：兼容层若被独立导入，也要先准备好 LangSmith 环境。
+from src.core.tracing import apply_langsmith_env
+
+apply_langsmith_env()
+
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from psycopg import AsyncConnection
@@ -34,6 +40,7 @@ from src.core.db_init import _uri_to_conninfo, ensure_ai_effect_tracking, ensure
 from src.core.pending_review_repo import cancel_pending_review, get_pending_review, get_pending_review_by_thread
 from src.core.solution_knowledge_repo import save_effective_plan
 from src.core.tracking_report_enrichment import needs_llm_enrichment
+from src.core.tracing import extract_or_estimate_llm_usage, llm_traced_ainvoke
 from src.core.tenant_config import get_tenant_config
 from src.api.deps import send_thread_progress
 from src.core.tracking_names import resolve_solution_name
@@ -194,10 +201,10 @@ async def _llm_review_report(
     exec_tasks: list[dict],
     *,
     strict_llm: bool = False,
-) -> dict | None:
+) -> tuple[dict | None, dict | None]:
     settings = get_settings()
     if not settings.llm_enabled or not settings.llm_api_key:
-        return None
+        return None, None
 
     llm = ChatOpenAI(
         model=settings.llm_model,
@@ -213,27 +220,39 @@ async def _llm_review_report(
         exec_tasks=json.dumps(exec_tasks, ensure_ascii=False, indent=2),
         snapshots=json.dumps(snapshots, ensure_ascii=False, indent=2),
     )
+    messages = [
+        {"role": "system", "content": REVIEW_ANALYSIS_SYSTEM},
+        {"role": "user", "content": user_msg},
+    ]
     try:
-        resp = await llm.ainvoke(
-            [
-                {"role": "system", "content": REVIEW_ANALYSIS_SYSTEM},
-                {"role": "user", "content": user_msg},
-            ]
+        resp = await llm_traced_ainvoke(
+            llm,
+            messages,
         )
     except Exception as e:
         logger.warning("LLM 复盘生成失败: %s", e)
         if strict_llm:
             raise LLMReviewReportError("AI 复盘生成失败，请稍后重试") from e
-        return None
+        return None, None
 
+    usage = extract_or_estimate_llm_usage(resp, llm=llm, messages=messages)
+    if usage:
+        logger.info(
+            "兼容复盘 tokens(%s): prompt=%s completion=%s total=%s calls=%s",
+            usage.get("usage_source", "unknown"),
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+            usage.get("total_tokens", 0),
+            usage.get("calls", 1),
+        )
     content = resp.content if isinstance(resp.content, str) else str(resp.content)
     parsed = _safe_json_dict(content)
     if not parsed:
         logger.warning("LLM 复盘生成解析失败")
         if strict_llm:
             raise LLMReviewReportError("AI 复盘结果解析失败，请重试")
-        return None
-    return parsed
+        return None, usage
+    return parsed, usage
 
 
 def _derive_tracking_status(tracking_data: dict) -> str:
@@ -1637,13 +1656,15 @@ async def _complete_tracking_background(tracking_id: str):
                     "message": "正在生成 AI 复盘报告，请稍候…",
                 },
             )
-        llm_report = await _llm_review_report(
+        llm_report, review_llm_usage = await _llm_review_report(
             tracking_data=llm_tracking_data,
             snapshots=snapshot_payload,
             exec_tasks=exec_tasks,
             strict_llm=strict,
         )
         report = _merge_llm_report(base_report, llm_report)
+        if review_llm_usage:
+            report["review_llm_usage"] = review_llm_usage
 
         async with await AsyncConnection.connect(_conninfo()) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -1956,7 +1977,7 @@ async def get_report(tracking_id: str):
                         now_iso=_ser(row.get("created_at")) or datetime.now(CN_TZ).isoformat(),
                         scores=scores,
                     )
-                    llm_report = await _llm_review_report(
+                    llm_report, review_llm_usage = await _llm_review_report(
                         tracking_data={
                             **tracking_data,
                             "tracking_id": tracking_id,
@@ -1968,6 +1989,8 @@ async def get_report(tracking_id: str):
                     )
                     if llm_report:
                         report = _merge_llm_report(base_report, llm_report)
+                        if review_llm_usage:
+                            report["review_llm_usage"] = review_llm_usage
 
                 normalized = _normalize_report_payload(
                     tracking_id=tracking_id,

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from src.api.constants import API_PREFIX
 from src.core.models import DiagnosisRequest, DiagnosisStartResponse
-from src.core.config import CN_TZ
+from src.core.config import CN_TZ, log_diagnosis_run_context
 from src.core.calculator import list_available_indicators
 from src.core.calculator import (
     DRILL_ITEM_FIELDS,
@@ -277,6 +277,13 @@ async def _run_diagnosis_with_stream(
     auth_token: str | None = None,
 ):
     """核心: 流式运行 LangGraph 并推送进度。"""
+    log_diagnosis_run_context(
+        logger,
+        thread_id=thread_id,
+        tenant_id=tenant_id,
+        store_id=store_id,
+        trigger_type=trigger_type,
+    )
     config = {"configurable": {"thread_id": thread_id}}
     initial_state = {
         "thread_id": thread_id,

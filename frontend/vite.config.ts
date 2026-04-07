@@ -2,7 +2,14 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
+/** 反代子路径时必设，如 /diagnose-admin/（须含首尾 /） */
+const base =
+  (process.env.VITE_BASE_PATH && process.env.VITE_BASE_PATH.trim()) || '/';
+const normalizedBase =
+  base === '/' ? '/' : `/${base.replace(/^\/+|\/+$/g, '')}/`;
+
 export default defineConfig({
+  base: normalizedBase,
   plugins: [react()],
   resolve: {
     alias: {

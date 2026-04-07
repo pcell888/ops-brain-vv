@@ -34,9 +34,11 @@ class DiagnosisState(TypedDict):
     anomalies: list[dict] | None
     root_causes: list[dict] | None
     diagnosis_report: dict | None
+    root_cause_llm_usage: dict | None
 
     # ── 方案阶段产出 ──
     solution_plans: list[dict] | None
+    solution_generation_llm_usage: dict | None
     pending_adopt_plan_id: str | None  # 用户选择但尚未确认的方案 ID
     adopted_plan_ids: list[str] | None  # MCP 推送成功后确认的方案 ID
 
@@ -46,6 +48,9 @@ class DiagnosisState(TypedDict):
     # ── 追踪阶段产出 ──
     tracking_data: dict | None
     review_report: dict | None
+    review_llm_usage: dict | None
+    llm_usage_summary: dict | None
+    langsmith_trace: dict | None
 
     # ── 进度推送 ──
     progress_messages: Annotated[list[dict], add_messages]

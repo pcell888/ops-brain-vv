@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
+# 防御式初始化：若图被其他入口直接 import，也要先把 LangSmith 环境补进进程。
+from src.core.tracing import apply_langsmith_env
+
+apply_langsmith_env()
+
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 

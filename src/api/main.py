@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+# LangSmith：必须在任何 `langchain_openai` 等导入之前执行（如 compat_tracking 顶层 import）
+from src.core.tracing import apply_langsmith_env
+
+apply_langsmith_env()
+
 import logging
 from os import pread
 
@@ -27,6 +32,7 @@ from src.core.db_init import (
 )
 from src.wlwq.database import close_pool as wlwq_close_pool, get_pool as wlwq_get_pool
 from src.core.logging_setup import setup_logging
+from src.core.config import log_diagnosis_service_config
 from src.core.tracing import setup_tracing, close_tracing
 from src.scheduler.weekly_diagnosis import start_scheduler
 
@@ -34,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 setup_logging("ops-brain")
 setup_tracing()
+log_diagnosis_service_config(logger, prefix="ops-brain 启动")
 
 app = FastAPI(
     title="企业运营AI智能诊断系统",

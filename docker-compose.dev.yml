@@ -1,0 +1,11 @@
+# 本地热更新：docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    environment:
+      - BACKEND_URL=http://ops-brain-api:${OPS_BRAIN_API_PORT:-8000}
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules

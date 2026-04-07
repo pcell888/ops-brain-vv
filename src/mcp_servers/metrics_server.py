@@ -24,6 +24,11 @@ def _store_aware_params(tenant_id: str, store_id: str, start_date: str, end_date
     return {"storeId": sid, "startDate": start_date, "endDate": end_date}
 
 
+def _num(v, default: float | int = 0):
+    """业务 JSON 中显式 null 时 .get(k, default) 仍为 None，避免 round(None) 报错。"""
+    return default if v is None else v
+
+
 server = FastMCP("metrics-server")
 router = TenantRouter()
 biz = BizAPIClient(router)
@@ -52,12 +57,12 @@ async def get_crm_indicators(
         biz.get(tenant_id, "/examine-initiate/follow-stats", params, auth_token=auth_token),
     )
 
-    total_clients = clients_data.get("total", 0)
-    signed_clients = contracts_data.get("signedCount", 0)
+    total_clients = _num(clients_data.get("total"), 0)
+    signed_clients = _num(contracts_data.get("signedCount"), 0)
     lead_conversion_rate = (signed_clients / total_clients * 100) if total_clients > 0 else 0
 
-    follow_total = follows_data.get("followTotal", 0)
-    response_time_avg = follows_data.get("avgResponseHours", 0)
+    follow_total = _num(follows_data.get("followTotal"), 0)
+    response_time_avg = _num(follows_data.get("avgResponseHours"), 0)
 
     return {
         "tenant_id": tenant_id,
@@ -115,20 +120,20 @@ async def get_marketing_indicators(
         biz.get(tenant_id, "/seckill-apply/conversion-stats", params, auth_token=auth_token),
     )
 
-    total_coupons = coupon_data.get("totalIssued", 0)
-    used_coupons = coupon_data.get("totalUsed", 0)
+    total_coupons = _num(coupon_data.get("totalIssued"), 0)
+    used_coupons = _num(coupon_data.get("totalUsed"), 0)
     coupon_rate = (used_coupons / total_coupons * 100) if total_coupons > 0 else 0
 
-    browse_users = exposure_data.get("browseUsers", 0)
-    order_users = order_data.get("orderUsers", 0)
+    browse_users = _num(exposure_data.get("browseUsers"), 0)
+    order_users = _num(order_data.get("orderUsers"), 0)
     browse_to_order = (order_users / browse_users * 100) if browse_users > 0 else 0
 
-    total_orders = order_data.get("totalOrders", 0)
-    completed_orders = order_data.get("completedOrders", 0)
+    total_orders = _num(order_data.get("totalOrders"), 0)
+    completed_orders = _num(order_data.get("completedOrders"), 0)
     order_conversion = (completed_orders / total_orders * 100) if total_orders > 0 else 0
 
-    seckill_total = seckill_data.get("totalSeckillGoods", 0)
-    seckill_sold = seckill_data.get("soldGoods", 0)
+    seckill_total = _num(seckill_data.get("totalSeckillGoods"), 0)
+    seckill_sold = _num(seckill_data.get("soldGoods"), 0)
     seckill_rate = (seckill_sold / seckill_total * 100) if seckill_total > 0 else 0
 
     return {
@@ -192,23 +197,23 @@ async def get_retention_indicators(
         biz.get(tenant_id, "/store-order-evaluate/statistics", params, auth_token=auth_token),
     )
 
-    total_buyers = repurchase_data.get("totalBuyers", 0)
-    repeat_buyers = repurchase_data.get("repeatBuyers", 0)
+    total_buyers = _num(repurchase_data.get("totalBuyers"), 0)
+    repeat_buyers = _num(repurchase_data.get("repeatBuyers"), 0)
     repurchase_rate = (repeat_buyers / total_buyers * 100) if total_buyers > 0 else 0
 
-    total_completed = refund_data.get("totalCompletedOrders", 0)
-    refund_orders = refund_data.get("refundOrders", 0)
+    total_completed = _num(refund_data.get("totalCompletedOrders"), 0)
+    refund_orders = _num(refund_data.get("refundOrders"), 0)
     refund_rate = (refund_orders / total_completed * 100) if total_completed > 0 else 0
 
-    active_customers = repurchase_data.get("activeCustomers", 0)
-    churned = repurchase_data.get("churnedCustomers", 0)
+    active_customers = _num(repurchase_data.get("activeCustomers"), 0)
+    churned = _num(repurchase_data.get("churnedCustomers"), 0)
     churn_rate = (churned / active_customers * 100) if active_customers > 0 else 0
 
-    total_reviews = evaluate_data.get("totalReviews", 0)
-    positive_reviews = evaluate_data.get("positiveReviews", 0)
+    total_reviews = _num(evaluate_data.get("totalReviews"), 0)
+    positive_reviews = _num(evaluate_data.get("positiveReviews"), 0)
     positive_rate = (positive_reviews / total_reviews * 100) if total_reviews > 0 else 0
 
-    avg_ltv = repurchase_data.get("avgLifetimeValue", 0)
+    avg_ltv = _num(repurchase_data.get("avgLifetimeValue"), 0)
 
     return {
         "tenant_id": tenant_id,
@@ -275,11 +280,11 @@ async def get_efficiency_indicators(
         biz.get(tenant_id, "/store-order/shipping-stats", params, auth_token=auth_token),
     )
 
-    total_service = service_data.get("totalServiceOrders", 0)
-    completed_service = service_data.get("completedOrders", 0)
+    total_service = _num(service_data.get("totalServiceOrders"), 0)
+    completed_service = _num(service_data.get("completedOrders"), 0)
     service_rate = (completed_service / total_service * 100) if total_service > 0 else 0
 
-    avg_shipping = shipping_data.get("avgShippingHours", 0)
+    avg_shipping = _num(shipping_data.get("avgShippingHours"), 0)
 
     return {
         "tenant_id": tenant_id,

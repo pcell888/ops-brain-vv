@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 
 from langchain_openai import ChatOpenAI
+from langchain_core.runnables import RunnableConfig
 
 from src.agent.state import DiagnosisState
 from src.agent.tools import mcp_call, emit_progress
@@ -24,6 +25,14 @@ from src.core.calculator import (
     rebalance_weights,
 )
 from src.core.config import get_settings
+from src.core.tracing import (
+    extract_or_estimate_llm_usage,
+    llm_traced_ainvoke,
+    llm_usage_probe,
+    merge_llm_usage,
+    set_current_run_usage_metadata,
+    to_langsmith_usage_metadata,
+)
 from src.core.diagnosis_report_repo import save_report as save_report_to_db
 from src.core.push_log_repo import save_push_log
 from src.core.tenant_config import get_tenant_config
@@ -123,11 +132,13 @@ async def _llm_root_cause_analysis(
     store_profile: dict,
     anomalies: list[dict],
     all_indicators: dict,
-) -> list[dict]:
+    *,
+    runnable_config: RunnableConfig | None = None,
+) -> tuple[list[dict], dict | None]:
     settings = get_settings()
     if not settings.llm_enabled:
         logger.info("LLM_ENABLED=false，跳过根因LLM分析")
-        return []
+        return [], None
     llm = ChatOpenAI(
         model=settings.llm_model,
         api_key=settings.llm_api_key,
@@ -149,18 +160,38 @@ async def _llm_root_cause_analysis(
     )
     logger.info("LLM根因分析输入: %d chars (异常数: %d)", len(user_msg), len(anomalies))
 
+    messages = [
+        {"role": "system", "content": ROOT_CAUSE_ANALYSIS_SYSTEM},
+        {"role": "user", "content": user_msg},
+    ]
     try:
-        resp = await llm.ainvoke(
-            [
-                {"role": "system", "content": ROOT_CAUSE_ANALYSIS_SYSTEM},
-                {"role": "user", "content": user_msg},
-            ]
+        resp = await llm_traced_ainvoke(
+            llm,
+            messages,
+            runnable_config=runnable_config,
         )
     except Exception as e:
         logger.warning("LLM根因分析调用失败: %s", e)
-        return []
+        return [], None
 
     text = ""
+    probe = llm_usage_probe(resp)
+    logger.info(
+        "LLM根因分析 usage probe: usage_metadata=%s response_token_usage=%s response_metadata_keys=%s",
+        probe.get("usage_metadata"),
+        probe.get("response_token_usage"),
+        probe.get("response_metadata_keys"),
+    )
+    usage = extract_or_estimate_llm_usage(resp, llm=llm, messages=messages)
+    if usage:
+        logger.info(
+            "LLM根因分析 tokens(%s): prompt=%s completion=%s total=%s calls=%s",
+            usage.get("usage_source", "unknown"),
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+            usage.get("total_tokens", 0),
+            usage.get("calls", 1),
+        )
     try:
         text = _message_text(resp)
         if text.startswith("```"):
@@ -168,19 +199,19 @@ async def _llm_root_cause_analysis(
         parsed = json.loads(text)
         out = _coerce_root_cause_list(parsed)
         if out:
-            return out
+            return out, usage
         logger.warning("LLM根因分析输出无法解析为根因列表: %s", type(parsed).__name__)
-        return []
+        return [], usage
     except (json.JSONDecodeError, IndexError) as e:
         logger.warning("LLM根因分析 JSON 解析失败: %s，前 400 字: %s", e, text[:400] if text else "")
-        return []
+        return [], usage
 
 
 class DiagnosisDataMissingError(RuntimeError):
     """诊断所需的基础数据缺失（上游数据采集未成功完成）。"""
 
 
-async def diagnose_node(state: DiagnosisState) -> dict:
+async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
     emit_progress(state, "正在计算运营健康度...", percent=45)
 
     # ── 前置校验：确保 collect_data_node 已成功产出数据 ──
@@ -269,7 +300,7 @@ async def diagnose_node(state: DiagnosisState) -> dict:
                         "indicator_code": code,
                         "indicator_name": meta["name"],
                         "unit": meta["unit"],
-                        "avg_value": round(bench.get("avg_value", 0), 2),
+                        "avg_value": round(float(bench.get("avg_value") or 0), 2),
                         "median_value": round(bench["median_value"], 2)
                         if bench.get("median_value") is not None
                         else None,
@@ -309,14 +340,17 @@ async def diagnose_node(state: DiagnosisState) -> dict:
     slim_anomalies = _slim_anomalies(anomalies)
 
     root_causes: list[dict] = []
+    root_cause_llm_usage: dict | None = None
     if anomalies:
         emit_progress(state, "AI正在分析异常根因...", percent=55)
         merged: dict[str, dict] = {}
-        batch = await _llm_root_cause_analysis(
+        batch, batch_usage = await _llm_root_cause_analysis(
             store_profile=slim_profile,
             anomalies=slim_anomalies,
             all_indicators=slim_indicators,
+            runnable_config=config,
         )
+        root_cause_llm_usage = merge_llm_usage(root_cause_llm_usage, batch_usage)
         batch = normalize_llm_root_causes(batch, anomalies)
         merged.update(_root_causes_by_code(batch))
         for _round in range(2):
@@ -328,11 +362,13 @@ async def diagnose_node(state: DiagnosisState) -> dict:
                 f"补全遗漏根因 ({len(missing)}/{len(anomalies)})...",
                 percent=56 + _round,
             )
-            extra = await _llm_root_cause_analysis(
+            extra, extra_usage = await _llm_root_cause_analysis(
                 store_profile=slim_profile,
                 anomalies=_slim_anomalies(missing),
                 all_indicators=slim_indicators,
+                runnable_config=config,
             )
+            root_cause_llm_usage = merge_llm_usage(root_cause_llm_usage, extra_usage)
             extra = normalize_llm_root_causes(extra, missing)
             merged.update(_root_causes_by_code(extra))
         root_causes = list(merged.values())
@@ -344,6 +380,14 @@ async def diagnose_node(state: DiagnosisState) -> dict:
                 len(anomalies),
                 still,
             )
+    if root_cause_llm_usage:
+        logger.info(
+            "根因分析汇总 tokens: prompt=%s completion=%s total=%s calls=%s",
+            root_cause_llm_usage.get("prompt_tokens", 0),
+            root_cause_llm_usage.get("completion_tokens", 0),
+            root_cause_llm_usage.get("total_tokens", 0),
+            root_cause_llm_usage.get("calls", 0),
+        )
 
     diagnosis_report = build_diagnosis_report(
         store_profile=state.get("store_profile", {}),
@@ -354,6 +398,24 @@ async def diagnose_node(state: DiagnosisState) -> dict:
         anomalies=anomalies,
         root_causes=root_causes,
     )
+    diagnosis_llm_usage_summary = {
+        "prompt_tokens": root_cause_llm_usage.get("prompt_tokens", 0) if root_cause_llm_usage else 0,
+        "completion_tokens": root_cause_llm_usage.get("completion_tokens", 0) if root_cause_llm_usage else 0,
+        "total_tokens": root_cause_llm_usage.get("total_tokens", 0) if root_cause_llm_usage else 0,
+        "input_tokens": root_cause_llm_usage.get("input_tokens", 0) if root_cause_llm_usage else 0,
+        "output_tokens": root_cause_llm_usage.get("output_tokens", 0) if root_cause_llm_usage else 0,
+        "calls": root_cause_llm_usage.get("calls", 0) if root_cause_llm_usage else 0,
+        "stages": {
+            "root_cause": root_cause_llm_usage,
+        },
+    }
+    if root_cause_llm_usage:
+        diagnosis_report["root_cause_llm_usage"] = root_cause_llm_usage
+    diagnosis_report["llm_usage_summary"] = diagnosis_llm_usage_summary
+    langsmith_trace = {
+        "usage_metadata": to_langsmith_usage_metadata(diagnosis_llm_usage_summary),
+    }
+    set_current_run_usage_metadata(diagnosis_llm_usage_summary, runnable_config=config)
 
     is_scheduled = state.get("trigger_type") == "scheduled"
     scope_label = "全企业" if not state.get("store_id") else f"店铺 {state['store_id']}"
@@ -425,4 +487,7 @@ async def diagnose_node(state: DiagnosisState) -> dict:
         "anomalies": anomalies,
         "root_causes": root_causes,
         "diagnosis_report": diagnosis_report,
+        "root_cause_llm_usage": root_cause_llm_usage,
+        "llm_usage_summary": diagnosis_llm_usage_summary,
+        "langsmith_trace": langsmith_trace,
     }

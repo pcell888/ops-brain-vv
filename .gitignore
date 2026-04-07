@@ -5,6 +5,10 @@ venv/
 __pycache__/
 *.pyc
 .cursor/
+# Local SFTP deploy configs (may contain secrets)
+.vscode/sftp.json
+.vscode/sftp-*.json
+.codex
 *.egg-info/
 dist/
 build/

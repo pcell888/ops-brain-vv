@@ -462,6 +462,8 @@ def _transform_report(thread_id: str, raw: dict, trend: dict | None = None) -> d
         "created_at": raw.get("generated_at"),
         "completed_at": raw.get("generated_at"),
         "summary": raw.get("summary", ""),
+        "root_cause_llm_usage": raw.get("root_cause_llm_usage"),
+        "llm_usage_summary": raw.get("llm_usage_summary"),
     }
 
 

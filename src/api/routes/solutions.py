@@ -50,7 +50,7 @@ def _build_plan_detail(plan: dict, indicator_names: dict, adopted_ids: list[str]
             "expected_roi": plan.get("expected_roi", 0),
             "difficulty_score": plan.get("difficulty_score", 5),
             "urgency_score": plan.get("urgency_score", 5),
-            "priority_score": round(plan.get("priority_score", 0), 2),
+            "priority_score": round(plan.get("priority_score") or 0, 2),
         },
         "execution": {
             "step_count": len(steps),
@@ -82,7 +82,7 @@ def _build_recommendation(plans: list[dict]) -> dict:
     if best.get("urgency_score", 0) >= max(urg_vals):
         reasons.append(f"紧急度最高（{best.get('urgency_score')}）")
     if not reasons:
-        reasons.append(f"综合优先级得分最高（{round(best.get('priority_score', 0), 2)}）")
+        reasons.append(f"综合优先级得分最高（{round(best.get('priority_score') or 0, 2)}）")
     return {
         "plan_id": best.get("plan_id"),
         "plan_name": best.get("plan_name"),
@@ -135,6 +135,8 @@ async def get_diagnosis_solutions(thread_id: str):
         "plan_count": len(plans),
         "plans": plan_details,
         "recommendation": recommendation,
+        "solution_generation_llm_usage": values.get("solution_generation_llm_usage"),
+        "llm_usage_summary": values.get("llm_usage_summary"),
     }
 
 

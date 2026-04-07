@@ -5,9 +5,12 @@ import { Providers } from '@/components/providers';
 import App from '@/App';
 import '@/globals.css';
 
+const routerBasename =
+  import.meta.env.BASE_URL.replace(/\/$/, '') || undefined;
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={routerBasename}>
       <Providers>
         <App />
       </Providers>

@@ -11,6 +11,7 @@ from pythonjsonlogger import jsonlogger
 from src.core.config import get_settings
 
 _BIZ_API_MCP_MIRROR_KEY = "_ops_brain_mcp_servers_mirror"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TraceIdFilter(logging.Filter):
@@ -85,11 +86,19 @@ def setup_logging(file_stem: str, console: bool = True) -> None:
     s = get_settings()
     level = getattr(logging, s.log_level.upper(), logging.INFO)
     log_dir = Path(s.log_dir)
+    if not log_dir.is_absolute():
+        log_dir = (_REPO_ROOT / log_dir).resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{file_stem}.log"
 
     root = logging.getLogger()
-    root.handlers.clear()
+    for h in root.handlers[:]:
+        try:
+            h.flush()
+            h.close()
+        except Exception:
+            pass
+        root.removeHandler(h)
     root.setLevel(level)
 
     fmt = _json_formatter()
@@ -121,3 +130,4 @@ def setup_logging(file_stem: str, console: bool = True) -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     _attach_biz_api_to_mcp_servers_log(log_dir, fmt)
+    root.info("日志已初始化 | log_path=%s", str(log_path))

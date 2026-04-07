@@ -7,6 +7,7 @@ import logging
 import uuid
 
 from langchain_openai import ChatOpenAI
+from langchain_core.runnables import RunnableConfig
 
 from src.agent.state import DiagnosisState
 from src.agent.tools import mcp_call, emit_progress
@@ -15,6 +16,14 @@ from src.agent.prompts.solution_generation import (
     SOLUTION_GENERATION_USER,
 )
 from src.core.config import get_settings
+from src.core.tracing import (
+    extract_or_estimate_llm_usage,
+    llm_traced_ainvoke,
+    llm_usage_probe,
+    merge_llm_usage,
+    set_current_run_usage_metadata,
+    to_langsmith_usage_metadata,
+)
 from src.core.push_log_repo import save_push_log
 from src.core.solution_knowledge_repo import search_similar_plans
 from src.core.indicator_push_rules import (
@@ -276,12 +285,14 @@ async def _llm_generate_solutions(
     historical_cases: list[dict] | None = None,
     indicator_push_rules: str = "",
     mandatory_rule_tasks: str = "",
-) -> list[dict]:
+    *,
+    runnable_config: RunnableConfig | None = None,
+) -> tuple[list[dict], dict | None]:
     settings = get_settings()
     mandatory_specs = collect_mandatory_task_specs(anomalies)
     if not settings.llm_enabled:
         logger.info("LLM_ENABLED=false，使用规则保底方案")
-        return _build_plans_when_llm_disabled(anomalies, mandatory_specs)
+        return _build_plans_when_llm_disabled(anomalies, mandatory_specs), None
 
     llm = ChatOpenAI(
         model=settings.llm_model,
@@ -326,17 +337,37 @@ async def _llm_generate_solutions(
         len(historical_cases) if historical_cases else 0,
     )
 
+    messages = [
+        {"role": "system", "content": SOLUTION_GENERATION_SYSTEM},
+        {"role": "user", "content": user_msg},
+    ]
     try:
-        resp = await llm.ainvoke(
-            [
-                {"role": "system", "content": SOLUTION_GENERATION_SYSTEM},
-                {"role": "user", "content": user_msg},
-            ]
+        resp = await llm_traced_ainvoke(
+            llm,
+            messages,
+            runnable_config=runnable_config,
         )
     except Exception as e:
         logger.warning("LLM方案生成调用失败: %s", e)
-        return _build_plans_when_llm_disabled(anomalies, mandatory_specs)
+        return _build_plans_when_llm_disabled(anomalies, mandatory_specs), None
 
+    probe = llm_usage_probe(resp)
+    logger.info(
+        "LLM方案生成 usage probe: usage_metadata=%s response_token_usage=%s response_metadata_keys=%s",
+        probe.get("usage_metadata"),
+        probe.get("response_token_usage"),
+        probe.get("response_metadata_keys"),
+    )
+    usage = extract_or_estimate_llm_usage(resp, llm=llm, messages=messages)
+    if usage:
+        logger.info(
+            "LLM方案生成 tokens(%s): prompt=%s completion=%s total=%s calls=%s",
+            usage.get("usage_source", "unknown"),
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+            usage.get("total_tokens", 0),
+            usage.get("calls", 1),
+        )
     try:
         text = resp.content.strip()
         if text.startswith("```"):
@@ -353,7 +384,7 @@ async def _llm_generate_solutions(
                 continue
             if not plan.get("plan_id"):
                 plan["plan_id"] = f"plan_{uuid.uuid4().hex[:8]}"
-        return plans if plans else []
+        return (plans if plans else []), usage
     except (json.JSONDecodeError, IndexError, TypeError, ValueError):
         logger.warning("LLM方案生成输出解析失败")
         return [
@@ -370,10 +401,10 @@ async def _llm_generate_solutions(
                 "steps": [],
                 "auto_actions": [],
             }
-        ]
+        ], usage
 
 
-async def generate_solutions_node(state: DiagnosisState) -> dict:
+async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig) -> dict:
     anomalies = state.get("anomalies", [])
     if not anomalies:
         return {"solution_plans": []}
@@ -407,7 +438,7 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
         "efficiency": state.get("efficiency_indicators", {}),
     }
 
-    plans = await _llm_generate_solutions(
+    plans, solution_generation_llm_usage = await _llm_generate_solutions(
         store_profile=store_profile,
         anomalies=_slim_anomalies(anomalies),
         root_causes=state.get("root_causes", []),
@@ -416,6 +447,7 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
         historical_cases=historical_cases if historical_cases else None,
         indicator_push_rules=rules_text,
         mandatory_rule_tasks=mandatory_json,
+        runnable_config=config,
     )
     if not isinstance(plans, list):
         plans = []
@@ -429,6 +461,14 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
         plan["priority_score"] = roi * 0.6 + (10 - diff) * 0.2 + urgency * 0.2
 
     plans.sort(key=lambda p: p.get("priority_score", 0), reverse=True)
+    if solution_generation_llm_usage:
+        logger.info(
+            "方案生成汇总 tokens: prompt=%s completion=%s total=%s calls=%s",
+            solution_generation_llm_usage.get("prompt_tokens", 0),
+            solution_generation_llm_usage.get("completion_tokens", 0),
+            solution_generation_llm_usage.get("total_tokens", 0),
+            solution_generation_llm_usage.get("calls", 0),
+        )
 
     emit_progress(state, f"已生成 {len(plans)} 个优化方案，等待采纳", percent=98)
 
@@ -459,4 +499,29 @@ async def generate_solutions_node(state: DiagnosisState) -> dict:
     except Exception as e:
         logger.warning("推送方案采纳通知失败: %s", e)
 
-    return {"solution_plans": plans}
+    prior_summary = state.get("llm_usage_summary") if isinstance(state.get("llm_usage_summary"), dict) else None
+    llm_usage_summary = merge_llm_usage(prior_summary, solution_generation_llm_usage)
+    stages = dict((prior_summary or {}).get("stages") or {})
+    stages["root_cause"] = state.get("root_cause_llm_usage")
+    stages["solution_generation"] = solution_generation_llm_usage
+    if llm_usage_summary is None:
+        llm_usage_summary = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "calls": 0,
+        }
+    llm_usage_summary["stages"] = stages
+    langsmith_trace = {
+        "usage_metadata": to_langsmith_usage_metadata(llm_usage_summary),
+    }
+    set_current_run_usage_metadata(llm_usage_summary, runnable_config=config)
+
+    return {
+        "solution_plans": plans,
+        "solution_generation_llm_usage": solution_generation_llm_usage,
+        "llm_usage_summary": llm_usage_summary,
+        "langsmith_trace": langsmith_trace,
+    }
