@@ -20,7 +20,6 @@ from src.core.tracing import apply_langsmith_env
 
 apply_langsmith_env()
 
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
@@ -37,6 +36,7 @@ from src.core.calculator import (
 )
 from src.core.config import CN_TZ, get_settings
 from src.core.db_init import _uri_to_conninfo, ensure_ai_effect_tracking, ensure_ai_pending_review
+from src.core.llm import build_chat_llm
 from src.core.pending_review_repo import cancel_pending_review, get_pending_review, get_pending_review_by_thread
 from src.core.solution_knowledge_repo import save_effective_plan
 from src.core.tracking_report_enrichment import needs_llm_enrichment
@@ -206,10 +206,8 @@ async def _llm_review_report(
     if not settings.llm_enabled or not settings.llm_api_key:
         return None, None
 
-    llm = ChatOpenAI(
+    llm = build_chat_llm(
         model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
         temperature=0.3,
         timeout=settings.llm_httpx_timeout(),
         max_retries=0,

@@ -109,13 +109,15 @@ async def llm_traced_ainvoke(
 
     cfg = runnable_config if runnable_config is not None else langgraph_config_for_llm()
     if not tracing_is_enabled():
-        return await llm.ainvoke(messages, config=cfg)
+        return await llm.ainvoke(messages, config=cfg, stream=False)
 
     from langchain_core.tracers.context import tracing_v2_enabled
     from langchain_core.tracers.langchain import wait_for_all_tracers
 
     with tracing_v2_enabled():
-        out = await llm.ainvoke(messages, config=cfg)
+        # 诊断主链通过 astream_events 运行时，LangChain 会因流式回调隐式切到 stream=True。
+        # 对 DashScope/OpenAI 兼容接口，这会让 usage 更不稳定；这里显式关掉，保持与 direct ainvoke 一致。
+        out = await llm.ainvoke(messages, config=cfg, stream=False)
     wait_for_all_tracers()
     return out
 

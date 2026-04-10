@@ -10,7 +10,7 @@ PORT_FRONTEND := 3000
 PORTS := $(PORT_API) $(PORT_WLWQ) $(PORT_FRONTEND)
 
 # 假目标
-.PHONY: dev setup-dev infra up down kill-port clean
+.PHONY: dev setup-dev infra up down kill-port clean deploy deploy-frontend
 
 # 1. 创建虚拟环境
 venv:
@@ -59,9 +59,13 @@ clean:
 
 
 # ─── rsync部署 ────────────────────────────────────
-HOST=47.118.25.132
-USER=root
-REMOTE_DIR=/opt/wzq/opt-brain
+# HOST=47.118.25.132
+# USER=root
+# REMOTE_DIR=/opt/wzq/opt-brain
+
+HOST=192.168.1.248
+USER=ubuntu
+REMOTE_DIR=/home/ubuntu/WZQ/opt-brain
 
 # 要上传的内容
 SRC=src frontend config docker-compose.yml Makefile Dockerfile pyproject.toml
@@ -78,3 +82,7 @@ EXCLUDES= \
 # 一键部署
 deploy:
 	rsync -avz $(EXCLUDES) $(SRC) $(USER)@$(HOST):$(REMOTE_DIR)
+
+# 仅部署前端
+deploy-frontend:
+	rsync -avz $(EXCLUDES) frontend $(USER)@$(HOST):$(REMOTE_DIR)

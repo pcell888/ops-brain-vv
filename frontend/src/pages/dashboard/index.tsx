@@ -672,8 +672,8 @@ export default function DashboardPage() {
             ❌
           </div>
           <div className="flex-1">
-            <span className="text-accent-rose font-semibold text-base">上次诊断执行失败</span>
-            <p className="text-secondary text-sm mt-1 break-words">
+            <span className="text-accent-rose font-semibold text-base text-[#303133]">上次诊断执行失败</span>
+            <p className="text-secondary text-sm mt-1 break-words text-[#303133]">
               {errorMessage}
             </p>
           </div>
@@ -738,6 +738,11 @@ export default function DashboardPage() {
           <div className="flex items-center justify-center h-[50vh]">
             <Empty
               description="暂无诊断数据，请点击「立即诊断」开始首次诊断"
+              styles={{
+                description: {
+                  color: '#303133'
+                }
+              }}
             />
           </div>
         )}

@@ -6,7 +6,6 @@ import json
 import logging
 import uuid
 
-from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableConfig
 
 from src.agent.state import DiagnosisState
@@ -16,6 +15,7 @@ from src.agent.prompts.solution_generation import (
     SOLUTION_GENERATION_USER,
 )
 from src.core.config import get_settings
+from src.core.llm import build_chat_llm
 from src.core.tracing import (
     extract_or_estimate_llm_usage,
     llm_traced_ainvoke,
@@ -294,10 +294,8 @@ async def _llm_generate_solutions(
         logger.info("LLM_ENABLED=false，使用规则保底方案")
         return _build_plans_when_llm_disabled(anomalies, mandatory_specs), None
 
-    llm = ChatOpenAI(
+    llm = build_chat_llm(
         model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
         temperature=0.5,
         timeout=settings.llm_httpx_timeout(),
     )

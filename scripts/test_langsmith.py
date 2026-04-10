@@ -31,10 +31,10 @@ _bootstrap()
 
 from langchain_core.runnables import RunnableConfig  # noqa: E402
 from langchain_core.tracers.langchain import wait_for_all_tracers  # noqa: E402
-from langchain_openai import ChatOpenAI  # noqa: E402
 from langsmith.utils import tracing_is_enabled  # noqa: E402
 
 from src.core.config import get_settings  # noqa: E402
+from src.core.llm import build_chat_llm  # noqa: E402
 
 
 def _print_env_status() -> None:
@@ -66,10 +66,8 @@ def _make_mini_graph_llms(*, raw_only: bool) -> Any:
     from src.core.tracing import llm_traced_ainvoke
 
     s = get_settings()
-    llm = ChatOpenAI(
+    llm = build_chat_llm(
         model=s.llm_model,
-        api_key=s.llm_api_key,
-        base_url=s.llm_base_url,
         temperature=0,
         max_tokens=64,
         timeout=s.llm_httpx_timeout(),
@@ -97,10 +95,8 @@ async def _run_llm_direct() -> int:
         print("错误: LLM_API_KEY 为空，无法调用模型。", file=sys.stderr)
         return 1
 
-    llm = ChatOpenAI(
+    llm = build_chat_llm(
         model=s.llm_model,
-        api_key=s.llm_api_key,
-        base_url=s.llm_base_url,
         temperature=0,
         max_tokens=64,
         timeout=s.llm_httpx_timeout(),

@@ -261,6 +261,7 @@ export default function CasesPage() {
               onChange={(e) => setPlanNameDraft(e.target.value)}
               onPressEnter={handleSearch}
               allowClear
+              style={{ backgroundColor: 'white', color: '#303133' }}
             />
           </Col>
           <Col>

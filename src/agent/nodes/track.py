@@ -7,7 +7,6 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableConfig
 
 from src.agent.state import DiagnosisState
@@ -15,6 +14,7 @@ from src.agent.tools import mcp_call, emit_progress
 from src.agent.prompts.review_analysis import REVIEW_ANALYSIS_SYSTEM, REVIEW_ANALYSIS_USER
 from src.core.calculator import calculate_effect_changes, resolve_active_indicators
 from src.core.config import CN_TZ, get_settings
+from src.core.llm import build_chat_llm
 from src.core.tracing import (
     extract_or_estimate_llm_usage,
     llm_traced_ainvoke,
@@ -55,10 +55,8 @@ async def _llm_generate_review(
             "summary": "LLM未启用，无法生成复盘报告",
             "lessons_learned": [],
         }, None
-    llm = ChatOpenAI(
+    llm = build_chat_llm(
         model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
         temperature=0.3,
         timeout=settings.llm_httpx_timeout(),
     )

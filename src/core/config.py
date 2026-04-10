@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     llm_api_key: str = ""
+    llm_provider: str = "dashscope"
     llm_model: str = "qwen3.5-plus"
     llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     llm_enabled: bool = True
@@ -128,8 +129,9 @@ def log_diagnosis_service_config(logger: logging.Logger | None = None, *, prefix
         _ENV_FILE.is_file(),
     )
     log.info(
-        "%s | LLM model=%s base_url=%s enabled=%s timeout_read=%s api_key_set=%s",
+        "%s | LLM provider=%s model=%s base_url=%s enabled=%s timeout_read=%s api_key_set=%s",
         prefix,
+        st.llm_provider,
         st.llm_model,
         st.llm_base_url,
         st.llm_enabled,

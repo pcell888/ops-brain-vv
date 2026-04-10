@@ -6,7 +6,6 @@ import json
 import logging
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableConfig
 
 from src.agent.state import DiagnosisState
@@ -25,6 +24,7 @@ from src.core.calculator import (
     rebalance_weights,
 )
 from src.core.config import get_settings
+from src.core.llm import build_chat_llm
 from src.core.tracing import (
     extract_or_estimate_llm_usage,
     llm_traced_ainvoke,
@@ -139,10 +139,8 @@ async def _llm_root_cause_analysis(
     if not settings.llm_enabled:
         logger.info("LLM_ENABLED=false，跳过根因LLM分析")
         return [], None
-    llm = ChatOpenAI(
+    llm = build_chat_llm(
         model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
         temperature=0.3,
         max_tokens=8192,
         timeout=settings.llm_httpx_timeout(),
