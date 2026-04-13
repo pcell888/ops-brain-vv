@@ -1,5 +1,7 @@
 .env
 logs/
+# 本地/历史 Postgres 数据目录（compose 不再挂载）
+data/
 .venv/
 venv/
 __pycache__/
