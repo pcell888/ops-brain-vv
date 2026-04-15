@@ -7,24 +7,16 @@ import json
 import logging
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
-from src.mcp_servers.tenant_router import PLATFORM_TENANT_ID, TenantContext, TenantNotFoundError, TenantRouter
+from src.mcp_servers.biz_constants import is_biz_mock_tenant
+from src.mcp_servers.tenant_router import PLATFORM_TENANT_ID, TenantNotFoundError, TenantRouter
 from src.core.tracing import get_tracer
 
 logger = logging.getLogger(__name__)
 tracer = get_tracer("biz_api")
-
-
-def _auth_source_label_ctx(ctx: TenantContext, auth_token: str | None) -> str:
-    """说明鉴权来源（不记录密钥明文）。默认来自 tenant_registry.auth_credential。"""
-    if auth_token:
-        return "Authorization=请求参数覆盖"
-    h = ctx.auth_headers
-    if (h.get("Authorization") or "").strip():
-        return "鉴权=tenant_registry.auth_credential(Authorization)"
-    return "鉴权=未配置"
 
 
 def _full_request_url(
@@ -38,18 +30,45 @@ def _full_request_url(
     return str(req.url)
 
 
-def _compose_request_url(base_url: str, path: str) -> str:
-    if str(path).startswith(("http://", "https://")):
-        return str(path)
-    return f"{base_url.rstrip('/')}/{str(path).lstrip('/')}"
-
-
-def _request_url_for_log(base_url: str, method: str, path: str, params: dict | None) -> str:
-    """与 httpx 编码一致的可读 URL（GET 等会把 params 并入 query）。"""
-    full = _compose_request_url(base_url, path)
+def _method_path_query_for_log(method: str, path: str, params: dict | None) -> str:
+    """METHOD + 路径（含 query），不含 api base，作日志首段。"""
+    p = str(path).strip()
+    if p.startswith(("http://", "https://")):
+        merged = str(httpx.Request(method, p, params=params).url)
+        parsed = urlparse(merged)
+        pq = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+        return f"{method} {pq}"
+    rel = f"/{p.lstrip('/')}"
     if not params:
-        return full
-    return str(httpx.Request(method, full, params=params).url)
+        return f"{method} {rel}"
+    q = str(httpx.QueryParams(params))
+    return f"{method} {rel}?{q}" if q else f"{method} {rel}"
+
+
+def _log_route_label(method: str, path: str) -> str:
+    """简短路由（无 query），与上一行完整请求 URL 对照即可。"""
+    s = str(path).strip()
+    if s.startswith(("http://", "https://")):
+        u = urlparse(s)
+        p = u.path or "/"
+        return f"{method} {p}"
+    return f"{method} /{s.lstrip('/')}"
+
+
+def _log_outgoing_biz_request(
+    method: str,
+    path: str,
+    params: dict | None,
+    json_data: dict | None,
+    tenant_id: str,
+    base_url: str,
+) -> None:
+    parts: list[str] = [_method_path_query_for_log(method, path, params)]
+    if method in ("POST", "PUT") and json_data is not None:
+        parts.append(f"json={json.dumps(json_data, ensure_ascii=False)}")
+    parts.append(f"tenant={tenant_id}")
+    parts.append(f"base={base_url}")
+    logger.info(" ".join(parts))
 
 
 def _normalize_biz_error_message(payload: Any, status_code: int, fallback_text: str = "") -> str:
@@ -163,35 +182,55 @@ class BizAPIClient:
     ) -> dict[str, Any]:
         ctx0 = await self.router.resolve(tenant_id)
         base_url = ctx0.api_base_url.rstrip("/")
-        request_url = _request_url_for_log(base_url, method, path, params)
-        if auth_token:
-            auth_label = "Authorization=请求参数覆盖"
-        elif platform_auth_authorization_override and tenant_id == PLATFORM_TENANT_ID:
-            auth_label = "Authorization=中台首访覆盖"
-        elif platform_auth_tenant_id and tenant_id == PLATFORM_TENANT_ID:
-            auth_label = f"鉴权=企业platform_auth_credential(tenant={platform_auth_tenant_id})"
-        else:
-            auth_label = _auth_source_label_ctx(ctx0, auth_token)
+        _log_outgoing_biz_request(method, path, params, json_data, tenant_id, base_url)
 
-        # 记录所有请求（包括GET）；base_url / 鉴权标签来自当次 resolve（重试时会再次 resolve）
-        if method in ("POST", "PUT") and json_data is not None:
-            logger.info(
-                "调用业务侧接口: tenant=%s %s %s %s json=%s",
-                tenant_id,
-                auth_label,
-                method,
-                request_url,
-                json.dumps(json_data, ensure_ascii=False),
-            )
-        else:
-            logger.info(
-                "调用业务侧接口: tenant=%s %s %s %s",
-                tenant_id,
-                auth_label,
-                method,
-                request_url,
-            )
+        if is_biz_mock_tenant(tenant_id):
+            return await self._execute_via_mock(method, path, params, json_data, tenant_id)
 
+        return await self._execute_via_http_with_retries(
+            tenant_id,
+            method,
+            path,
+            params=params,
+            json_data=json_data,
+            auth_token=auth_token,
+            platform_auth_tenant_id=platform_auth_tenant_id,
+            platform_auth_authorization_override=platform_auth_authorization_override,
+        )
+
+    async def _execute_via_mock(
+        self,
+        method: str,
+        path: str,
+        params: dict | None,
+        json_data: dict | None,
+        tenant_id: str,
+    ) -> dict[str, Any]:
+        from src.mcp_servers.biz_mock.dispatch import dispatch_biz_mock
+
+        start_time = time.time()
+        result = await dispatch_biz_mock(method, path, params, json_data)
+        elapsed = time.time() - start_time
+        logger.info(
+            "成功 %s %.2fs tenant=%s",
+            _log_route_label(method, path),
+            elapsed,
+            tenant_id,
+        )
+        return result
+
+    async def _execute_via_http_with_retries(
+        self,
+        tenant_id: str,
+        method: str,
+        path: str,
+        *,
+        params: dict | None,
+        json_data: dict | None,
+        auth_token: str | None,
+        platform_auth_tenant_id: str | None,
+        platform_auth_authorization_override: str | None,
+    ) -> dict[str, Any]:
         async def _do():
             ctx_try = await self.router.resolve(tenant_id)
             client_try = await self.router.get_client(tenant_id, ctx=ctx_try)
@@ -204,22 +243,6 @@ class BizAPIClient:
             if auth_token:
                 req_headers = dict(req_headers)
                 req_headers["Authorization"] = auth_token
-            auth_hdr = (req_headers.get("Authorization") or "").strip()
-            if auth_hdr:
-                logger.info(
-                    "请求业务API: tenant=%s %s %s Authorization=%s",
-                    tenant_id,
-                    method,
-                    request_url,
-                    auth_hdr,
-                )
-            else:
-                logger.info(
-                    "请求业务API: tenant=%s %s %s (无 Authorization)",
-                    tenant_id,
-                    method,
-                    request_url,
-                )
             return await self._request(
                 client_try, method, path, params=params, json_data=json_data, headers=req_headers
             )
@@ -230,14 +253,13 @@ class BizAPIClient:
             try:
                 result = await asyncio.wait_for(_do(), timeout=self._REQUEST_TIMEOUT)
                 elapsed = time.time() - start_time
+                retry = f" [{attempt}/{self._MAX_RETRIES}]" if attempt > 1 else ""
                 logger.info(
-                    "业务API返回成功: tenant=%s %s %s 耗时=%.2fs 尝试=%d/%d",
-                    tenant_id,
-                    method,
-                    request_url,
+                    "成功 %s %.2fs tenant=%s%s",
+                    _log_route_label(method, path),
                     elapsed,
-                    attempt,
-                    self._MAX_RETRIES,
+                    tenant_id,
+                    retry,
                 )
                 return result
             except BizAPIError:
@@ -246,60 +268,53 @@ class BizAPIClient:
                 elapsed = time.time() - start_time
                 last_exception = e
                 logger.warning(
-                    "业务API返回超时: tenant=%s %s %s 耗时=%.2fs 超时限制=%ss 尝试=%d/%d",
-                    tenant_id,
-                    method,
-                    request_url,
+                    "超时 %s %.2fs limit=%ss tenant=%s [%d/%d]",
+                    _log_route_label(method, path),
                     elapsed,
                     self._REQUEST_TIMEOUT,
+                    tenant_id,
                     attempt,
                     self._MAX_RETRIES,
                 )
             except httpx.HTTPStatusError as e:
                 elapsed = time.time() - start_time
                 logger.error(
-                    "业务API返回错误: tenant=%s %s %s 状态码=%s 耗时=%.2fs",
-                    tenant_id,
-                    method,
-                    request_url,
+                    "错误 %s HTTP=%s %.2fs tenant=%s",
+                    _log_route_label(method, path),
                     e.response.status_code,
                     elapsed,
+                    tenant_id,
                 )
                 raise
             except TenantNotFoundError as e:
                 elapsed = time.time() - start_time
                 logger.error(
-                    "业务API返回错误: tenant=%s %s %s 耗时=%.2fs 错误=%s",
-                    tenant_id,
-                    method,
-                    request_url,
+                    "错误 %s %.2fs %s tenant=%s",
+                    _log_route_label(method, path),
                     elapsed,
                     str(e),
+                    tenant_id,
                 )
                 raise
             except Exception as e:
                 elapsed = time.time() - start_time
                 logger.error(
-                    "业务API返回错误异常: tenant=%s %s %s 耗时=%.2fs 错误=%s",
-                    tenant_id,
-                    method,
-                    request_url,
+                    "异常 %s %.2fs %s tenant=%s",
+                    _log_route_label(method, path),
                     elapsed,
                     str(e),
+                    tenant_id,
                 )
                 raise
 
-            # 如果不是最后一次尝试，等待后重试
             if attempt < self._MAX_RETRIES:
                 await asyncio.sleep(self._RETRY_DELAY * attempt)
 
-        # 所有重试都失败
         logger.error(
-            "调用业务API失败: tenant=%s %s %s 重试次数=%d",
-            tenant_id,
-            method,
-            request_url,
+            "失败 %s 已重试%d次 tenant=%s",
+            _log_route_label(method, path),
             self._MAX_RETRIES,
+            tenant_id,
         )
         raise last_exception
 
@@ -339,15 +354,6 @@ class BizAPIClient:
             resp = await client.request(method, path, params=params, json=json_data, headers=dict(headers or {}))
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
-            err_preview = e.response.text[:500]
-            try:
-                err_j = e.response.json()
-                if isinstance(err_j, dict):
-                    err_preview = json.dumps(
-                        _response_body_for_log(err_j, e.response.status_code), ensure_ascii=False
-                    )[:500]
-            except Exception:
-                pass
             span.set_attribute("http.status_code", e.response.status_code)
             span.record_exception(e)
             err_payload: Any
@@ -357,7 +363,7 @@ class BizAPIClient:
                 err_payload = None
             error_msg = _normalize_biz_error_message(err_payload, e.response.status_code, e.response.text[:500])
             logger.error(
-                "调用业务侧接口错误: %s %s code=%s msg=%s",
+                "HTTP错误 %s %s code=%s msg=%s",
                 method,
                 full_url,
                 e.response.status_code,
@@ -365,7 +371,7 @@ class BizAPIClient:
             )
             raise BizAPIError(e.response.status_code, error_msg, str(url))
         except httpx.RequestError as e:
-            logger.error("调用业务API异常: %s %s 错误=%s", method, full_url, str(e))
+            logger.error("请求异常: %s %s 错误=%s", method, full_url, str(e))
             span.record_exception(e)
             raise BizAPIError(0, str(e), str(url))
 
@@ -376,7 +382,7 @@ class BizAPIClient:
                 # 支持 msg 和 message 两种错误字段格式
                 error_msg = _normalize_biz_error_message(body, resp.status_code)
                 logger.error(
-                    "调用业务API错误: %s %s code=%s msg=%s",
+                    "响应错误: %s %s code=%s msg=%s",
                     method,
                     full_url,
                     body["code"],

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -14,16 +16,11 @@ from src.agent.prompts.solution_generation import (
     SOLUTION_GENERATION_SYSTEM,
     SOLUTION_GENERATION_USER,
 )
+from src.agent.utils import get_admin_accounts as _get_admin_accounts, slim_anomalies as _slim_anomalies, slim_indicators as _slim_indicators, slim_benchmarks as _slim_benchmarks
 from src.core.config import get_settings
-from src.core.llm import build_chat_llm
-from src.core.tracing import (
-    extract_or_estimate_llm_usage,
-    llm_traced_ainvoke,
-    llm_usage_probe,
-    merge_llm_usage,
-    set_current_run_usage_metadata,
-    to_langsmith_usage_metadata,
-)
+from src.core.dept_resolver import dept_keyword_match as _dept_keyword_match
+from src.core.llm_caller import llm_call_json
+from src.core.tracing import merge_llm_usage
 from src.core.push_log_repo import save_push_log
 from src.core.solution_knowledge_repo import search_similar_plans
 from src.core.indicator_push_rules import (
@@ -34,54 +31,18 @@ from src.core.indicator_push_rules import (
 
 logger = logging.getLogger(__name__)
 
-_DEPT_KEYS = ("销售", "运营", "客服", "仓储", "管理", "市场", "售后")
 
-
-def _slim_anomalies(anomalies: list[dict]) -> list[dict]:
-    return [
-        {
-            "indicator_code": a.get("indicator_code"),
-            "indicator_name": a.get("indicator_name"),
-            "dimension": a.get("dimension"),
-            "current_value": a.get("current_value"),
-            "benchmark_avg": a.get("benchmark_avg"),
-            "deviation_pct": a.get("deviation_pct"),
-            "severity": a.get("severity"),
-        }
-        for a in anomalies
-    ]
-
-
-def _slim_indicators(all_indicators: dict, anomalies: list[dict]) -> dict:
-    anomaly_codes = {a["indicator_code"] for a in anomalies if a.get("indicator_code")}
-    anomaly_dims = {a.get("dimension") for a in anomalies if a.get("dimension")}
-    slim = {}
-    for dim, data in all_indicators.items():
-        if dim not in anomaly_dims:
-            continue
-        indicators = data.get("indicators", {})
-        if not isinstance(indicators, dict):
-            continue
-        slim_indicators = {}
-        for code, ind_data in indicators.items():
-            if code in anomaly_codes:
-                slim_indicators[code] = {
-                    "value": ind_data.get("value"),
-                    "unit": ind_data.get("unit"),
-                }
-        if slim_indicators:
-            slim[dim] = {"indicators": slim_indicators}
-    return slim
-
-
-def _slim_benchmarks(benchmarks: dict, anomalies: list[dict]) -> dict:
-    anomaly_codes = {a["indicator_code"] for a in anomalies if a.get("indicator_code")}
-    slim = {}
-    for code, bench in benchmarks.items():
-        if code in anomaly_codes:
-            slim[code] = bench
-    return slim
-
+async def _solution_generation_heartbeat(state: DiagnosisState, *, start_percent: int = 88) -> None:
+    """方案生成期间定时写入心跳，避免前端/CLI长期停在同一条进度。"""
+    waited_seconds = 0
+    while True:
+        await asyncio.sleep(20)
+        waited_seconds += 20
+        emit_progress(
+            state,
+            f"正在生成个性化优化方案...（已等待 {waited_seconds}s）",
+            percent=start_percent,
+        )
 
 def _anomaly_data_context_line(anomalies: list[dict], indicator_code: str) -> str:
     for a in anomalies:
@@ -101,16 +62,6 @@ def _anomaly_data_context_line(anomalies: list[dict], indicator_code: str) -> st
             parts.append(str(a["description"]))
         return "；".join(parts) if parts else f"指标 {indicator_code}"
     return f"指标 {indicator_code}"
-
-
-def _dept_keyword_match(rule_dept: str, step_dept: str) -> bool:
-    a, b = (rule_dept or "").strip(), (step_dept or "").strip()
-    if not a or not b:
-        return False
-    for kw in _DEPT_KEYS:
-        if kw in a and kw in b:
-            return True
-    return a == b
 
 
 def _mandatory_task_is_covered(plans: list[dict], task_name: str, owner_dept: str) -> bool:
@@ -272,10 +223,6 @@ def _build_plans_when_llm_disabled(anomalies: list[dict], mandatory: list[dict])
     ]
 
 
-def _get_admin_accounts(profile: dict) -> list[str]:
-    return profile.get("admin_account_ids", [])
-
-
 async def _llm_generate_solutions(
     store_profile: dict,
     anomalies: list[dict],
@@ -293,12 +240,6 @@ async def _llm_generate_solutions(
     if not settings.llm_enabled:
         logger.info("LLM_ENABLED=false，使用规则保底方案")
         return _build_plans_when_llm_disabled(anomalies, mandatory_specs), None
-
-    llm = build_chat_llm(
-        model=settings.llm_model,
-        temperature=0.5,
-        timeout=settings.llm_httpx_timeout(),
-    )
 
     cases_text = ""
     if historical_cases:
@@ -335,71 +276,46 @@ async def _llm_generate_solutions(
         len(historical_cases) if historical_cases else 0,
     )
 
-    messages = [
-        {"role": "system", "content": SOLUTION_GENERATION_SYSTEM},
-        {"role": "user", "content": user_msg},
-    ]
     try:
-        resp = await llm_traced_ainvoke(
-            llm,
-            messages,
+        parsed, raw_text, usage = await llm_call_json(
+            system_prompt=SOLUTION_GENERATION_SYSTEM,
+            user_prompt=user_msg,
+            label="LLM方案生成",
+            temperature=0.5,
             runnable_config=runnable_config,
         )
     except Exception as e:
         logger.warning("LLM方案生成调用失败: %s", e)
         return _build_plans_when_llm_disabled(anomalies, mandatory_specs), None
 
-    probe = llm_usage_probe(resp)
-    logger.info(
-        "LLM方案生成 usage probe: usage_metadata=%s response_token_usage=%s response_metadata_keys=%s",
-        probe.get("usage_metadata"),
-        probe.get("response_token_usage"),
-        probe.get("response_metadata_keys"),
-    )
-    usage = extract_or_estimate_llm_usage(resp, llm=llm, messages=messages)
-    if usage:
-        logger.info(
-            "LLM方案生成 tokens(%s): prompt=%s completion=%s total=%s calls=%s",
-            usage.get("usage_source", "unknown"),
-            usage.get("prompt_tokens", 0),
-            usage.get("completion_tokens", 0),
-            usage.get("total_tokens", 0),
-            usage.get("calls", 1),
-        )
-    try:
-        text = resp.content.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        raw = json.loads(text)
-        if isinstance(raw, dict):
-            plans = [raw]
-        elif isinstance(raw, list):
-            plans = raw
+    if parsed is not None:
+        if isinstance(parsed, dict):
+            plans = [parsed]
+        elif isinstance(parsed, list):
+            plans = parsed
         else:
-            raise ValueError("LLM output must be JSON object or array")
+            plans = []
         for plan in plans:
-            if not isinstance(plan, dict):
-                continue
-            if not plan.get("plan_id"):
+            if isinstance(plan, dict) and not plan.get("plan_id"):
                 plan["plan_id"] = f"plan_{uuid.uuid4().hex[:8]}"
         return (plans if plans else []), usage
-    except (json.JSONDecodeError, IndexError, TypeError, ValueError):
-        logger.warning("LLM方案生成输出解析失败")
-        return [
-            {
-                "plan_id": f"plan_{uuid.uuid4().hex[:8]}",
-                "plan_name": "默认优化方案（解析失败）",
-                "description": (resp.content or "")[:8000],
-                "target_indicators": [a["indicator_code"] for a in anomalies[:3]],
-                "expected_improvement": {},
-                "expected_roi": 1.0,
-                "difficulty_score": 5,
-                "urgency_score": 5,
-                "priority_level": "medium",
-                "steps": [],
-                "auto_actions": [],
-            }
-        ], usage
+
+    logger.warning("LLM方案生成输出解析失败")
+    return [
+        {
+            "plan_id": f"plan_{uuid.uuid4().hex[:8]}",
+            "plan_name": "默认优化方案（解析失败）",
+            "description": (raw_text or "")[:8000],
+            "target_indicators": [a["indicator_code"] for a in anomalies[:3]],
+            "expected_improvement": {},
+            "expected_roi": 1.0,
+            "difficulty_score": 5,
+            "urgency_score": 5,
+            "priority_level": "medium",
+            "steps": [],
+            "auto_actions": [],
+        }
+    ], usage
 
 
 async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig) -> dict:
@@ -423,7 +339,7 @@ async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig)
     if historical_cases:
         emit_progress(state, f"已匹配 {len(historical_cases)} 个历史成功案例作为参考")
 
-    emit_progress(state, "AI正在生成个性化优化方案...", percent=88)
+    emit_progress(state, "正在生成个性化优化方案...", percent=88)
 
     rules_text = format_indicator_rules_for_prompt(anomalies)
     mandatory_specs = collect_mandatory_task_specs(anomalies)
@@ -436,17 +352,23 @@ async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig)
         "efficiency": state.get("efficiency_indicators", {}),
     }
 
-    plans, solution_generation_llm_usage = await _llm_generate_solutions(
-        store_profile=store_profile,
-        anomalies=_slim_anomalies(anomalies),
-        root_causes=state.get("root_causes", []),
-        benchmarks=_slim_benchmarks(benchmarks, anomalies),
-        indicators=_slim_indicators(all_indicators, anomalies),
-        historical_cases=historical_cases if historical_cases else None,
-        indicator_push_rules=rules_text,
-        mandatory_rule_tasks=mandatory_json,
-        runnable_config=config,
-    )
+    heartbeat_task = asyncio.create_task(_solution_generation_heartbeat(state))
+    try:
+        plans, solution_generation_llm_usage = await _llm_generate_solutions(
+            store_profile=store_profile,
+            anomalies=_slim_anomalies(anomalies),
+            root_causes=state.get("root_causes", []),
+            benchmarks=_slim_benchmarks(benchmarks, anomalies),
+            indicators=_slim_indicators(all_indicators, anomalies),
+            historical_cases=historical_cases if historical_cases else None,
+            indicator_push_rules=rules_text,
+            mandatory_rule_tasks=mandatory_json,
+            runnable_config=config,
+        )
+    finally:
+        heartbeat_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat_task
     if not isinstance(plans, list):
         plans = []
     plans = _ensure_mandatory_task_steps(plans, mandatory_specs, anomalies)
@@ -512,14 +434,9 @@ async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig)
             "calls": 0,
         }
     llm_usage_summary["stages"] = stages
-    langsmith_trace = {
-        "usage_metadata": to_langsmith_usage_metadata(llm_usage_summary),
-    }
-    set_current_run_usage_metadata(llm_usage_summary, runnable_config=config)
 
     return {
         "solution_plans": plans,
         "solution_generation_llm_usage": solution_generation_llm_usage,
         "llm_usage_summary": llm_usage_summary,
-        "langsmith_trace": langsmith_trace,
     }

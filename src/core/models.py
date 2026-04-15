@@ -26,7 +26,7 @@ class DiagnosisRequest(BaseModel):
     )
     auth_token: str | None = Field(
         default=None,
-        description="前端透传的鉴权 token，用于访问 wlwq API",
+        description="前端透传的鉴权 token，用于访问业务侧 API",
     )
 
     @model_validator(mode="after")

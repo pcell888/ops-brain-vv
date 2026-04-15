@@ -5,10 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-from psycopg import AsyncConnection
-
-from src.core.config import get_settings
-from src.core.db_init import _uri_to_conninfo
+from src.core.db_pool import get_conn
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +16,6 @@ CONFIG_DEFAULTS = {
 }
 
 LEGACY_AUTO_TRIGGER_MODES = {"auto", "both", "daily", "weekly", "monthly"}
-
-
-def _conninfo() -> str:
-    return _uri_to_conninfo(get_settings().postgres_uri)
 
 
 def normalize_diagnosis_trigger_mode(value: object) -> str:
@@ -46,7 +39,7 @@ def normalize_tenant_config(raw: dict | None) -> dict:
 async def get_tenant_config(tenant_id: str) -> dict:
     """读取租户配置，合并默认值。"""
     try:
-        async with await AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT config FROM tenant_registry WHERE tenant_id = %s AND status = 1",
@@ -72,10 +65,9 @@ async def sync_tenant(
     api_base_url: str = "http://localhost:8200",
 ) -> dict:
     """第三方企业同步：首次创建，后续更新。返回完整企业信息。"""
-    conninfo = _conninfo()
     store_entry = {"store_id": store_id, "store_name": store_name or ""} if store_id else None
 
-    async with await AsyncConnection.connect(conninfo) as conn:
+    async with get_conn() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT tenant_id, config FROM tenant_registry WHERE tenant_id = %s",
@@ -136,7 +128,7 @@ async def update_tenant_config(tenant_id: str, patch: dict) -> dict:
     current = await get_tenant_config(tenant_id)
     current.update(patch)
     current = normalize_tenant_config(current)
-    async with await AsyncConnection.connect(_conninfo()) as conn:
+    async with get_conn() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE tenant_registry SET config = %s::jsonb, updated_at = NOW() WHERE tenant_id = %s AND status = 1",

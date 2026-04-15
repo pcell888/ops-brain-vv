@@ -7,16 +7,10 @@ import logging
 import uuid
 from datetime import datetime
 
-import psycopg
-
-from src.core.config import get_settings
-from src.core.db_init import _uri_to_conninfo, ensure_ai_exec_task
+from src.core.db_init import ensure_ai_exec_task
+from src.core.db_pool import get_conn
 
 logger = logging.getLogger(__name__)
-
-
-def _conninfo() -> str:
-    return _uri_to_conninfo(get_settings().postgres_uri)
 
 
 def _gen_task_id() -> str:
@@ -36,7 +30,7 @@ async def save_exec_tasks(
     await ensure_ai_exec_task()
     task_ids = []
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor() as cur:
                 for t in tasks:
                     task_id = t.get("task_id") or _gen_task_id()
@@ -103,7 +97,7 @@ async def update_task_status(task_ids: list[str], status: str) -> None:
         return
     await ensure_ai_exec_task()
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -122,7 +116,7 @@ async def get_tasks_by_plan_id(tenant_id: str, store_id: str, plan_id: str, stat
     """获取指定方案的任务列表。"""
     await ensure_ai_exec_task()
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor() as cur:
                 if status:
                     await cur.execute(
@@ -153,4 +147,65 @@ async def get_tasks_by_plan_id(tenant_id: str, store_id: str, plan_id: str, stat
                 return [dict(zip(columns, row)) for row in rows]
     except Exception as e:
         logger.warning("获取任务列表失败: %s", e)
+        return []
+
+
+async def get_task_stats_by_thread(thread_id: str) -> dict[str, int]:
+    """按 thread_id 聚合各状态任务数量。"""
+    stats: dict[str, int] = {
+        "pending": 0, "ready": 0, "running": 0, "paused": 0,
+        "completed": 0, "failed": 0, "cancelled": 0,
+    }
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT COALESCE(status, 'pending') AS st, COUNT(*)::int AS cnt "
+                    "FROM ai_exec_task WHERE thread_id = %s "
+                    "GROUP BY COALESCE(status, 'pending')",
+                    (thread_id,),
+                )
+                for row in await cur.fetchall():
+                    key = str(row[0]).lower()
+                    if key in stats:
+                        stats[key] = int(row[1])
+    except Exception as e:
+        logger.warning("获取任务统计失败 [%s]: %s", thread_id, e)
+    return stats
+
+
+async def get_team_size_by_thread(thread_id: str) -> int:
+    """按 thread_id 统计不同 assignee 数量。"""
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT COUNT(DISTINCT assignee_user_id)::int FROM ai_exec_task "
+                    "WHERE thread_id = %s AND assignee_user_id IS NOT NULL",
+                    (thread_id,),
+                )
+                row = await cur.fetchone()
+                return int(row[0]) if row else 0
+    except Exception as e:
+        logger.warning("获取团队人数失败 [%s]: %s", thread_id, e)
+        return 0
+
+
+async def list_tasks_by_thread(
+    thread_id: str,
+    columns: str = "task_name, status, description, deadline",
+) -> list[dict]:
+    """按 thread_id 查询任务列表，默认仅返回复盘/报告所需字段。"""
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"SELECT {columns} FROM ai_exec_task WHERE thread_id = %s ORDER BY created_at ASC",
+                    (thread_id,),
+                )
+                rows = await cur.fetchall()
+                col_names = [desc[0] for desc in cur.description]
+                return [dict(zip(col_names, row)) for row in rows]
+    except Exception as e:
+        logger.warning("获取任务列表失败 [%s]: %s", thread_id, e)
         return []

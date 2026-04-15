@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from src.api.deps import astream_events_with_retry, get_graph_app
+from src.runtime.graph_app import astream_events_with_retry, get_graph_app
 from src.core.pending_review_repo import get_due_reviews, mark_review_done
 
 logger = logging.getLogger(__name__)

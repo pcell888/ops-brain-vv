@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import psycopg
+import psycopg.rows
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from src.api.deps import astream_events_with_retry, generate_thread_id
+from src.runtime.graph_app import astream_events_with_retry, generate_thread_id
 from src.core.config import CN_TZ, get_settings
 from src.core.tenant_config import normalize_diagnosis_trigger_mode
 from src.scheduler.task_deadline_checker import check_task_deadlines
@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 async def _get_active_tenants() -> list[dict]:
     """从 tenant_registry 获取所有活跃租户和店铺。"""
-    settings = get_settings()
-    async with await psycopg.AsyncConnection.connect(settings.postgres_uri) as conn:
+    from src.core.db_pool import get_conn
+    async with get_conn() as conn:
         async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             await cur.execute(
                 "SELECT tenant_id, tenant_name, config FROM tenant_registry "

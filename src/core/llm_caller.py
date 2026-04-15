@@ -1,0 +1,106 @@
+"""标准化 LLM 调用流程 — 统一 invoke→解析→usage 记录。"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from langchain_core.runnables import RunnableConfig
+
+from src.core.config import get_settings
+from src.core.llm import build_chat_llm
+from src.core.tracing import (
+    extract_or_estimate_llm_usage,
+    llm_ainvoke_in_graph,
+    llm_usage_probe,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _strip_json_fence(s: str) -> str:
+    s = s.strip()
+    if not s.startswith("```"):
+        return s
+    lines = s.split("\n")
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _extract_text(resp: Any) -> str:
+    c = getattr(resp, "content", "")
+    return c.strip() if isinstance(c, str) else str(c).strip()
+
+
+async def llm_call_json(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    label: str = "LLM",
+    temperature: float = 0.3,
+    max_tokens: int | None = None,
+    runnable_config: RunnableConfig | None = None,
+) -> tuple[Any, str, dict | None]:
+    """统一的 LLM JSON 调用流程。
+
+    Returns:
+        (parsed_json | None, raw_text, usage_dict | None)
+
+    parsed_json 为解析后的 dict/list；解析失败时为 None，raw_text 保留原始输出。
+    调用方可根据 parsed_json 是否为 None 决定降级策略。
+    """
+    settings = get_settings()
+    overrides: dict[str, Any] = {"temperature": temperature}
+    if max_tokens is not None:
+        overrides["max_tokens"] = max_tokens
+    overrides["timeout"] = settings.llm_httpx_timeout()
+
+    llm = build_chat_llm(**overrides)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    resp = await llm_ainvoke_in_graph(llm, messages, runnable_config=runnable_config)
+
+    probe = llm_usage_probe(resp)
+    logger.info(
+        "%s usage probe: usage_metadata=%s response_token_usage=%s",
+        label,
+        probe.get("usage_metadata"),
+        probe.get("response_token_usage"),
+    )
+
+    usage = extract_or_estimate_llm_usage(resp, llm=llm, messages=messages)
+    if usage:
+        logger.info(
+            "%s tokens(%s): prompt=%s completion=%s total=%s calls=%s",
+            label,
+            usage.get("usage_source", "unknown"),
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+            usage.get("total_tokens", 0),
+            usage.get("calls", 1),
+        )
+
+    text = _extract_text(resp)
+    clean = _strip_json_fence(text)
+    if not clean:
+        return None, text, usage
+
+    try:
+        parsed = json.loads(clean)
+        if isinstance(parsed, str):
+            try:
+                return json.loads(parsed), text, usage
+            except (json.JSONDecodeError, TypeError):
+                return parsed, text, usage
+        return parsed, text, usage
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("%s JSON 解析失败，前 400 字: %s", label, clean[:400])
+        return None, text, usage

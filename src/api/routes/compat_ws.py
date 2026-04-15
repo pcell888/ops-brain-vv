@@ -6,14 +6,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from src.api.deps import manager as diagnosis_ws_manager, running_tasks
+from src.runtime.thread_enterprise import get_thread_enterprise
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -68,7 +66,6 @@ def _progress_to_task_status(
         except (TypeError, ValueError):
             percent = 0
         level = raw.get("level")
-        # 与 emit_progress 语义一致：error 表示本步已失败，应与顶层 type=error 同样视为 failed，避免 status=running 却带错误文案
         is_fatal = level == "error"
         data = None
         if level and level != "info":
@@ -175,44 +172,13 @@ def install_enterprise_bridge(original_manager):
     async def _bridged_send(thread_id: str, message: dict):
         await _original_send(thread_id, message)
 
-        enterprise_id = _thread_to_enterprise.get(thread_id)
+        enterprise_id = get_thread_enterprise(thread_id)
         if enterprise_id:
             converted = _progress_to_task_status(thread_id, enterprise_id, message)
             if converted:
                 await enterprise_ws.broadcast(enterprise_id, converted)
 
     original_manager.send_progress = _bridged_send
-
-
-_thread_to_enterprise: dict[str, str] = {}
-
-
-def register_thread_enterprise(thread_id: str, enterprise_id: str):
-    """注册 thread_id → enterprise_id 映射（启动诊断时调用）。"""
-    _thread_to_enterprise[thread_id] = enterprise_id
-
-
-def get_thread_enterprise(thread_id: str) -> str | None:
-    """获取 thread_id 对应的 enterprise_id。"""
-    return _thread_to_enterprise.get(thread_id)
-
-
-def get_running_threads_for_enterprise(enterprise_id: str) -> list[str]:
-    """返回属于指定 enterprise 的所有正在运行的 thread_id 列表。"""
-    return [tid for tid, eid in _thread_to_enterprise.items() if eid == enterprise_id]
-
-
-def get_active_diagnosis_thread_for_tenant(enterprise_id: str) -> str | None:
-    """该企业是否已有未结束的诊断 asyncio.Task（与 deps.running_tasks 一致）。"""
-    for tid in get_running_threads_for_enterprise(enterprise_id):
-        t = running_tasks.get(tid)
-        if t is not None and not t.done():
-            return tid
-    return None
-
-
-def unregister_thread(thread_id: str):
-    _thread_to_enterprise.pop(thread_id, None)
 
 
 @router.websocket("/ws/tasks/{enterprise_id}")

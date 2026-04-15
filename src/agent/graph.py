@@ -2,13 +2,6 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlparse
-
-# 防御式初始化：若图被其他入口直接 import，也要先把 LangSmith 环境补进进程。
-from src.core.tracing import apply_langsmith_env
-
-apply_langsmith_env()
-
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -21,8 +14,7 @@ from src.agent.nodes import (
     track_effects_node,
 )
 from src.core.config import get_settings
-
-_GRAPH_SETTINGS = None
+from src.core.uri_utils import pg_uri_to_conninfo
 
 
 def route_after_solutions(state: DiagnosisState) -> str:
@@ -79,37 +71,11 @@ def build_graph() -> StateGraph:
 _checkpointer_cm = None
 
 
-def _postgres_uri_to_conninfo(uri: str) -> str:
-    """将 postgresql:// 或 postgresql+asyncpg:// URL 转为 psycopg conninfo。"""
-    uri = uri.strip()
-    if len(uri) >= 2 and uri[0] == uri[-1] and uri[0] in ("'", '"'):
-        uri = uri[1:-1].strip()
-    parsed = urlparse(uri)
-    if parsed.scheme not in ("postgresql", "postgres", "postgresql+asyncpg"):
-        return uri
-    parts = []
-    if parsed.hostname:
-        parts.append(f"host={parsed.hostname}")
-    if parsed.port:
-        parts.append(f"port={parsed.port}")
-    if parsed.path and parsed.path != "/":
-        parts.append(f"dbname={parsed.path.lstrip('/')}")
-    if parsed.username:
-        parts.append(f"user={parsed.username}")
-    if parsed.password:
-        parts.append(f"password={parsed.password}")
-    base = " ".join(parts)
-    if not base:
-        return uri
-    # 降低长时间空闲后服务端关闭 TCP 导致 checkpoint 连接失效的概率（Docker / Pg 默认超时）
-    return f"{base} keepalives=1 keepalives_idle=60 keepalives_interval=10 keepalives_count=3"
-
-
 async def compile_graph():
     """编译并返回可运行的 LangGraph app。"""
     global _checkpointer_cm
     settings = get_settings()
-    conninfo = _postgres_uri_to_conninfo(settings.postgres_uri)
+    conninfo = pg_uri_to_conninfo(settings.postgres_uri, keepalives=True)
     cm = AsyncPostgresSaver.from_conn_string(conninfo)
     checkpointer = await cm.__aenter__()
     _checkpointer_cm = cm

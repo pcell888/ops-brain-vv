@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+from arq.connections import RedisSettings
+from urllib.parse import urlparse
+
+from src.runtime.running_tasks import running_tasks
+from src.core.async_job_meta_repo import (
+    mark_cancelled,
+    mark_failed,
+    mark_running,
+    mark_succeeded,
+)
+from src.core.config import get_settings
+
+
+def _redis_settings() -> RedisSettings:
+    settings = get_settings()
+    u = urlparse(settings.redis_url)
+    ssl = u.scheme == "rediss"
+    db = 0
+    if u.path and u.path.strip("/"):
+        try:
+            db = int(u.path.strip("/"))
+        except ValueError:
+            db = 0
+    return RedisSettings(
+        host=u.hostname or "localhost",
+        port=u.port or 6379,
+        database=db,
+        password=u.password,
+        ssl=ssl,
+    )
+
+
+async def job_run_diagnosis(ctx: dict, payload: dict) -> None:
+    from src.api.routes.diagnosis import _run_diagnosis_with_stream
+    from src.runtime.thread_enterprise import unregister_thread
+
+    thread_id = str(payload["thread_id"])
+    job_id = str(payload.get("job_id") or "")
+    try:
+        if job_id:
+            await mark_running(job_id)
+        await _run_diagnosis_with_stream(
+            thread_id=thread_id,
+            tenant_id=str(payload["tenant_id"]),
+            store_id=str(payload["store_id"]),
+            trigger_type=str(payload["trigger_type"]),
+            triggered_by=payload.get("triggered_by"),
+            selected_dimensions=payload.get("selected_dimensions"),
+            selected_indicators=payload.get("selected_indicators"),
+            auth_token=payload.get("auth_token"),
+        )
+        if job_id:
+            if await running_tasks.is_cancel_requested(thread_id):
+                await mark_cancelled(job_id)
+            else:
+                await mark_succeeded(job_id)
+    except Exception as e:
+        if job_id:
+            await mark_failed(job_id, str(e))
+        raise
+    finally:
+        await running_tasks.unregister_task(thread_id)
+        unregister_thread(thread_id)
+
+
+async def job_resume_after_adoption(ctx: dict, payload: dict) -> None:
+    from src.api.routes.solutions import _resume_after_adoption
+    from src.runtime.thread_enterprise import unregister_thread
+
+    thread_id = str(payload["thread_id"])
+    job_id = str(payload.get("job_id") or "")
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        if job_id:
+            await mark_running(job_id)
+        await _resume_after_adoption(thread_id, config)
+        if job_id:
+            if await running_tasks.is_cancel_requested(thread_id):
+                await mark_cancelled(job_id)
+            else:
+                await mark_succeeded(job_id)
+    except Exception as e:
+        if job_id:
+            await mark_failed(job_id, str(e))
+        raise
+    finally:
+        await running_tasks.unregister_task(thread_id)
+        unregister_thread(thread_id)
+
+
+async def job_resume_track_effects(ctx: dict, payload: dict) -> None:
+    from src.services import review_service
+    from src.runtime.thread_enterprise import unregister_thread
+
+    thread_id = str(payload["thread_id"])
+    job_id = str(payload.get("job_id") or "")
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        if job_id:
+            await mark_running(job_id)
+        await review_service.resume_track_effects(thread_id, config)
+        if job_id:
+            if await running_tasks.is_cancel_requested(thread_id):
+                await mark_cancelled(job_id)
+            else:
+                await mark_succeeded(job_id)
+    except Exception as e:
+        if job_id:
+            await mark_failed(job_id, str(e))
+        raise
+    finally:
+        await running_tasks.unregister_task(thread_id)
+        unregister_thread(thread_id)
+
+
+class WorkerSettings:
+    functions = [job_run_diagnosis, job_resume_after_adoption, job_resume_track_effects]
+    redis_settings = _redis_settings()
+    job_timeout = 60 * 60 * 2
+    max_tries = 1
+

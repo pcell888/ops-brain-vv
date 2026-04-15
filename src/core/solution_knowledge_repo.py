@@ -5,16 +5,12 @@ from __future__ import annotations
 import json
 import logging
 
-import psycopg
+import psycopg.rows
 
-from src.core.config import get_settings
-from src.core.db_init import _uri_to_conninfo, ensure_ai_solution_knowledge
+from src.core.db_init import ensure_ai_solution_knowledge
+from src.core.db_pool import get_conn
 
 logger = logging.getLogger(__name__)
-
-
-def _conninfo() -> str:
-    return _uri_to_conninfo(get_settings().postgres_uri)
 
 
 async def save_effective_plan(
@@ -31,7 +27,7 @@ async def save_effective_plan(
     await ensure_ai_solution_knowledge()
     target_indicators = plan.get("target_indicators", [])
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -69,7 +65,7 @@ async def search_similar_plans(
     if not target_indicators:
         return []
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
                     """
@@ -115,7 +111,7 @@ async def list_knowledge(
     offset = (page - 1) * page_size
 
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
                     f"SELECT COUNT(*) AS cnt FROM ai_solution_knowledge {where}",

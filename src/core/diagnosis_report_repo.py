@@ -5,17 +5,12 @@ from __future__ import annotations
 import json
 import logging
 
-import psycopg
 from psycopg.rows import dict_row
 
-from src.core.config import get_settings
-from src.core.db_init import _uri_to_conninfo, ensure_ai_diagnosis_report
+from src.core.db_init import ensure_ai_diagnosis_report
+from src.core.db_pool import get_conn
 
 logger = logging.getLogger(__name__)
-
-
-def _conninfo() -> str:
-    return _uri_to_conninfo(get_settings().postgres_uri)
 
 
 async def save_report(
@@ -29,7 +24,7 @@ async def save_report(
     await ensure_ai_diagnosis_report()
     report_json = json.dumps(report, ensure_ascii=False)
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -53,7 +48,7 @@ async def save_report(
 async def get_report(thread_id: str) -> dict | None:
     """按 thread_id 查询报告。同时返回 DB 列中的 tenant_id / store_id，兜底填充缺失字段。"""
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT tenant_id, store_id, report FROM ai_diagnosis_report WHERE thread_id = %s",
@@ -81,7 +76,7 @@ async def list_reports(
 ) -> tuple[list[dict], int]:
     """分页列表，按创建时间倒序。返回 (items, total)。"""
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 where, params = [], []
                 if tenant_id:
@@ -120,7 +115,7 @@ async def update_plan_ids(thread_id: str, plan_ids: list[str]) -> None:
     await ensure_ai_diagnosis_report()
     plan_ids_json = json.dumps(plan_ids, ensure_ascii=False)
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -139,7 +134,7 @@ async def find_thread_id_by_plan_id(plan_id: str) -> str | None:
     """通过 plan_id 查找对应的 thread_id。"""
     await ensure_ai_diagnosis_report()
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """

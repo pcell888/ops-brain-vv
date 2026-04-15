@@ -14,18 +14,17 @@
 ## 架构
 
 ```
-FastAPI(HTTP+WebSocket) → LangGraph(状态图) → MCP(stdio 子进程 ×5) → 企业业务系统API
+FastAPI(HTTP+WebSocket) → LangGraph(状态图) → MCP(stdio 子进程 ×2) → 企业业务系统API
 ```
 
 | MCP Server | 职责 |
 |-----------|------|
-| metrics-server | 运营指标采集与计算 |
-| crm-server | CRM客户数据、企业画像 |
+| biz-server | 业务 API 工具聚合：CRM/指标/通知/任务（代码在 `src/mcp_servers/biz/`） |
 | benchmark-server | 行业基准数据 |
-| task-server | 任务推送 |
-| notify-server | 消息通知 |
 
-（通信为 **stdio**，由 `src/agent/tools.py` 启动 `python -m src.mcp_servers.*`；调试可用 `scripts/mcp_call.py`。）
+调用侧仍可使用历史名称 `crm-server`、`metrics-server`、`task-server`、`notify-server`，与 `biz-server` 共用同一子进程（见 `src/agent/tools.py` 中别名）。
+
+（通信为 **stdio**，由 `src/agent/tools.py` 启动 `python -m src.mcp_servers.biz_server` 等；调试可用 `scripts/mcp_call.py`。）
 
 ## 快速开始
 

@@ -6,11 +6,10 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from src.api.deps import get_graph_app
+from src.runtime.graph_app import get_graph_app
 from src.agent.tools import mcp_call
 from src.core.config import CN_TZ, get_settings
 from src.core.calculator import resolve_active_indicators
-from src.core.pending_review_repo import get_due_reviews
 from src.core.snapshot_repo import save_snapshot, get_last_snapshot_time
 from src.core.tenant_config import get_tenant_config
 
@@ -26,13 +25,13 @@ DIMENSION_TOOL_MAP: dict[str, str] = {
 
 async def _get_pending_threads() -> list[dict]:
     """获取所有处于追踪等待状态的 pending review 记录（含到期日）。"""
-    from src.core.db_init import _uri_to_conninfo, ensure_ai_pending_review
-    import psycopg
+    from src.core.db_init import ensure_ai_pending_review
+    from src.core.db_pool import get_conn
+    import psycopg.rows
 
     await ensure_ai_pending_review()
-    conninfo = _uri_to_conninfo(get_settings().postgres_uri)
     try:
-        async with await psycopg.AsyncConnection.connect(conninfo) as conn:
+        async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
                     "SELECT thread_id, tenant_id, store_id, review_due_date FROM ai_pending_review WHERE status = 'pending'"

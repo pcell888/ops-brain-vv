@@ -26,7 +26,7 @@ from mcp.client.stdio import stdio_client
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.agent.tools import MCP_SERVER_MODULES, mcp_stdio_env  # noqa: E402
+from src.agent.tools import MCP_SERVER_ALIASES, MCP_SERVER_MODULES, mcp_stdio_env  # noqa: E402
 
 
 def _parse_kv(text: str) -> tuple[str, Any]:
@@ -185,18 +185,20 @@ def _resolve_module(server: str | None, module: str | None) -> str:
         return module
     if not server:
         raise ValueError("server is required unless --module is provided")
-    if server not in MCP_SERVER_MODULES:
+    canonical = MCP_SERVER_ALIASES.get(server, server)
+    mod = MCP_SERVER_MODULES.get(canonical)
+    if not mod:
         raise ValueError(
             f"Unknown server '{server}'. Use --list-servers to see available names, or pass --module."
         )
-    return MCP_SERVER_MODULES[server]
+    return mod
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="MCP stdio CLI")
-    parser.add_argument("server", nargs="?", help="Server name (e.g., metrics-server)")
+    parser.add_argument("server", nargs="?", help="Server name (e.g., biz-server or metrics-server alias)")
     parser.add_argument("tool", nargs="?", help="Tool name to call")
-    parser.add_argument("--module", help="Override module path, e.g., src.mcp_servers.metrics_server")
+    parser.add_argument("--module", help="Override module path, e.g., src.mcp_servers.biz_server")
     parser.add_argument("--list-servers", action="store_true", help="List available server names")
     parser.add_argument("--list-tools", action="store_true", help="List tools for the server")
     parser.add_argument("--args", dest="args_json", help="Tool arguments as JSON string")
@@ -215,6 +217,11 @@ def main() -> int:
     if args.list_servers:
         for name in sorted(MCP_SERVER_MODULES.keys()):
             print(name)
+        aliases = [f"{a} (alias → {MCP_SERVER_ALIASES[a]})" for a in sorted(MCP_SERVER_ALIASES)]
+        if aliases:
+            print("# legacy aliases (same process as biz-server):")
+            for line in aliases:
+                print(line)
         return 0
 
     try:

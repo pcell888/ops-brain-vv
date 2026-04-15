@@ -10,18 +10,23 @@ import sys
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from src.core.config import CN_TZ, get_settings
 from src.core.tracing import get_tracer
 
+ProgressCacheWriter = Callable[[str, dict[str, Any]], None]
 # 由 API 在流式运行前设置，用于 emit_progress 时实时推送到 WebSocket
-_progress_sender: ContextVar[tuple[str, Any] | None] = ContextVar("progress_sender", default=None)
+_progress_sender: ContextVar[tuple[str, Any, ProgressCacheWriter | None] | None] = ContextVar("progress_sender", default=None)
 
 
-def set_progress_sender(thread_id: str, manager: Any) -> None:
-    """设置当前诊断任务的进度推送目标（thread_id, manager）。"""
-    _progress_sender.set((thread_id, manager))
+def set_progress_sender(
+    thread_id: str,
+    manager: Any,
+    cache_writer: ProgressCacheWriter | None = None,
+) -> None:
+    """设置当前诊断任务的进度推送目标（thread_id, manager, cache_writer）。"""
+    _progress_sender.set((thread_id, manager, cache_writer))
 
 
 def clear_progress_sender() -> None:
@@ -48,17 +53,11 @@ def mcp_stdio_env() -> dict[str, str]:
     out["LOG_DIR"] = str(log_dir.resolve())
     out["POSTGRES_URI"] = st.postgres_uri
     out["REDIS_URL"] = st.redis_url
-    if st.wlwq_business_api_base:
-        out["WLWQ_BUSINESS_API_BASE"] = st.wlwq_business_api_base
-    if st.wlwq_postgres_uri:
-        out["WLWQ_POSTGRES_URI"] = st.wlwq_postgres_uri
     if (st.platform_center_api_base or "").strip():
         out["PLATFORM_CENTER_API_BASE"] = st.platform_center_api_base.strip()
     out["PLATFORM_CENTER_AUTH_TYPE"] = st.platform_center_auth_type or "token"
     if st.platform_center_auth_credential:
         out["PLATFORM_CENTER_AUTH_CREDENTIAL"] = st.platform_center_auth_credential
-    if st.credential_encrypt_key:
-        out["CREDENTIAL_ENCRYPT_KEY"] = st.credential_encrypt_key
     if st.llm_api_key:
         out["LLM_API_KEY"] = st.llm_api_key
     out["LLM_MODEL"] = st.llm_model
@@ -74,12 +73,22 @@ class MCPToolInvocationError(RuntimeError):
 
 
 MCP_SERVER_MODULES: dict[str, str] = {
-    "metrics-server": "src.mcp_servers.metrics_server",
-    "crm-server": "src.mcp_servers.crm_server",
+    "biz-server": "src.mcp_servers.biz_server",
     "benchmark-server": "src.mcp_servers.benchmark_server",
-    "task-server": "src.mcp_servers.task_server",
-    "notify-server": "src.mcp_servers.notify_server",
 }
+
+# 旧 server 名与 biz-server 共用同一 stdio 子进程（工具名不变）
+MCP_SERVER_ALIASES: dict[str, str] = {
+    "crm-server": "biz-server",
+    "metrics-server": "biz-server",
+    "task-server": "biz-server",
+    "notify-server": "biz-server",
+}
+
+
+def mcp_session_server_name(server_name: str) -> str:
+    """解析 stdio 子进程与会话缓存使用的 canonical server 名。"""
+    return MCP_SERVER_ALIASES.get(server_name, server_name)
 
 _sessions: dict[str, ClientSession] = {}
 _shutdown_events: dict[str, asyncio.Event] = {}
@@ -115,34 +124,35 @@ async def _server_lifecycle(server_name: str, module: str, ready: asyncio.Event)
 
 async def _get_session(server_name: str) -> ClientSession:
     """获取或创建到指定 MCP Server 的 stdio session。"""
-    if server_name in _sessions:
-        return _sessions[server_name]
+    canonical = mcp_session_server_name(server_name)
+    if canonical in _sessions:
+        return _sessions[canonical]
 
-    if server_name not in _init_locks:
-        _init_locks[server_name] = asyncio.Lock()
+    if canonical not in _init_locks:
+        _init_locks[canonical] = asyncio.Lock()
 
-    async with _init_locks[server_name]:
-        if server_name in _sessions:
-            return _sessions[server_name]
+    async with _init_locks[canonical]:
+        if canonical in _sessions:
+            return _sessions[canonical]
 
-        module = MCP_SERVER_MODULES.get(server_name)
+        module = MCP_SERVER_MODULES.get(canonical)
         if not module:
             raise ValueError(f"未知的 MCP Server: {server_name}")
 
         ready = asyncio.Event()
-        task = asyncio.create_task(_server_lifecycle(server_name, module, ready))
-        _bg_tasks[server_name] = task
+        task = asyncio.create_task(_server_lifecycle(canonical, module, ready))
+        _bg_tasks[canonical] = task
         try:
             await asyncio.wait_for(ready.wait(), timeout=30.0)
         except asyncio.TimeoutError:
             task.cancel()
-            _bg_tasks.pop(server_name, None)
-            raise RuntimeError(f"MCP 服务 {server_name} 启动超时(30s)")
+            _bg_tasks.pop(canonical, None)
+            raise RuntimeError(f"MCP 服务 {canonical} 启动超时(30s)")
 
-        if server_name not in _sessions:
-            raise RuntimeError(f"MCP 服务 {server_name} 启动失败")
+        if canonical not in _sessions:
+            raise RuntimeError(f"MCP 服务 {canonical} 启动失败")
 
-        return _sessions[server_name]
+        return _sessions[canonical]
 
 
 async def close_all_sessions():
@@ -163,6 +173,38 @@ async def close_all_sessions():
 
 # 单次 tool 调用超时，避免 stdio 阻塞导致流程卡死
 MCP_CALL_TIMEOUT = 120.0
+
+
+def _is_connection_like_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    hints = (
+        "connection is closed",
+        "server closed the connection",
+        "session is closed",
+        "broken pipe",
+        "connection reset",
+        "eof",
+        "closed resource",
+        "transport is closed",
+        "stream closed",
+    )
+    return any(h in msg for h in hints)
+
+
+def _invalidate_session(server_name: str, reason: Exception) -> None:
+    """将异常会话标记失效，促使下次调用重建。"""
+    canonical = mcp_session_server_name(server_name)
+    _sessions.pop(canonical, None)
+
+    shutdown_event = _shutdown_events.pop(canonical, None)
+    if shutdown_event is not None:
+        shutdown_event.set()
+
+    bg_task = _bg_tasks.pop(canonical, None)
+    if bg_task is not None and not bg_task.done():
+        bg_task.cancel()
+
+    logger.warning("MCP session 已标记失效，等待重建: %s (%s)", canonical, reason)
 
 
 def _strip_json_fence(s: str) -> str:
@@ -258,8 +300,6 @@ async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) 
         except (TypeError, ValueError):
             pass
 
-        session = await _get_session(server_name)
-
         try:
             logger.info(
                 "mcp_call %s.%s json=%s",
@@ -270,21 +310,27 @@ async def mcp_call(server_name: str, tool_name: str, arguments: dict[str, Any]) 
         except (TypeError, ValueError):
             logger.info("mcp_call %s.%s args=%r", server_name, tool_name, arguments)
 
-        try:
-            result = await asyncio.wait_for(
-                session.call_tool(tool_name, arguments),
-                timeout=MCP_CALL_TIMEOUT,
-            )
-
-            return unwrap_mcp_json_value(_parse_call_tool_result(result))
-
-        except MCPToolInvocationError:
-            span.record_exception(MCPToolInvocationError("MCP tool returned isError"))
-            raise
-        except Exception as e:
-            span.record_exception(e)
-            logger.error("MCP调用失败: %s.%s -> %s", server_name, tool_name, e)
-            raise RuntimeError(f"MCP 服务 {server_name} 调用失败: {e}") from e
+        for attempt in range(2):
+            try:
+                session = await _get_session(server_name)
+                result = await asyncio.wait_for(
+                    session.call_tool(tool_name, arguments),
+                    timeout=MCP_CALL_TIMEOUT,
+                )
+                if attempt == 1:
+                    logger.info("MCP session 重建后调用成功: %s.%s", server_name, tool_name)
+                return unwrap_mcp_json_value(_parse_call_tool_result(result))
+            except MCPToolInvocationError:
+                span.record_exception(MCPToolInvocationError("MCP tool returned isError"))
+                raise
+            except Exception as e:
+                span.record_exception(e)
+                if attempt == 0 and _is_connection_like_error(e):
+                    _invalidate_session(server_name, e)
+                    logger.warning("MCP调用失败，正在重建并重试一次: %s.%s -> %s", server_name, tool_name, e)
+                    continue
+                logger.error("MCP调用失败: %s.%s -> %s", server_name, tool_name, e)
+                raise RuntimeError(f"MCP 服务 {server_name} 调用失败: {e}") from e
 
 
 def emit_progress(
@@ -315,26 +361,19 @@ def emit_progress(
         payload["stage"] = "effect_track"
     state["progress_messages"].append(payload)
 
-    # 同步写入共享进度缓存，供 HTTP 轮询端点实时读取
-    try:
-        from src.api.deps import progress_cache
-
-        thread_id_key = state.get("thread_id", "")
-        if thread_id_key:
-            cache_entry: dict[str, Any] = {"message": message, "percent": percent, "timestamp": ts}
-            if level and level != "info":
-                cache_entry["level"] = level
-            if not for_adoption_ui:
-                cache_entry["stage"] = "effect_track"
-                cache_entry["type"] = "progress"
-            progress_cache[thread_id_key] = cache_entry
-    except Exception:
-        pass
-
     sender = _progress_sender.get()
     if sender:
-        thread_id, manager = sender
+        thread_id, manager, cache_writer = sender
         try:
+            if cache_writer:
+                cache_entry: dict[str, Any] = {"message": message, "percent": percent, "timestamp": ts}
+                if level and level != "info":
+                    cache_entry["level"] = level
+                if not for_adoption_ui:
+                    cache_entry["stage"] = "effect_track"
+                    cache_entry["type"] = "progress"
+                cache_writer(thread_id, cache_entry)
+
             loop = asyncio.get_running_loop()
             ws_payload: dict[str, Any] = {
                 "type": "progress",
@@ -349,3 +388,19 @@ def emit_progress(
             loop.create_task(manager.send_progress(thread_id, ws_payload))
         except RuntimeError:
             pass
+    else:
+        # 兜底：某些图执行上下文下 ContextVar 可能不可见，至少保证轮询进度可更新。
+        thread_id = str(state.get("thread_id") or "").strip()
+        if thread_id:
+            try:
+                from src.runtime.progress_store import write_progress_cache as _write_progress_cache
+
+                cache_entry: dict[str, Any] = {"message": message, "percent": percent, "timestamp": ts}
+                if level and level != "info":
+                    cache_entry["level"] = level
+                if not for_adoption_ui:
+                    cache_entry["stage"] = "effect_track"
+                    cache_entry["type"] = "progress"
+                _write_progress_cache(thread_id, cache_entry)
+            except Exception:
+                pass

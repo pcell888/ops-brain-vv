@@ -8,6 +8,8 @@ RUN pip install --no-cache-dir --default-timeout=120 --retries 10 \
     --trusted-host pypi.tuna.tsinghua.edu.cn .
 
 COPY src/ ./src/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
 
 ENV PYTHONPATH=/app
 EXPOSE 8000

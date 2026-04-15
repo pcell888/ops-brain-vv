@@ -9,8 +9,6 @@ services:
       - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
       - REDIS_URL=redis://redis:6379/0
       - LOG_DIR=/logs
-      # 容器内访问 wlwq 模拟服务须用 Compose 服务名，不能用 localhost
-      - WLWQ_BUSINESS_API_BASE=http://wlwq-enterprise:${WLWQ_ENTERPRISE_PORT:-8200}
       # 中台：镜像内无 .env 时需由 Compose 注入（与仓库 .env.example 一致；可被宿主 .env 覆盖）
       - PLATFORM_CENTER_API_BASE=${PLATFORM_CENTER_API_BASE:-https://platform-center.wlwq.com/api}
       - PLATFORM_CENTER_AUTH_TYPE=${PLATFORM_CENTER_AUTH_TYPE:-token}
@@ -18,42 +16,34 @@ services:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-qwen-max}
       - LLM_BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      - CREDENTIAL_ENCRYPT_KEY=${CREDENTIAL_ENCRYPT_KEY}
       - OTEL_SERVICE_NAME=ops-brain
       # 未部署 otel-collector 时不要设置 OTEL_EXPORTER_OTLP_ENDPOINT，否则会一直 UNAVAILABLE
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      # LangSmith（与 .env 一致；未启用时保持默认 false / 空）
-      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
-      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
-      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
-      - LANGCHAIN_ENDPOINT=${LANGCHAIN_ENDPOINT:-}
-      - LANGSMITH_TRACING_V2=${LANGSMITH_TRACING_V2:-false}
-      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
-      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-}
     depends_on:
       - postgres
       - redis
-      - wlwq-enterprise
     volumes:
       - ./logs:/logs
 
-  wlwq-enterprise:
+  ops-brain-worker:
     restart: unless-stopped
     build: .
-    command: uvicorn src.wlwq.app:app --host 0.0.0.0 --port ${WLWQ_ENTERPRISE_PORT:-8200}
-    ports:
-      - "${WLWQ_ENTERPRISE_PORT:-8200}:${WLWQ_ENTERPRISE_PORT:-8200}"
+    command: arq src.worker.arq_worker.WorkerSettings
     environment:
+      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/ops_brain
+      - REDIS_URL=redis://redis:6379/0
       - LOG_DIR=/logs
-      # 容器内须用 Compose 服务名 postgres；独立 mock 库 wlwq_mock（对应 wlwq-mock），不与 ops_brain 共用
-      - WLWQ_POSTGRES_URI=postgresql+asyncpg://postgres:password@postgres:5432/wlwq_mock
-      - WLWQ_MYSQL_HOST=${WLWQ_MYSQL_HOST:-192.168.1.249}
-      - WLWQ_MYSQL_PORT=${WLWQ_MYSQL_PORT:-3306}
-      - WLWQ_MYSQL_USER=${WLWQ_MYSQL_USER:-wlwq}
-      - WLWQ_MYSQL_PASSWORD=${WLWQ_MYSQL_PASSWORD:-Mysql@db$123!}
-      - WLWQ_MYSQL_DATABASE=${WLWQ_MYSQL_DATABASE:-wlwq-enterprise-service}
+      - PLATFORM_CENTER_API_BASE=${PLATFORM_CENTER_API_BASE:-https://platform-center.wlwq.com/api}
+      - PLATFORM_CENTER_AUTH_TYPE=${PLATFORM_CENTER_AUTH_TYPE:-token}
+      - PLATFORM_CENTER_AUTH_CREDENTIAL=${PLATFORM_CENTER_AUTH_CREDENTIAL:-}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-qwen-max}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      - OTEL_SERVICE_NAME=ops-brain-worker
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       - postgres
+      - redis
     volumes:
       - ./logs:/logs
 
@@ -80,18 +70,18 @@ services:
     environment:
       POSTGRES_DB: ops_brain
       POSTGRES_PASSWORD: password
-    volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-      - ./docker/postgres/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
     ports:
       - "${POSTGRES_HOST_PORT:-5432}:5432"
 
   redis:
     restart: unless-stopped
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "${REDIS_HOST_PORT:-6379}:6379"
-
+    volumes:
+      - redis-data:/data
 
 volumes:
-  frontend_node_modules: # 仅 docker-compose.dev.yml 挂载前端时使用
+  redis-data:
+

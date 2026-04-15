@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from src.core.snapshot_repo import list_snapshots
+from src.services import tracking_service
 
 router = APIRouter(prefix="/track", tags=["追踪"])
 
@@ -12,5 +12,4 @@ router = APIRouter(prefix="/track", tags=["追踪"])
 @router.get("/{thread_id}/snapshots", summary="获取指标快照列表")
 async def get_effect_snapshots(thread_id: str):
     """获取该次诊断追踪期间的指标快照列表（按时间正序）。"""
-    snapshots = await list_snapshots(thread_id)
-    return {"thread_id": thread_id, "count": len(snapshots), "snapshots": snapshots}
+    return await tracking_service.get_effect_snapshots_standard(thread_id)

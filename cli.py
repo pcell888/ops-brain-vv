@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""8000 诊断服务测试 CLI — 检查 /health、/api/v1/diagnosis 等，支持完整诊断流程与进度推送。"""
+"""8000 诊断服务测试 CLI — 检查 /health、/api/v1/diagnosis 等；支持完整诊断流程，或按诊断ID仅查优化方案。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 console = Console()
-DEFAULT_BASE = "http://127.0.0.1:8000"
+DEFAULT_BASE = "http://127.0.0.1:8100"
 API_PREFIX = "/api/v1"
 FINAL_TYPES = ("completed", "error")
 
@@ -167,7 +167,7 @@ async def check_indicators(base_url: str) -> tuple[bool, str]:
 def _http_to_ws(base_url: str, path: str) -> str:
     p = urlparse(base_url)
     scheme = "wss" if p.scheme == "https" else "ws"
-    netloc = p.netloc or "127.0.0.1:8000"
+    netloc = p.netloc or "127.0.0.1:8100"
     return f"{scheme}://{netloc}{path}"
 
 async def check_start(base_url: str, tenant_id: str, store_id: str) -> tuple[bool, str, dict | None]:
@@ -193,16 +193,28 @@ async def check_start(base_url: str, tenant_id: str, store_id: str) -> tuple[boo
         return False, str(e), None
 
 
-async def _fetch_solutions(base_url: str, thread_id: str) -> list[dict]:
+def _plans_from_solutions_json(data: dict) -> list[dict]:
+    return list(data.get("plans") or data.get("solution_plans") or [])
+
+
+async def _fetch_solutions_response(base_url: str, thread_id: str) -> tuple[bool, dict | str]:
     url = base_url.rstrip("/") + f"{API_PREFIX}/solutions/{thread_id}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(url)
             if r.status_code == 200:
-                return (r.json().get("solution_plans") or [])[:]
-            return []
-    except Exception:
+                body = r.json()
+                return True, body if isinstance(body, dict) else {}
+            return False, f"HTTP {r.status_code}: {r.text[:200]}"
+    except Exception as e:
+        return False, str(e)
+
+
+async def _fetch_solutions(base_url: str, thread_id: str) -> list[dict]:
+    ok, data = await _fetch_solutions_response(base_url, thread_id)
+    if not ok or not isinstance(data, dict):
         return []
+    return _plans_from_solutions_json(data)
 
 
 async def _fetch_drill_down(
@@ -257,6 +269,33 @@ def _print_solution_list(plans: list[dict]) -> None:
             p.get("priority_level", ""),
         )
     console.print(table)
+
+
+def _print_solutions_api_payload(data: dict) -> None:
+    """打印 GET /solutions/{thread_id} 返回的摘要 + 方案表。"""
+    console.print(
+        Text(
+            f"诊断ID: {data.get('thread_id', '-')}  "
+            f"状态: {data.get('status', '-')}  "
+            f"方案数: {data.get('plan_count', len(_plans_from_solutions_json(data)))}",
+            style="dim",
+        )
+    )
+    adopted = data.get("adopted_plan_ids") or []
+    if adopted:
+        console.print(Text(f"已采纳: {', '.join(str(x) for x in adopted)}", style="dim"))
+    rec = data.get("recommendation") or {}
+    if isinstance(rec, dict) and rec.get("plan_id"):
+        reasons = rec.get("reasons") or []
+        reason_txt = "；".join(str(x) for x in reasons) if reasons else ""
+        console.print(
+            Text(
+                f"推荐方案: {rec.get('plan_name', '')} ({rec.get('plan_id', '')})"
+                + (f" — {reason_txt}" if reason_txt else ""),
+                style="green",
+            )
+        )
+    _print_solution_list(_plans_from_solutions_json(data))
 
 
 def _print_drill_down(data: dict) -> None:
@@ -600,6 +639,23 @@ async def run_ws_progress(
     return success, received
 
 
+async def run_solutions_by_diagnosis_id(base_url: str, diagnosis_id: str) -> int:
+    """GET /api/v1/solutions/{thread_id}，诊断ID 与 thread_id 相同。"""
+    base_url = base_url or DEFAULT_BASE
+    did = diagnosis_id.strip()
+    if not did:
+        console.print(Text("诊断ID 不能为空。", style="red"))
+        return 2
+    console.print(Panel("[bold]按诊断ID查看优化方案[/bold]", style="dim"))
+    ok, data = await _fetch_solutions_response(base_url, did)
+    if not ok:
+        console.print(Text(f"请求失败: {data}", style="red"))
+        return 1
+    assert isinstance(data, dict)
+    _print_solutions_api_payload(data)
+    return 0
+
+
 async def run_diagnose(base_url: str, tenant_id: str, store_id: str, adopt_plan_ids: list[str] | None = None) -> int:
     base_url = base_url or DEFAULT_BASE
     failed = 0
@@ -658,9 +714,28 @@ def main() -> int:
     p = argparse.ArgumentParser(description="8000 诊断服务测试（含完整诊断流程与进度推送）")
     p.add_argument("--base-url", default=DEFAULT_BASE, help=f"服务 base URL（默认 {DEFAULT_BASE}）")
     p.add_argument("--tenant-id", default="wlwq_local", help="租户ID（默认 wlwq_local）")
-    p.add_argument("--store-id", default="test-store", help="店铺ID（默认 test-store）")
+    p.add_argument("--store-id", default="", help="店铺ID")
     p.add_argument("--adopt", metavar="PLAN_ID", help="收到方案后采纳的唯一 plan_id（互斥）；不指定则仅跑到 waiting_adoption")
+    p.add_argument(
+        "--diagnosis-id",
+        metavar="ID",
+        default=None,
+        help="仅查看该诊断的优化方案（与 thread_id 相同），不跑完整诊断",
+    )
+    p.add_argument(
+        "--view-solutions",
+        action="store_true",
+        help="进入仅看方案模式：未写 --diagnosis-id 时在终端交互输入诊断ID",
+    )
     args = p.parse_args()
+    if args.view_solutions or args.diagnosis_id:
+        tid = (args.diagnosis_id or "").strip()
+        if not tid:
+            tid = (input("请输入诊断ID（与 thread_id 相同）: ") or "").strip()
+        if not tid:
+            console.print(Text("未提供诊断ID。", style="red"))
+            return 2
+        return asyncio.run(run_solutions_by_diagnosis_id(args.base_url, tid))
     adopt_ids = [args.adopt] if args.adopt else None
     return asyncio.run(run_diagnose(args.base_url, args.tenant_id, args.store_id, adopt_ids))
 

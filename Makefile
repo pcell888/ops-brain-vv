@@ -1,13 +1,12 @@
 # 配置
-VENV := venv
+VENV := .venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
 # 端口
-PORT_API := 8000
-PORT_WLWQ := 8200
+PORT_API := 8100
 PORT_FRONTEND := 3000
-PORTS := $(PORT_API) $(PORT_WLWQ) $(PORT_FRONTEND)
+PORTS := $(PORT_API) $(PORT_FRONTEND)
 
 # 假目标
 .PHONY: dev setup-dev infra up down kill-port clean deploy deploy-frontend
@@ -18,20 +17,13 @@ venv:
 
 # 2. 安装依赖
 setup-dev: venv
-	$(PIP) install -e .
+	$(PIP) install -U pip setuptools wheel
+	$(PIP) install -e ".[dev]"
 
 # 3. 启动数据库（postgres + redis）
 infra:
 	docker compose up -d postgres redis
 
-# 4. 启动本地开发服务
-dev: kill-port
-	@( \
-		$(VENV)/bin/uvicorn src.api.main:app --host 0.0.0.0 --port $(PORT_API) --reload & \
-		$(VENV)/bin/uvicorn src.wlwq.app:app --host 0.0.0.0 --port $(PORT_WLWQ) --reload & \
-		cd frontend && pnpm run dev -- --port $(PORT_FRONTEND) & \
-		wait \
-	)
 
 # 5. 杀死已占用端口
 kill-port:
@@ -44,6 +36,17 @@ kill-port:
 			[ -n "$$still" ] && kill -9 $$still 2>/dev/null || true; \
 		fi; \
 	done
+
+# 4. 启动本地开发服务
+dev: kill-port
+	@( \
+		$(VENV)/bin/uvicorn src.api.main:app --host 0.0.0.0 --port $(PORT_API) --reload & \
+		$(VENV)/bin/arq src.worker.arq_worker.WorkerSettings & \
+		cd frontend && pnpm run dev -- --port $(PORT_FRONTEND) & \
+		wait \
+	)
+
+
 
 # 6. Docker 一键启动全部
 up:

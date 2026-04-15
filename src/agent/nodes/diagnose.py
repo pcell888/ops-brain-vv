@@ -23,40 +23,15 @@ from src.core.calculator import (
     resolve_active_indicators,
     rebalance_weights,
 )
+from src.agent.utils import get_admin_accounts as _get_admin_accounts, slim_anomalies as _slim_anomalies, slim_indicators as _slim_indicators, slim_store_profile as _slim_store_profile
 from src.core.config import get_settings
-from src.core.llm import build_chat_llm
-from src.core.tracing import (
-    extract_or_estimate_llm_usage,
-    llm_traced_ainvoke,
-    llm_usage_probe,
-    merge_llm_usage,
-    set_current_run_usage_metadata,
-    to_langsmith_usage_metadata,
-)
+from src.core.llm_caller import llm_call_json
+from src.core.tracing import merge_llm_usage
 from src.core.diagnosis_report_repo import save_report as save_report_to_db
 from src.core.push_log_repo import save_push_log
 from src.core.tenant_config import get_tenant_config
 
 logger = logging.getLogger(__name__)
-
-
-def _get_admin_accounts(profile: dict) -> list[str]:
-    return profile.get("admin_account_ids", [])
-
-
-def _message_text(resp) -> str:
-    c = getattr(resp, "content", "")
-    if isinstance(c, str):
-        return c.strip()
-    if isinstance(c, list):
-        parts: list[str] = []
-        for block in c:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text", "")))
-        return "".join(parts).strip()
-    return str(c).strip()
 
 
 def _coerce_root_cause_list(parsed: object) -> list[dict]:
@@ -81,53 +56,6 @@ def _root_causes_by_code(root_causes: list[dict]) -> dict[str, dict]:
     return out
 
 
-def _slim_anomalies(anomalies: list[dict]) -> list[dict]:
-    return [
-        {
-            "indicator_code": a.get("indicator_code"),
-            "indicator_name": a.get("indicator_name"),
-            "dimension": a.get("dimension"),
-            "current_value": a.get("current_value"),
-            "benchmark_avg": a.get("benchmark_avg"),
-            "deviation_pct": a.get("deviation_pct"),
-            "severity": a.get("severity"),
-        }
-        for a in anomalies
-    ]
-
-
-def _slim_indicators(all_indicators: dict, anomalies: list[dict]) -> dict:
-    anomaly_codes = {a["indicator_code"] for a in anomalies if a.get("indicator_code")}
-    anomaly_dims = {a.get("dimension") for a in anomalies if a.get("dimension")}
-    slim = {}
-    for dim, data in all_indicators.items():
-        if dim not in anomaly_dims:
-            continue
-        indicators = data.get("indicators", {})
-        if not isinstance(indicators, dict):
-            continue
-        slim_indicators = {}
-        for code, ind_data in indicators.items():
-            if code in anomaly_codes:
-                slim_indicators[code] = {
-                    "value": ind_data.get("value"),
-                    "unit": ind_data.get("unit"),
-                }
-        if slim_indicators:
-            slim[dim] = {"indicators": slim_indicators}
-    return slim
-
-
-def _slim_store_profile(profile: dict) -> dict:
-    return {
-        "store_name": profile.get("store_name"),
-        "industry_code": profile.get("industry_code"),
-        "customer_count": profile.get("customer_count"),
-        "monthly_gmv": profile.get("monthly_gmv"),
-        "employee_count": profile.get("employee_count"),
-    }
-
-
 async def _llm_root_cause_analysis(
     store_profile: dict,
     anomalies: list[dict],
@@ -139,17 +67,8 @@ async def _llm_root_cause_analysis(
     if not settings.llm_enabled:
         logger.info("LLM_ENABLED=false，跳过根因LLM分析")
         return [], None
-    llm = build_chat_llm(
-        model=settings.llm_model,
-        temperature=0.3,
-        max_tokens=8192,
-        timeout=settings.llm_httpx_timeout(),
-    )
 
-    required_codes = json.dumps(
-        [a["indicator_code"] for a in anomalies],
-        ensure_ascii=False,
-    )
+    required_codes = json.dumps([a["indicator_code"] for a in anomalies], ensure_ascii=False)
     user_msg = ROOT_CAUSE_ANALYSIS_USER.format(
         store_profile=json.dumps(store_profile, ensure_ascii=False, indent=2),
         required_codes=required_codes,
@@ -158,51 +77,25 @@ async def _llm_root_cause_analysis(
     )
     logger.info("LLM根因分析输入: %d chars (异常数: %d)", len(user_msg), len(anomalies))
 
-    messages = [
-        {"role": "system", "content": ROOT_CAUSE_ANALYSIS_SYSTEM},
-        {"role": "user", "content": user_msg},
-    ]
     try:
-        resp = await llm_traced_ainvoke(
-            llm,
-            messages,
+        parsed, _text, usage = await llm_call_json(
+            system_prompt=ROOT_CAUSE_ANALYSIS_SYSTEM,
+            user_prompt=user_msg,
+            label="LLM根因分析",
+            temperature=0.3,
+            max_tokens=8192,
             runnable_config=runnable_config,
         )
     except Exception as e:
         logger.warning("LLM根因分析调用失败: %s", e)
         return [], None
 
-    text = ""
-    probe = llm_usage_probe(resp)
-    logger.info(
-        "LLM根因分析 usage probe: usage_metadata=%s response_token_usage=%s response_metadata_keys=%s",
-        probe.get("usage_metadata"),
-        probe.get("response_token_usage"),
-        probe.get("response_metadata_keys"),
-    )
-    usage = extract_or_estimate_llm_usage(resp, llm=llm, messages=messages)
-    if usage:
-        logger.info(
-            "LLM根因分析 tokens(%s): prompt=%s completion=%s total=%s calls=%s",
-            usage.get("usage_source", "unknown"),
-            usage.get("prompt_tokens", 0),
-            usage.get("completion_tokens", 0),
-            usage.get("total_tokens", 0),
-            usage.get("calls", 1),
-        )
-    try:
-        text = _message_text(resp)
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        parsed = json.loads(text)
+    if parsed is not None:
         out = _coerce_root_cause_list(parsed)
         if out:
             return out, usage
         logger.warning("LLM根因分析输出无法解析为根因列表: %s", type(parsed).__name__)
-        return [], usage
-    except (json.JSONDecodeError, IndexError) as e:
-        logger.warning("LLM根因分析 JSON 解析失败: %s，前 400 字: %s", e, text[:400] if text else "")
-        return [], usage
+    return [], usage
 
 
 class DiagnosisDataMissingError(RuntimeError):
@@ -410,10 +303,6 @@ async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
     if root_cause_llm_usage:
         diagnosis_report["root_cause_llm_usage"] = root_cause_llm_usage
     diagnosis_report["llm_usage_summary"] = diagnosis_llm_usage_summary
-    langsmith_trace = {
-        "usage_metadata": to_langsmith_usage_metadata(diagnosis_llm_usage_summary),
-    }
-    set_current_run_usage_metadata(diagnosis_llm_usage_summary, runnable_config=config)
 
     is_scheduled = state.get("trigger_type") == "scheduled"
     scope_label = "全企业" if not state.get("store_id") else f"店铺 {state['store_id']}"
@@ -487,5 +376,4 @@ async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
         "diagnosis_report": diagnosis_report,
         "root_cause_llm_usage": root_cause_llm_usage,
         "llm_usage_summary": diagnosis_llm_usage_summary,
-        "langsmith_trace": langsmith_trace,
     }

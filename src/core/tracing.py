@@ -3,85 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 from typing import Any
-
-
-def _env_truthy(name: str) -> bool:
-    v = (os.environ.get(name) or "").strip().lower()
-    return v in ("1", "true", "yes", "on")
-
-
-def apply_langsmith_env() -> None:
-    """将 LangSmith / LangChain 追踪相关变量写入 os.environ。
-
-    - 先 load 仓库根目录 .env，使仅写在 .env 里的 LANGSMITH_* 等进入进程环境（pydantic 不会代写 os.environ）。
-    - 合并 Settings 与已有环境，并同时设置 LANGCHAIN_* 与 LANGSMITH_*（langsmith 优先读前者）。
-    - 清除 langsmith.utils.get_env_var 的 lru_cache，避免在空环境下被错误缓存导致追踪永远关闭（见 langsmith.utils.tracing_is_enabled）。
-
-    须在首次 import langchain_openai / langchain_core 之前调用（见 api/main.py 文件最顶部）。
-    """
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        load_dotenv = None  # type: ignore[misc, assignment]
-
-    repo_root = Path(__file__).resolve().parents[2]
-    env_file = repo_root / ".env"
-    if load_dotenv is not None and env_file.is_file():
-        load_dotenv(env_file, override=False)
-
-    from src.core.config import get_settings
-
-    s = get_settings()
-
-    tracing = (
-        s.langchain_tracing_v2
-        or _env_truthy("LANGSMITH_TRACING_V2")
-        or _env_truthy("LANGCHAIN_TRACING_V2")
-    )
-    val = "true" if tracing else "false"
-    os.environ["LANGCHAIN_TRACING_V2"] = val
-    os.environ["LANGSMITH_TRACING_V2"] = val
-
-    api_key = (
-        (s.langchain_api_key or "").strip()
-        or (os.environ.get("LANGSMITH_API_KEY") or "").strip()
-        or (os.environ.get("LANGCHAIN_API_KEY") or "").strip()
-    )
-    if api_key:
-        os.environ["LANGCHAIN_API_KEY"] = api_key
-        os.environ["LANGSMITH_API_KEY"] = api_key
-
-    project = (
-        (s.langchain_project or "").strip()
-        or (os.environ.get("LANGSMITH_PROJECT") or "").strip()
-        or (os.environ.get("LANGCHAIN_PROJECT") or "").strip()
-    )
-    if project:
-        os.environ["LANGCHAIN_PROJECT"] = project
-        os.environ["LANGSMITH_PROJECT"] = project
-
-    endpoint = s.langchain_endpoint
-    if endpoint:
-        ep = str(endpoint).strip()
-        os.environ["LANGCHAIN_ENDPOINT"] = ep
-        os.environ["LANGSMITH_ENDPOINT"] = ep
-    else:
-        for k in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"):
-            v = (os.environ.get(k) or "").strip()
-            if v:
-                os.environ["LANGCHAIN_ENDPOINT"] = v
-                os.environ["LANGSMITH_ENDPOINT"] = v
-                break
-
-    try:
-        from langsmith.utils import get_env_var
-
-        get_env_var.cache_clear()
-    except Exception:
-        pass
 
 
 def langgraph_config_for_llm() -> dict | None:
@@ -94,32 +16,15 @@ def langgraph_config_for_llm() -> dict | None:
         return None
 
 
-async def llm_traced_ainvoke(
+async def llm_ainvoke_in_graph(
     llm: Any,
     messages: Any,
     *,
     runnable_config: dict | None = None,
 ) -> Any:
-    """在 LangGraph 节点内调用 ChatOpenAI 时使用：强制挂上 LangSmith tracer 并 flush。
-
-    LangGraph 在 Py3.10 等环境不会为节点设置 var_child_runnable_config；仅传 config 仍可能缺 LangChainTracer。
-    用 `tracing_v2_enabled()` 显式注册 tracer；结束时 `wait_for_all_tracers()` 避免异步上报丢失。
-    """
-    from langsmith.utils import tracing_is_enabled
-
+    """LangGraph 节点（或图外）调用 LLM：注入 RunnableConfig，并固定 stream=False 以稳定 usage。"""
     cfg = runnable_config if runnable_config is not None else langgraph_config_for_llm()
-    if not tracing_is_enabled():
-        return await llm.ainvoke(messages, config=cfg, stream=False)
-
-    from langchain_core.tracers.context import tracing_v2_enabled
-    from langchain_core.tracers.langchain import wait_for_all_tracers
-
-    with tracing_v2_enabled():
-        # 诊断主链通过 astream_events 运行时，LangChain 会因流式回调隐式切到 stream=True。
-        # 对 DashScope/OpenAI 兼容接口，这会让 usage 更不稳定；这里显式关掉，保持与 direct ainvoke 一致。
-        out = await llm.ainvoke(messages, config=cfg, stream=False)
-    wait_for_all_tracers()
-    return out
+    return await llm.ainvoke(messages, config=cfg, stream=False)
 
 
 def extract_llm_usage(resp: Any) -> dict | None:
@@ -342,118 +247,45 @@ def merge_llm_usage(*items: dict | None) -> dict | None:
     return merged
 
 
-def to_langsmith_usage_metadata(usage: dict | None) -> dict | None:
-    """转换为 LangSmith 接受的 usage_metadata 结构。"""
-    if not isinstance(usage, dict):
+class _NoopSpan:
+    def set_attribute(self, key: str, value: Any) -> None:
         return None
 
-    def _coerce_int(*keys: str) -> int | None:
-        for key in keys:
-            value = usage.get(key)
-            try:
-                if value is not None:
-                    return int(value)
-            except (TypeError, ValueError):
-                continue
+    def record_exception(self, exc: Exception) -> None:
         return None
 
-    input_tokens = _coerce_int("input_tokens", "prompt_tokens")
-    output_tokens = _coerce_int("output_tokens", "completion_tokens")
-    total_tokens = _coerce_int("total_tokens")
-    if total_tokens is None and input_tokens is not None and output_tokens is not None:
-        total_tokens = input_tokens + output_tokens
-    if input_tokens is None and output_tokens is None and total_tokens is None:
+    def add_event(self, name: str, attributes: dict[str, Any] | None = None) -> None:
         return None
-    return {
-        "input_tokens": input_tokens or 0,
-        "output_tokens": output_tokens or 0,
-        "total_tokens": total_tokens or 0,
-    }
+
+    def set_status(self, status: Any) -> None:
+        return None
+
+    def end(self) -> None:
+        return None
+
+    def __enter__(self) -> "_NoopSpan":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        return False
 
 
-def set_current_run_usage_metadata(
-    usage: dict | None,
-    *,
-    runnable_config: dict | None = None,
-) -> None:
-    """尽力把 token 用量回填到当前 LangSmith run。"""
-    usage_metadata = to_langsmith_usage_metadata(usage)
-    if usage_metadata is None:
-        return
-
-    run_tree = None
-    try:
-        from langsmith.run_helpers import get_current_run_tree
-
-        run_tree = get_current_run_tree()
-    except Exception:
-        run_tree = None
-
-    if run_tree is None and runnable_config is not None:
-        try:
-            from langsmith.run_trees import RunTree
-
-            run_tree = RunTree.from_runnable_config(runnable_config)
-        except Exception:
-            run_tree = None
-
-    if run_tree is None:
-        return
-
-    try:
-        run_tree.set(usage_metadata=usage_metadata)
-    except Exception:
-        try:
-            run_tree.extra.setdefault("metadata", {})["usage_metadata"] = usage_metadata
-        except Exception:
-            return
-
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-
-_tracer_provider: TracerProvider | None = None
+class _NoopTracer:
+    def start_as_current_span(self, name: str, **kwargs: Any) -> _NoopSpan:
+        return _NoopSpan()
 
 
-def setup_tracing(service_name: str | None = None) -> TracerProvider:
-    """初始化 OpenTelemetry TracerProvider 并注册为全局。
-
-    通过环境变量 OTEL_EXPORTER_OTLP_ENDPOINT 控制 exporter 目标地址。
-    未设置时不导出 traces（本地开发不报错）。
-    """
-    global _tracer_provider
-    if _tracer_provider is not None:
-        return _tracer_provider
-
-    name = service_name or os.getenv("OTEL_SERVICE_NAME", "ops-brain")
-    resource = Resource.create({"service.name": name})
-
-    provider = TracerProvider(resource=resource)
-    endpoint = (os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or "").strip()
-
-    if endpoint:
-        exporter = OTLPSpanExporter(endpoint=endpoint)
-        processor = BatchSpanProcessor(exporter)
-        provider.add_span_processor(processor)
-
-    trace.set_tracer_provider(provider)
-    _tracer_provider = provider
-    return provider
+_NOOP_TRACER = _NoopTracer()
 
 
-def get_tracer(name: str = "ops-brain") -> trace.Tracer:
-    """获取命名 Tracer，用于在业务代码中创建 span。"""
-    return trace.get_tracer(name)
+def setup_tracing(service_name: str | None = None) -> None:
+    return None
+
+
+def get_tracer(name: str = "ops-brain") -> _NoopTracer:
+    """获取兼容接口的 no-op tracer。"""
+    return _NOOP_TRACER
 
 
 def close_tracing() -> None:
-    """关闭 TracerProvider（应用退出时调用）。"""
-    global _tracer_provider
-    if _tracer_provider is not None:
-        try:
-            _tracer_provider.shutdown()
-        except Exception:
-            pass
-        _tracer_provider = None
+    return None

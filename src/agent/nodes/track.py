@@ -13,16 +13,10 @@ from src.agent.state import DiagnosisState
 from src.agent.tools import mcp_call, emit_progress
 from src.agent.prompts.review_analysis import REVIEW_ANALYSIS_SYSTEM, REVIEW_ANALYSIS_USER
 from src.core.calculator import calculate_effect_changes, resolve_active_indicators
+from src.agent.utils import get_admin_accounts as _get_admin_accounts
 from src.core.config import CN_TZ, get_settings
-from src.core.llm import build_chat_llm
-from src.core.tracing import (
-    extract_or_estimate_llm_usage,
-    llm_traced_ainvoke,
-    llm_usage_probe,
-    merge_llm_usage,
-    set_current_run_usage_metadata,
-    to_langsmith_usage_metadata,
-)
+from src.core.llm_caller import llm_call_json
+from src.core.tracing import merge_llm_usage
 from src.core.push_log_repo import save_push_log
 from src.core.effect_review_repo import save_effect_tracking, save_review_report
 from src.core.snapshot_repo import list_snapshots
@@ -31,10 +25,6 @@ from src.core.tracking_names import resolve_solution_name
 from src.core.tenant_config import get_tenant_config
 
 logger = logging.getLogger(__name__)
-
-
-def _get_admin_accounts(profile: dict) -> list[str]:
-    return profile.get("admin_account_ids", [])
 
 
 async def _llm_generate_review(
@@ -55,12 +45,6 @@ async def _llm_generate_review(
             "summary": "LLM未启用，无法生成复盘报告",
             "lessons_learned": [],
         }, None
-    llm = build_chat_llm(
-        model=settings.llm_model,
-        temperature=0.3,
-        timeout=settings.llm_httpx_timeout(),
-    )
-
     snapshots_text = ""
     if snapshots:
         snapshots_text = json.dumps(snapshots, ensure_ascii=False, indent=2)
@@ -73,14 +57,12 @@ async def _llm_generate_review(
     )
     logger.info("LLM复盘分析输入: %d chars", len(user_msg))
 
-    messages = [
-        {"role": "system", "content": REVIEW_ANALYSIS_SYSTEM},
-        {"role": "user", "content": user_msg},
-    ]
     try:
-        resp = await llm_traced_ainvoke(
-            llm,
-            messages,
+        parsed, raw_text, usage = await llm_call_json(
+            system_prompt=REVIEW_ANALYSIS_SYSTEM,
+            user_prompt=user_msg,
+            label="LLM复盘分析",
+            temperature=0.3,
             runnable_config=runnable_config,
         )
     except Exception as e:
@@ -93,37 +75,17 @@ async def _llm_generate_review(
             "lessons_learned": [],
         }, None
 
-    probe = llm_usage_probe(resp)
-    logger.info(
-        "LLM复盘分析 usage probe: usage_metadata=%s response_token_usage=%s response_metadata_keys=%s",
-        probe.get("usage_metadata"),
-        probe.get("response_token_usage"),
-        probe.get("response_metadata_keys"),
-    )
-    usage = extract_or_estimate_llm_usage(resp, llm=llm, messages=messages)
-    if usage:
-        logger.info(
-            "LLM复盘分析 tokens(%s): prompt=%s completion=%s total=%s calls=%s",
-            usage.get("usage_source", "unknown"),
-            usage.get("prompt_tokens", 0),
-            usage.get("completion_tokens", 0),
-            usage.get("total_tokens", 0),
-            usage.get("calls", 1),
-        )
-    try:
-        text = resp.content.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        return json.loads(text), usage
-    except (json.JSONDecodeError, IndexError):
-        logger.warning("LLM复盘报告输出解析失败")
-        return {
-            "overall_achievement_rate": 0,
-            "improved_indicator_count": 0,
-            "total_tracked_indicators": 0,
-            "summary": resp.content,
-            "lessons_learned": [],
-        }, usage
+    if isinstance(parsed, dict):
+        return parsed, usage
+
+    logger.warning("LLM复盘报告输出解析失败")
+    return {
+        "overall_achievement_rate": 0,
+        "improved_indicator_count": 0,
+        "total_tracked_indicators": 0,
+        "summary": raw_text,
+        "lessons_learned": [],
+    }, usage
 
 
 DIMENSION_TOOL_MAP: dict[str, str] = {
@@ -232,10 +194,6 @@ async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> d
         }
     llm_usage_summary["stages"] = stages
     review_report["llm_usage_summary"] = llm_usage_summary
-    langsmith_trace = {
-        "usage_metadata": to_langsmith_usage_metadata(llm_usage_summary),
-    }
-    set_current_run_usage_metadata(llm_usage_summary, runnable_config=config)
 
     try:
         await save_effect_tracking(thread_id, tenant_id, store_id, tracking_data)
@@ -324,5 +282,4 @@ async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> d
         "review_report": review_report,
         "review_llm_usage": review_llm_usage,
         "llm_usage_summary": llm_usage_summary,
-        "langsmith_trace": langsmith_trace,
     }

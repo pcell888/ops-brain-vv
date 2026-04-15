@@ -5,10 +5,9 @@ from __future__ import annotations
 import logging
 
 from fastapi import Request
-from psycopg import AsyncConnection
 
 from src.core.config import get_settings
-from src.core.db_init import _uri_to_conninfo
+from src.core.db_pool import get_conn
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +75,7 @@ async def sync_runtime_tokens(tenant_id: str, biz_token: str | None, platform_to
         return
 
     try:
-        conninfo = _uri_to_conninfo(get_settings().postgres_uri)
-        async with await AsyncConnection.connect(conninfo) as conn:
+        async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """

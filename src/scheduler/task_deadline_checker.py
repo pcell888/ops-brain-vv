@@ -5,19 +5,18 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import psycopg
+import psycopg.rows
 
 from src.agent.tools import mcp_call
-from src.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
 async def _get_approaching_tasks() -> list[dict]:
     """获取距截止日 <=1 天且尚未完成的任务（需业务库 ai_diagnosis_task 表支持）。"""
-    settings = get_settings()
+    from src.core.db_pool import get_conn
     try:
-        async with await psycopg.AsyncConnection.connect(settings.postgres_uri) as conn:
+        async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
                     """
@@ -37,9 +36,9 @@ async def _get_approaching_tasks() -> list[dict]:
 
 async def _get_overdue_tasks() -> list[dict]:
     """获取已超期且尚未完成的任务。"""
-    settings = get_settings()
+    from src.core.db_pool import get_conn
     try:
-        async with await psycopg.AsyncConnection.connect(settings.postgres_uri) as conn:
+        async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
                     """

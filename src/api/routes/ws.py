@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from src.api.deps import manager, get_graph_app, progress_cache
+from src.api.deps import manager, get_graph_app, progress_cache, running_tasks
 from src.core.diagnosis_errors import public_diagnosis_error_message
+from src.worker.arq_queue import enqueue_adoption_job
+from src.services import async_job_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,7 +24,7 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
     await manager.connect(thread_id, websocket)
 
     # 重连时发送缓存的进度
-    cached = progress_cache.get(thread_id)
+    cached = await progress_cache.aget(thread_id)
     if cached:
         try:
             await websocket.send_json(cached)
@@ -107,9 +108,25 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
                             "message": "已采纳方案，开始执行...",
                         },
                     )
-                    from src.api.routes.solutions import _resume_after_adoption
-
-                    asyncio.create_task(_resume_after_adoption(thread_id, config))
+                    tenant_id = str((state.values or {}).get("tenant_id") or "")
+                    if not tenant_id:
+                        await manager.send_progress(
+                            thread_id,
+                            {
+                                "type": "error",
+                                "message": "缺少 tenant_id，无法派发执行任务",
+                            },
+                        )
+                        continue
+                    job_id = await enqueue_adoption_job(thread_id=thread_id)
+                    await async_job_service.register_enqueued_job(
+                        job_id=job_id,
+                        thread_id=thread_id,
+                        tenant_id=tenant_id,
+                        job_kind="adoption",
+                        payload={"thread_id": thread_id},
+                    )
+                    await running_tasks.register_job(thread_id, tenant_id, job_id)
                 except Exception as e:
                     logger.exception("采纳方案失败 thread_id=%s", thread_id)
                     await manager.send_progress(

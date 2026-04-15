@@ -8,38 +8,17 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
 
 import httpx
-import psycopg
+import psycopg.rows
 import redis.asyncio as aioredis
-from cryptography.fernet import Fernet
 
 from src.core.config import get_settings
+from src.core.db_pool import get_conn
+from src.core.uri_utils import pg_uri_to_conninfo as _pg_uri_to_conninfo  # noqa: F401  re-export for test compat
+from src.mcp_servers.biz_constants import BIZ_MOCK_TENANT_ID, is_biz_mock_tenant
 
 logger = logging.getLogger(__name__)
-
-
-def _pg_uri_to_conninfo(uri: str) -> str:
-    """postgresql:// 或 postgresql+asyncpg:// 转为 psycopg 可用的 conninfo（key=value）。"""
-    uri = uri.strip()
-    if len(uri) >= 2 and uri[0] == uri[-1] and uri[0] in ("'", '"'):
-        uri = uri[1:-1].strip()
-    parsed = urlparse(uri)
-    if parsed.scheme not in ("postgresql", "postgres", "postgresql+asyncpg"):
-        return uri
-    parts = []
-    if parsed.hostname:
-        parts.append(f"host={parsed.hostname}")
-    if parsed.port:
-        parts.append(f"port={parsed.port}")
-    if parsed.path and parsed.path != "/":
-        parts.append(f"dbname={parsed.path.lstrip('/')}")
-    if parsed.username:
-        parts.append(f"user={parsed.username}")
-    if parsed.password:
-        parts.append(f"password={parsed.password}")
-    return " ".join(parts)
 
 
 PLATFORM_TENANT_ID = "__platform__"
@@ -67,10 +46,7 @@ class TenantRouter:
 
     def __init__(self, pg_uri: str | None = None, redis_url: str | None = None):
         settings = get_settings()
-        raw = pg_uri or settings.postgres_uri
-        self._pg_conninfo = _pg_uri_to_conninfo(raw)
         self._redis_url = redis_url or settings.redis_url
-        self._encrypt_key = settings.credential_encrypt_key
         self._redis: aioredis.Redis | None = None
         self._http_clients: dict[str, httpx.AsyncClient] = {}
 
@@ -102,6 +78,15 @@ class TenantRouter:
         """解析租户上下文。tenant_cache_ttl>0 时优先 Redis，否则每次查 PostgreSQL。"""
         if tenant_id == PLATFORM_TENANT_ID:
             return self._resolve_platform_tenant_from_config()
+        if is_biz_mock_tenant(tenant_id):
+            return TenantContext(
+                tenant_id=BIZ_MOCK_TENANT_ID,
+                tenant_name="本地业务模拟",
+                api_base_url="http://biz-mock.internal",
+                auth_headers={},
+                industry_code="retail_general",
+                config={},
+            )
 
         settings = get_settings()
         use_redis_cache = settings.tenant_cache_ttl > 0
@@ -127,7 +112,7 @@ class TenantRouter:
                 )
 
         logger.debug("租户解析查询数据库: tenant_id=%s", tenant_id)
-        async with await psycopg.AsyncConnection.connect(self._pg_conninfo) as conn:
+        async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
                     "SELECT * FROM tenant_registry WHERE tenant_id=%s AND status=1",
@@ -178,7 +163,7 @@ class TenantRouter:
 
     async def get_platform_api_auth_headers(self, enterprise_tenant_id: str) -> dict[str, str]:
         """访问平台中台 API 时的请求头：优先该企业 platform_auth_credential，否则 auth_credential（auth_type 不变）。"""
-        async with await psycopg.AsyncConnection.connect(self._pg_conninfo) as conn:
+        async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
                     "SELECT auth_type, auth_credential, platform_auth_credential "
@@ -230,22 +215,11 @@ class TenantRouter:
         return ctx.tenant_name, (ctx.industry_code or "")
 
     def _build_auth_headers(self, auth_type: str, credential: str) -> dict:
-        decrypted = self._decrypt(credential)
         if auth_type == "token":
-            return {"Authorization": decrypted}
+            return {"Authorization": credential}
         elif auth_type == "hmac":
-            return {"X-Service-Signature": decrypted}
+            return {"X-Service-Signature": credential}
         return {}
-
-    def _decrypt(self, encrypted: str) -> str:
-        if not self._encrypt_key:
-            return encrypted
-        try:
-            f = Fernet(self._encrypt_key.encode())
-            return f.decrypt(encrypted.encode()).decode()
-        except Exception:
-            logger.debug("解密失败，使用原始凭证（明文或密钥不匹配）")
-            return encrypted
 
     async def close(self):
         for client in self._http_clients.values():

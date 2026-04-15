@@ -50,7 +50,6 @@ class DiagnosisState(TypedDict):
     review_report: dict | None
     review_llm_usage: dict | None
     llm_usage_summary: dict | None
-    langsmith_trace: dict | None
 
     # ── 进度推送 ──
     progress_messages: Annotated[list[dict], add_messages]

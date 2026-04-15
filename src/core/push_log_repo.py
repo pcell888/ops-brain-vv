@@ -5,16 +5,10 @@ from __future__ import annotations
 import json
 import logging
 
-import psycopg
-
-from src.core.config import get_settings
-from src.core.db_init import _uri_to_conninfo, ensure_ai_push_log
+from src.core.db_init import ensure_ai_push_log
+from src.core.db_pool import get_conn
 
 logger = logging.getLogger(__name__)
-
-
-def _conninfo() -> str:
-    return _uri_to_conninfo(get_settings().postgres_uri)
 
 
 async def save_push_log(
@@ -31,7 +25,7 @@ async def save_push_log(
     await ensure_ai_push_log()
     extra_json = json.dumps(extra or {}, ensure_ascii=False)
     try:
-        async with await psycopg.AsyncConnection.connect(_conninfo()) as conn:
+        async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """

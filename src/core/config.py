@@ -1,6 +1,5 @@
 from functools import lru_cache
 import logging
-import os
 from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -18,13 +17,10 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 
 class Settings(BaseSettings):
     postgres_uri: str = "postgresql://postgres:password@localhost:5432/ops_brain"
-    wlwq_postgres_uri: str | None = None  # wlwq 模拟业务库，不设则 wlwq 用 POSTGRES_URI
-    # Docker 内需指向服务名，如 http://wlwq-enterprise:8200（覆盖 tenant_registry 中 wlwq_local 的 api_base_url）
-    wlwq_business_api_base: str | None = None
     # 平台中台（全局唯一，不写入 tenant_registry）。MCP 连接池仍用 tenant_id=__platform__ 作键，仅表示「中台」这一逻辑目标。
     platform_center_api_base: str | None = None
     platform_center_auth_type: str = "token"  # token | hmac，与中台网关约定一致
-    platform_center_auth_credential: str = ""  # 明文或经 CREDENTIAL_ENCRYPT_KEY 加密；无企业上下文的中台请求兜底
+    platform_center_auth_credential: str = ""  # 明文；无企业上下文的中台请求兜底
     redis_url: str = "redis://localhost:6379/0"
 
     llm_api_key: str = ""
@@ -34,8 +30,6 @@ class Settings(BaseSettings):
     llm_enabled: bool = True
     # 兼容模式接口首包可能较慢；可用环境变量 LLM_HTTP_READ_TIMEOUT 覆盖（秒）
     llm_http_read_timeout: float = 300.0
-
-    credential_encrypt_key: str = ""
 
     diagnosis_lookback_days: int = 90
     # 租户解析 Redis 缓存 TTL（秒）。<=0 时不读写 Redis，每次从 PG 加载（鉴权与 base_url 即时生效，QPS 高时慎用）
@@ -53,12 +47,6 @@ class Settings(BaseSettings):
 
     log_dir: str = "logs"
     log_level: str = "DEBUG"  # DEBUG / INFO / WARNING / ERROR
-
-    # LangSmith（LangChain 自动读 LANGCHAIN_*；由 apply_langsmith_env 从本配置写入 os.environ）
-    langchain_tracing_v2: bool = False
-    langchain_api_key: str = ""
-    langchain_project: str = ""
-    langchain_endpoint: str | None = None  # 自托管时设置，默认走云端
 
     def llm_httpx_timeout(self) -> httpx.Timeout:
         return httpx.Timeout(
@@ -107,21 +95,7 @@ def log_diagnosis_service_config(logger: logging.Logger | None = None, *, prefix
     """打印当前诊断相关配置（脱敏）。供 make dev / uvicorn 启动或排障时核对 .env 是否生效。"""
     log = logger or logging.getLogger("ops-brain.config")
     st = get_settings()
-    try:
-        from langsmith.utils import tracing_is_enabled
-
-        smith_on = tracing_is_enabled()
-    except Exception:
-        smith_on = False
     has_llm_key = bool((st.llm_api_key or "").strip())
-    ls_key_set = bool((st.langchain_api_key or "").strip()) or bool(
-        (os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY") or "").strip()
-    )
-    proj = (
-        (st.langchain_project or "").strip()
-        or (os.environ.get("LANGSMITH_PROJECT") or os.environ.get("LANGCHAIN_PROJECT") or "").strip()
-        or "(default)"
-    )
     log.info(
         "%s | env_file=%s exists=%s",
         prefix,
@@ -139,14 +113,6 @@ def log_diagnosis_service_config(logger: logging.Logger | None = None, *, prefix
         has_llm_key,
     )
     log.info(
-        "%s | LangSmith tracing_is_enabled=%s settings.langchain_tracing_v2=%s project=%s langsmith_key_set=%s",
-        prefix,
-        smith_on,
-        st.langchain_tracing_v2,
-        proj,
-        ls_key_set,
-    )
-    log.info(
         "%s | DB postgres=%s redis=%s",
         prefix,
         _uri_host_db(st.postgres_uri),
@@ -162,21 +128,14 @@ def log_diagnosis_run_context(
     store_id: str,
     trigger_type: str,
 ) -> None:
-    """单次诊断任务开始时一行摘要（含 LangSmith 开关，避免刷屏）。"""
+    """单次诊断任务开始时一行摘要。"""
     log = logger or logging.getLogger("ops-brain.diagnosis")
-    try:
-        from langsmith.utils import tracing_is_enabled
-
-        smith_on = tracing_is_enabled()
-    except Exception:
-        smith_on = False
     st = get_settings()
     log.info(
-        "诊断运行 | thread_id=%s tenant=%s store=%s trigger=%s | llm_enabled=%s langsmith_tracing=%s",
+        "诊断运行 | thread_id=%s tenant=%s store=%s trigger=%s | llm_enabled=%s",
         thread_id,
         tenant_id,
         store_id,
         trigger_type,
         st.llm_enabled,
-        smith_on,
     )
