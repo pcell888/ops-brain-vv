@@ -8,6 +8,8 @@ REVIEW_ANALYSIS_SYSTEM = """你是一位电商运营复盘专家。根据方案�
 3. 总结哪些方案有效、哪些需要调整
 4. 提炼可复用的经验和教训
 5. 计算整体达成率
+6. summary、lessons_learned 的每一条、indicator_analysis 中每条 analysis 及 trend 的说明文字均为**中文**（面向业务读者）。**禁止**在以上正文中出现人群/定向类英文 snake_case（如 coupon_expiring_soon、low_conversion、churn_risk、no_repurchase_90d 等）；若需指人群请用中文业务表述。
+7. 指标英文代码仅写在 indicator_analysis[].indicator_code 字段内；summary、lessons_learned、analysis 中优先用中文指代指标与动作，避免大段堆叠英文技术码。
 
 输出格式为 JSON:
 {
@@ -34,5 +36,5 @@ REVIEW_ANALYSIS_USER = """## 指标变化数据（执行前 vs 最终）
 ## 执行任务状态
 {exec_tasks}
 
-请生成复盘分析报告，输出 JSON。如果有中间快照数据，请分析指标随时间的变化趋势。
+请生成复盘分析报告，输出 JSON。如果有中间快照数据，请分析指标随时间的变化趋势。正文表述遵守上文第 6、7 条。
 """

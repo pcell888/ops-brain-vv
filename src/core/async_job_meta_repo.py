@@ -20,6 +20,9 @@ JOB_STATUS_CANCELLED = "cancelled"
 
 ACTIVE_STATUSES = (JOB_STATUS_QUEUED, JOB_STATUS_RUNNING)
 
+# 写入 payload：启动 reconcile 对 failed 仅自动重试一次
+RECONCILE_AUTO_RETRY_PAYLOAD_KEY = "_reconcile_auto_retry_used"
+
 
 async def create_job(
     *,
@@ -81,6 +84,7 @@ async def mark_cancelled_by_thread(thread_id: str, reason: str = "cancel_request
 
 
 async def list_recoverable_jobs(limit: int = 200) -> list[dict]:
+    """列出需在启动时重新入队的任务：queued/running，或尚未做过一次启动重试的 failed。"""
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -88,10 +92,14 @@ async def list_recoverable_jobs(limit: int = 200) -> list[dict]:
                 SELECT job_id, thread_id, tenant_id, job_kind, status, payload, created_at, updated_at
                   FROM ai_async_job_meta
                  WHERE status IN ('queued', 'running')
+                    OR (
+                        status = 'failed'
+                        AND COALESCE(payload->>%s, '') NOT IN ('true', '1')
+                    )
                  ORDER BY updated_at ASC
                  LIMIT %s
                 """,
-                (limit,),
+                (RECONCILE_AUTO_RETRY_PAYLOAD_KEY, limit),
             )
             rows = await cur.fetchall()
             out: list[dict] = []
@@ -108,6 +116,35 @@ async def list_recoverable_jobs(limit: int = 200) -> list[dict]:
                 d["payload"] = payload
                 out.append(d)
             return out
+
+
+async def claim_failed_job_startup_retry(job_id: str) -> bool:
+    """将 failed 任务改为 queued 并打上「已用掉一次启动重试」；用于避免无限重试。成功返回 True。"""
+    patch_json = json.dumps({RECONCILE_AUTO_RETRY_PAYLOAD_KEY: True}, ensure_ascii=False)
+    async with get_conn() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE ai_async_job_meta
+                   SET status = %s,
+                       error = NULL,
+                       payload = payload || %s::jsonb,
+                       updated_at = NOW()
+                 WHERE job_id = %s
+                   AND status = 'failed'
+                   AND COALESCE(payload->>%s, '') NOT IN ('true', '1')
+                RETURNING job_id
+                """,
+                (
+                    JOB_STATUS_QUEUED,
+                    patch_json,
+                    job_id,
+                    RECONCILE_AUTO_RETRY_PAYLOAD_KEY,
+                ),
+            )
+            row = await cur.fetchone()
+        await conn.commit()
+    return row is not None
 
 
 async def get_latest_job_by_thread(thread_id: str) -> dict | None:

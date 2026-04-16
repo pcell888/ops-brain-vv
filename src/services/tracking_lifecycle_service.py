@@ -12,6 +12,7 @@ from src.runtime.diagnosis_ws_manager import send_thread_progress
 from src.core.compat_tracking_repo import (
     count_trackings,
     create_tracking,
+    list_tracking_thread_ids_for_tenant_plan,
     get_diagnosis_scores,
     get_latest_snapshot,
     get_tracking,
@@ -59,6 +60,13 @@ _complete_tracking_lock = asyncio.Lock()
 async def start_effect_tracking(enterprise_id: str, plan_id: str, interval_days: int) -> dict:
     if not enterprise_id or not plan_id:
         raise TrackingServiceError(400, "enterprise_id 和 plan_id 必填")
+
+    existing_track = await list_tracking_thread_ids_for_tenant_plan(enterprise_id.strip(), plan_id.strip())
+    if existing_track:
+        raise TrackingServiceError(
+            400,
+            f"该方案已存在效果追踪，请使用 tracking_id={existing_track[0]}",
+        )
 
     thread_id = f"trk_{uuid.uuid4().hex[:16]}"
     now = datetime.now(CN_TZ)

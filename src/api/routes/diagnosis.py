@@ -166,6 +166,7 @@ async def _run_diagnosis_with_stream(
             "diagnosis.store_id": store_id,
             "diagnosis.trigger_type": trigger_type,
         }) as _:
+            await progress_cache.aclear_run(thread_id)
             set_progress_sender(thread_id, manager, write_progress_cache)
             started_ts = datetime.now(CN_TZ).isoformat()
             write_progress_cache(
@@ -203,15 +204,17 @@ async def _run_diagnosis_with_stream(
                             payload["percent"] = _NODE_START_PERCENT[node_name]
                         if node_name in _NODE_START_MESSAGE:
                             payload["message"] = _NODE_START_MESSAGE[node_name]
-                            write_progress_cache(
-                                thread_id,
-                                {
-                                    "type": "progress",
-                                    "message": _NODE_START_MESSAGE[node_name],
-                                    "percent": payload.get("percent"),
-                                    "timestamp": payload["timestamp"],
-                                },
-                            )
+                            # 上述节点的首条/边界进度由节点内 emit，避免 on_chain_* 晚于节点内 emit
+                            if node_name not in ("generate_solutions", "diagnose"):
+                                write_progress_cache(
+                                    thread_id,
+                                    {
+                                        "type": "progress",
+                                        "message": _NODE_START_MESSAGE[node_name],
+                                        "percent": payload.get("percent"),
+                                        "timestamp": payload["timestamp"],
+                                    },
+                                )
                         await manager.send_progress(thread_id, payload)
 
                 elif kind == "on_chain_end":
@@ -242,15 +245,17 @@ async def _run_diagnosis_with_stream(
                         payload["percent"] = _NODE_COMPLETE_PERCENT[node_name]
                     if node_name in _NODE_COMPLETE_MESSAGE:
                         payload["message"] = _NODE_COMPLETE_MESSAGE[node_name]
-                        write_progress_cache(
-                            thread_id,
-                            {
-                                "type": "progress",
-                                "message": _NODE_COMPLETE_MESSAGE[node_name],
-                                "percent": payload.get("percent"),
-                                "timestamp": payload["timestamp"],
-                            },
-                        )
+                        # collect_data 完成 / diagnose 完成由节点返回前 emit，避免 on_chain_end 晚于下一节点
+                        if node_name not in ("diagnose", "collect_data"):
+                            write_progress_cache(
+                                thread_id,
+                                {
+                                    "type": "progress",
+                                    "message": _NODE_COMPLETE_MESSAGE[node_name],
+                                    "percent": payload.get("percent"),
+                                    "timestamp": payload["timestamp"],
+                                },
+                            )
                     await manager.send_progress(thread_id, payload)
 
                     if node_name == "diagnose" and isinstance(output, dict) and "health_score" in output:
@@ -275,11 +280,12 @@ async def _run_diagnosis_with_stream(
 
     except asyncio.CancelledError:
         logger.info("诊断流程已取消: thread=%s", thread_id)
-        return
+        raise
     except Exception as e:
         logger.exception("诊断流程异常 thread=%s", thread_id)
         err_msg = public_diagnosis_error_message(e)
         await progress_cache.aset(thread_id, {
+            "type": "error",
             "message": err_msg,
             "percent": 0,
             "timestamp": datetime.now(CN_TZ).isoformat(),

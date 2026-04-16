@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from src.runtime.graph_app import get_graph_app
 from src.agent.tools import mcp_call
@@ -48,7 +48,7 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
     store_id = thread["store_id"]
 
     settings = get_settings()
-    interval = settings.effect_snapshot_interval_days
+    interval = settings.effect_snapshot_interval_minutes
     if interval <= 0:
         return
 
@@ -58,12 +58,18 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
         return
 
     now_cn = datetime.now(CN_TZ)
-    due_date = thread.get("review_due_date")
-    if due_date is not None:
-        # 使用配置间隔作为“提前采集窗口”：仅在到期日前 N 天内采集一次
-        collect_from = datetime.combine(due_date, datetime.min.time(), tzinfo=CN_TZ) - timedelta(days=interval)
-        if now_cn < collect_from:
-            return
+    due_raw = thread.get("review_due_date")
+    if due_raw is not None:
+        if isinstance(due_raw, datetime):
+            due_dt = due_raw.astimezone(CN_TZ) if due_raw.tzinfo else due_raw.replace(tzinfo=CN_TZ)
+        elif isinstance(due_raw, date):
+            due_dt = datetime.combine(due_raw, datetime.min.time(), tzinfo=CN_TZ)
+        else:
+            due_dt = None
+        if due_dt is not None:
+            collect_from = due_dt - timedelta(minutes=interval)
+            if now_cn < collect_from:
+                return
 
     app = await get_graph_app()
     config = {"configurable": {"thread_id": thread_id}}
@@ -109,7 +115,7 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
 async def collect_effect_snapshots():
     """入口：扫描所有追踪中的 thread，按间隔采集快照。"""
     settings = get_settings()
-    if settings.effect_snapshot_interval_days <= 0:
+    if settings.effect_snapshot_interval_minutes <= 0:
         return
 
     logger.info("===== 开始效果追踪快照采集 =====")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import datetime
 
 import psycopg.rows
 
@@ -17,7 +17,7 @@ async def save_pending_review(
     thread_id: str,
     tenant_id: str,
     store_id: str,
-    review_due_date: date,
+    review_due_date: datetime,
 ) -> None:
     await ensure_ai_pending_review()
     try:
@@ -39,7 +39,7 @@ async def save_pending_review(
 
 
 async def get_due_reviews() -> list[dict]:
-    """返回 review_due_date <= 今天 且 status='pending' 的记录。"""
+    """返回复盘已到期（review_due_date <= 当前时刻）且 status='pending' 的记录。"""
     await ensure_ai_pending_review()
     try:
         async with get_conn() as conn:
@@ -49,7 +49,7 @@ async def get_due_reviews() -> list[dict]:
                     SELECT thread_id, tenant_id, store_id, review_due_date
                     FROM ai_pending_review
                     WHERE status = 'pending'
-                      AND review_due_date <= CURRENT_DATE
+                      AND review_due_date <= NOW()
                     """
                 )
                 return await cur.fetchall()

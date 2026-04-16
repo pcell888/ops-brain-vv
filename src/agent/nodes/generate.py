@@ -40,7 +40,7 @@ async def _solution_generation_heartbeat(state: DiagnosisState, *, start_percent
         waited_seconds += 20
         emit_progress(
             state,
-            f"正在生成个性化优化方案...（已等待 {waited_seconds}s）",
+            f"正在生成优化方案...（已等待 {waited_seconds}s）",
             percent=start_percent,
         )
 
@@ -296,7 +296,8 @@ async def _llm_generate_solutions(
         else:
             plans = []
         for plan in plans:
-            if isinstance(plan, dict) and not plan.get("plan_id"):
+            if isinstance(plan, dict):
+                # 忽略 LLM 返回的占位 plan_id（如 plan_001），统一生成全局唯一 ID，避免跨诊断冲突。
                 plan["plan_id"] = f"plan_{uuid.uuid4().hex[:8]}"
         return (plans if plans else []), usage
 
@@ -323,6 +324,7 @@ async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig)
     if not anomalies:
         return {"solution_plans": []}
 
+    emit_progress(state, "正在生成优化方案", percent=70)
     emit_progress(state, "正在匹配优化方案模板...", percent=78)
 
     store_profile = state.get("store_profile", {})
@@ -339,7 +341,7 @@ async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig)
     if historical_cases:
         emit_progress(state, f"已匹配 {len(historical_cases)} 个历史成功案例作为参考")
 
-    emit_progress(state, "正在生成个性化优化方案...", percent=88)
+    emit_progress(state, "正在生成优化方案...", percent=88)
 
     rules_text = format_indicator_rules_for_prompt(anomalies)
     mandatory_specs = collect_mandatory_task_specs(anomalies)

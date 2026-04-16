@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from src.agent.tools import clear_progress_sender, mcp_call, set_progress_sender
-from src.core.config import CN_TZ, get_settings
+from src.core.config import CN_TZ, format_delay_minutes_zh, get_settings
 from src.core.diagnosis_errors import public_diagnosis_error_message
 from src.runtime.graph_app import get_graph_app
 from src.runtime.graph_app import astream_events_with_retry
@@ -15,7 +15,7 @@ from src.runtime.progress_store import progress_cache
 from src.runtime.progress_store import write_progress_cache
 from src.runtime.running_tasks import running_tasks
 from src.core.diagnosis_report_repo import find_thread_id_by_plan_id, list_reports, update_plan_ids
-from src.core.exec_task_repo import get_tasks_by_plan_id, update_task_status
+from src.core.exec_task_repo import get_tasks_by_plan_id, list_distinct_plan_ids_for_thread, update_task_status
 from src.worker.arq_queue import enqueue_adoption_job
 from src.services import async_job_service
 
@@ -336,9 +336,13 @@ async def build_compat_solution_list(diagnosis_id: str) -> dict:
     }
 
 
-async def resolve_thread_id_for_plan(solution_id: str) -> str:
-    """由 plan_id 解析诊断 thread_id。"""
+async def resolve_thread_id_for_plan(solution_id: str, *, prefer_wait_adoption: bool = False) -> str:
+    """由 plan_id 解析诊断 thread_id。
+
+    当 plan_id 在历史数据中重复时，可优先选择当前处于 wait_adoption 的诊断。
+    """
     app = await get_graph_app()
+    fallback_thread_id: str | None = None
 
     try:
         thread_id = await find_thread_id_by_plan_id(solution_id)
@@ -349,7 +353,9 @@ async def resolve_thread_id_for_plan(solution_id: str) -> str:
                 plans = state.values.get("solution_plans") or []
                 plan_ids = {p.get("plan_id") for p in plans}
                 if solution_id in plan_ids:
-                    return thread_id
+                    if not prefer_wait_adoption or ("wait_adoption" in (state.next or [])):
+                        return thread_id
+                    fallback_thread_id = thread_id
     except Exception as e:
         logger.warning("从 plan_ids 索引查找失败: %s", e)
 
@@ -370,19 +376,31 @@ async def resolve_thread_id_for_plan(solution_id: str) -> str:
                 plans = state.values.get("solution_plans") or []
                 plan_ids = {p.get("plan_id") for p in plans}
                 if solution_id in plan_ids:
+                    if prefer_wait_adoption and ("wait_adoption" in (state.next or [])):
+                        plan_id_list = [p.get("plan_id") for p in plans if p.get("plan_id")]
+                        if plan_id_list:
+                            try:
+                                await update_plan_ids(thread_id, plan_id_list)
+                            except Exception:
+                                pass
+                        return thread_id
+                    if fallback_thread_id is None:
+                        fallback_thread_id = thread_id
                     plan_id_list = [p.get("plan_id") for p in plans if p.get("plan_id")]
                     if plan_id_list:
                         try:
                             await update_plan_ids(thread_id, plan_id_list)
                         except Exception:
                             pass
-                    return thread_id
             except Exception:
                 continue
 
         if page * page_size >= total:
             break
         page += 1
+
+    if fallback_thread_id:
+        return fallback_thread_id
 
     raise SolutionServiceError(404, f"未找到包含方案 {solution_id} 的诊断")
 
@@ -432,10 +450,20 @@ async def adopt_plan_and_enqueue(thread_id: str, plan_id: str) -> dict:
 
     existing_adopted = (state.values.get("adopted_plan_ids") or [])[:1]
     existing_pending = state.values.get("pending_adopt_plan_id")
+    if existing_adopted and existing_adopted[0] == plan_id:
+        raise SolutionServiceError(400, "该方案已采纳，无需重复提交")
+    if existing_pending and existing_pending == plan_id:
+        raise SolutionServiceError(400, "采纳任务已提交，请查询进度")
     if existing_adopted and existing_adopted[0] != plan_id:
         raise SolutionServiceError(400, "已有方案被采纳，不可再采纳其他方案")
     if existing_pending and existing_pending != plan_id:
         raise SolutionServiceError(400, "已有方案待采纳，不可再采纳其他方案")
+
+    db_plan_ids = await list_distinct_plan_ids_for_thread(thread_id)
+    if len(db_plan_ids) > 1:
+        raise SolutionServiceError(400, "该诊断已存在多个方案的执行任务，仅允许单一方案")
+    if len(db_plan_ids) == 1 and db_plan_ids[0] != plan_id:
+        raise SolutionServiceError(400, "该诊断已绑定其他方案的执行任务，不可采纳当前方案")
 
     await app.aupdate_state(config, {"pending_adopt_plan_id": plan_id})
     tenant_id = str((state.values or {}).get("tenant_id") or "")
@@ -706,9 +734,10 @@ async def resume_after_adoption(thread_id: str, config: dict | None = None) -> N
             )
 
             if node_name == "execute_plans":
-                delay = get_settings().effect_track_delay_days
+                delay = get_settings().effect_track_delay_minutes
+                hint = format_delay_minutes_zh(delay)
                 done_msg = (
-                    f"方案执行任务已全部创建，效果追踪将在 {delay} 天后自动执行"
+                    f"方案执行任务已全部创建，效果追踪将在 {hint}后自动执行"
                     if delay > 0
                     else "方案执行任务已全部创建"
                 )
@@ -735,13 +764,14 @@ async def resume_after_adoption(thread_id: str, config: dict | None = None) -> N
         app = await get_graph_app()
         state = await app.aget_state(config)
         if state.next and "track_effects" in state.next:
-            delay = get_settings().effect_track_delay_days
+            delay = get_settings().effect_track_delay_minutes
+            hint = format_delay_minutes_zh(delay)
             await _send_execution_progress(
                 thread_id,
                 {
                     "type": "completed",
                     "stage": "execution",
-                    "message": f"方案执行任务已全部创建，效果追踪将在 {delay} 天后自动执行",
+                    "message": f"方案执行任务已全部创建，效果追踪将在 {hint}后自动执行",
                 },
             )
         else:

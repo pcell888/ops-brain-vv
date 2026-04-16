@@ -40,3 +40,18 @@ def pg_uri_to_conninfo(uri: str, *, keepalives: bool = False) -> str:
 def get_conninfo(*, keepalives: bool = False) -> str:
     """基于当前 Settings 返回 conninfo（高频快捷方式）。"""
     return pg_uri_to_conninfo(get_settings().postgres_uri, keepalives=keepalives)
+
+
+def postgres_target_for_logs() -> str:
+    """日志用：host:port/dbname，不含口令。"""
+    uri = get_settings().postgres_uri.strip()
+    if len(uri) >= 2 and uri[0] == uri[-1] and uri[0] in ("'", '"'):
+        uri = uri[1:-1].strip()
+    try:
+        u = urlparse(uri.replace("postgresql+asyncpg://", "postgresql://", 1))
+        host = u.hostname or "?"
+        port = f":{u.port}" if u.port else ""
+        db = (u.path or "/").strip("/").split("/")[0] or "?"
+        return f"{host}{port}/{db}"
+    except Exception:
+        return "?"

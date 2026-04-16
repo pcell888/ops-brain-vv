@@ -128,30 +128,43 @@ export function useDiagnosisSelection(enterpriseId: string | null) {
 }
 
 // 获取最新诊断报告
-export function useLatestDiagnosisReport(enterpriseId: string | null, options?: { pauseFetching?: boolean }) {
+export function useLatestDiagnosisReport(
+  enterpriseId: string | null,
+  options?: { pauseFetching?: boolean; pinnedDiagnosisId?: string | null }
+) {
   const pause = options?.pauseFetching ?? false;
-  
-  // 先获取列表，找到最新的诊断；进行中时每 2s 轮询列表，与 status 轮询配合避免仅依赖 WS
+  const pinnedDiagnosisId = options?.pinnedDiagnosisId ?? null;
+
+  // 仅用于页面初始化拿最近一次诊断；运行中由单 diagnosis_id 的 /status 轮询驱动
   const listQuery = useDiagnosisList(enterpriseId, 0, 1, pause, {
-    pollWhenAnyActive: !pause,
+    pollWhenAnyActive: false,
   });
   const latestDiagnosis = listQuery.data?.items?.[0];
-  const latestDiagnosisId = latestDiagnosis?.diagnosis_id;
-  // 有最新诊断 ID 即允许 status 查询；是否每 2s 轮询由 useDiagnosisStatus 内根据接口返回的 status 决定（避免列表滞后导致不轮询）
-  const latestStatusQuery = useDiagnosisStatus(latestDiagnosisId ?? null, {
-    enabled: !!latestDiagnosisId && !pause,
+  const latestDiagnosisIdFromList = latestDiagnosis?.diagnosis_id ?? null;
+  const pinnedMode = !!pinnedDiagnosisId;
+  const statusDiagnosisId = pinnedDiagnosisId ?? latestDiagnosisIdFromList;
+
+  // 有诊断 ID 时按该 ID 轮询 /status
+  const latestStatusQuery = useDiagnosisStatus(statusDiagnosisId, {
+    enabled: !!statusDiagnosisId && !pause,
     pollWhenActive: !pause,
   });
   const runtimeStatus = latestStatusQuery.data;
+  const effectiveDiagnosisId = pinnedMode ? pinnedDiagnosisId : latestDiagnosisIdFromList;
+  const selectedListItem =
+    effectiveDiagnosisId && latestDiagnosis?.diagnosis_id === effectiveDiagnosisId ? latestDiagnosis : undefined;
 
-  // 列表与 /status 可能短暂不一致；failed 时绝不拉取报告，避免误用上一次成功的报告键或旧数据
-  const listStatus = latestDiagnosis?.status;
-  const effectiveStatus = runtimeStatus?.status ?? listStatus;
+  const effectiveStatus = pinnedMode
+    ? (runtimeStatus?.status ?? 'pending')
+    : (runtimeStatus?.status ?? selectedListItem?.status);
   const reportReady =
     effectiveStatus !== 'failed' &&
-    (listStatus === 'completed' || latestDiagnosis?.report_ready === true);
+    (
+      effectiveStatus === 'completed' ||
+      (!pinnedMode && selectedListItem?.report_ready === true)
+    );
   const reportQuery = useDiagnosisReport(
-    reportReady && latestDiagnosisId ? latestDiagnosisId : null,
+    reportReady && effectiveDiagnosisId ? effectiveDiagnosisId : null,
     pause
   );
 
@@ -159,12 +172,11 @@ export function useLatestDiagnosisReport(enterpriseId: string | null, options?: 
     ...reportQuery,
     data: reportQuery.data as DiagnosisReport | undefined,
     isLoading: listQuery.isLoading || latestStatusQuery.isLoading || (reportReady && reportQuery.isLoading),
-    latestDiagnosisId,
-    lastDiagnosisDate: latestDiagnosis?.created_at,
-    // 返回最新诊断的状态信息（用于进入页面时获取正在执行的任务状态）
-    latestDiagnosisStatus: runtimeStatus?.status ?? latestDiagnosis?.status,
-    latestDiagnosisProgress: runtimeStatus?.progress ?? latestDiagnosis?.progress,
-    latestDiagnosisMessage: runtimeStatus?.message ?? latestDiagnosis?.message,
+    latestDiagnosisId: effectiveDiagnosisId,
+    lastDiagnosisDate: selectedListItem?.created_at ?? latestDiagnosis?.created_at,
+    latestDiagnosisStatus: effectiveStatus,
+    latestDiagnosisProgress: runtimeStatus?.progress ?? (pinnedMode ? 0 : selectedListItem?.progress),
+    latestDiagnosisMessage: runtimeStatus?.message ?? (pinnedMode ? '诊断任务已提交' : selectedListItem?.message),
     // 刷新列表的方法
     refetchList: listQuery.refetch,
   };
@@ -172,8 +184,6 @@ export function useLatestDiagnosisReport(enterpriseId: string | null, options?: 
 
 // 启动诊断
 export function useStartDiagnosis() {
-  const queryClient = useQueryClient();
-  
   return useMutation({
     mutationFn: (data: { 
       enterprise_id: string; 
@@ -181,12 +191,6 @@ export function useStartDiagnosis() {
       dimensions?: string[];
       async_mode?: boolean;
     }) => diagnosisApi.start(data),
-    onSuccess: (_, variables) => {
-      // 刷新诊断列表
-      queryClient.invalidateQueries({ 
-        queryKey: ['diagnosis', 'list', variables.enterprise_id] 
-      });
-    },
   });
 }
 

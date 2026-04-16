@@ -159,5 +159,8 @@ async def collect_data_node(state: DiagnosisState) -> dict:
     if store_id != raw_store:
         output["store_id"] = store_id
 
+    # 在节点返回前写入，避免 on_chain_end(collect_data) 晚于 diagnose 内 emit
+    emit_progress(state, "数据采集完成", percent=35)
+
     return output
 

@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 _TASK_TTL_SECONDS = 6 * 60 * 60
 _TENANT_ACTIVE_TTL_SECONDS = 6 * 60 * 60
 _TASK_CANCEL_LOCK_TTL_SECONDS = 30
+_TASK_CANCEL_REQUEST_TTL_SECONDS = _TASK_TTL_SECONDS
 
 
 class RunningTaskStore:
@@ -24,6 +25,7 @@ class RunningTaskStore:
     def __init__(self):
         self._local_tasks: dict[str, asyncio.Task] = {}
         self._local_thread_tenant: dict[str, str] = {}
+        self._local_cancel_requested_until: dict[str, float] = {}
         self._redis: aioredis.Redis | None = None
         self._redis_lock = asyncio.Lock()
 
@@ -70,6 +72,7 @@ class RunningTaskStore:
 
     def pop(self, thread_id: str, default=None):
         self._local_thread_tenant.pop(thread_id, None)
+        self._local_cancel_requested_until.pop(thread_id, None)
         return self._local_tasks.pop(thread_id, default)
 
     async def try_claim_tenant(self, tenant_id: str, thread_id: str) -> tuple[bool, str | None]:
@@ -146,6 +149,7 @@ class RunningTaskStore:
     async def unregister_task(self, thread_id: str) -> None:
         tenant_id = self._local_thread_tenant.pop(thread_id, None)
         self._local_tasks.pop(thread_id, None)
+        self._local_cancel_requested_until.pop(thread_id, None)
         rd = await self._get_redis()
         if rd is None:
             return
@@ -238,15 +242,26 @@ class RunningTaskStore:
             return True
 
     async def request_cancel(self, thread_id: str) -> None:
+        now = asyncio.get_running_loop().time()
+        self._local_cancel_requested_until[thread_id] = now + _TASK_CANCEL_REQUEST_TTL_SECONDS
+        local_task = self._local_tasks.get(thread_id)
+        if local_task is not None and not local_task.done():
+            local_task.cancel()
         rd = await self._get_redis()
         if rd is None:
             return
         try:
-            await rd.set(self._cancel_requested_key(thread_id), "1", ex=_TASK_CANCEL_LOCK_TTL_SECONDS)
+            await rd.set(self._cancel_requested_key(thread_id), "1", ex=_TASK_CANCEL_REQUEST_TTL_SECONDS)
         except Exception:
             pass
 
     async def is_cancel_requested(self, thread_id: str) -> bool:
+        now = asyncio.get_running_loop().time()
+        until = self._local_cancel_requested_until.get(thread_id)
+        if until is not None:
+            if until > now:
+                return True
+            self._local_cancel_requested_until.pop(thread_id, None)
         rd = await self._get_redis()
         if rd is None:
             return False

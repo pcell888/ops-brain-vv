@@ -17,17 +17,13 @@ import {
   useLatestDiagnosisReport,
   useStartDiagnosis,
   useCancelDiagnosis,
-  useSolutionList,
-  useGenerateSolutions,
-  useGenerationTask,
   useDimensionConfig,
   type DimensionConfig,
 } from '@/lib/hooks';
 import { useAppStore } from '@/stores/app-store';
-import { useQueryClient, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { enterpriseApi, diagnosisApi } from '@/lib/api';
 import dayjs from 'dayjs';
-import type { SolutionGenerateResponse } from '@/lib/types';
 
 // 维度映射
 const dimensionMapping: Record<string, string> = {
@@ -153,14 +149,33 @@ function getAnalysisPeriodLabel(days?: number): string {
   return '近90天'; // 默认与设置一致
 }
 
+function isCancelMessage(message: string): boolean {
+  const text = message.toLowerCase();
+  const normalized = text.replace(/[_-]+/g, ' ').trim();
+  return (
+    text.includes('已取消') ||
+    text.includes('取消') ||
+    normalized.includes('cancelled') ||
+    normalized.includes('cancel requested')
+  );
+}
+
 export default function DashboardPage() {
   const { message } = App.useApp();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const { currentEnterprise } = useAppStore();
   const enterpriseId = currentEnterprise?.id || null;
-  const [localFailure, setLocalFailure] = useState<{ isFailed: boolean; message: string }>({ isFailed: false, message: '' });
+  const [localFailure, setLocalFailure] = useState<{ isFailed: boolean; isCancelled: boolean; message: string }>({
+    isFailed: false,
+    isCancelled: false,
+    message: '',
+  });
   const [isCancelling, setCancelling] = useState(false);
+  const [pinnedDiagnosisId, setPinnedDiagnosisId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPinnedDiagnosisId(null);
+  }, [enterpriseId]);
 
   const { data: enterpriseDetail } = useQuery({
     queryKey: ['enterprise', enterpriseId],
@@ -218,8 +233,10 @@ export default function DashboardPage() {
     latestDiagnosisStatus,
     latestDiagnosisProgress,
     latestDiagnosisMessage,
-    refetchList,
-  } = useLatestDiagnosisReport(enterpriseId, { pauseFetching: localFailure.isFailed });
+  } = useLatestDiagnosisReport(enterpriseId, {
+    pauseFetching: localFailure.isFailed,
+    pinnedDiagnosisId,
+  });
 
   // 是否正在获取列表/报告并且没有旧数据？
   const isLoading = isReportLoading;
@@ -275,13 +292,13 @@ export default function DashboardPage() {
     ) {
       if (currStatus === 'completed') {
         setCancelling(false);
-        queryClient.invalidateQueries({ queryKey: ['diagnosis', 'list', enterpriseId] });
-        queryClient.invalidateQueries({ queryKey: ['diagnosis', 'report'] });
+        setLocalFailure({ isFailed: false, isCancelled: false, message: '' });
         message.success('诊断完成！数据已更新');
       } else if (currStatus === 'failed') {
         setCancelling(false);
-        setLocalFailure({ isFailed: true, message: currMsg });
-        if (currMsg.includes('已取消')) {
+        const cancelled = isCancelMessage(currMsg);
+        setLocalFailure({ isFailed: !cancelled, isCancelled: cancelled, message: currMsg });
+        if (cancelled) {
           message.success('已取消诊断');
         }
       }
@@ -293,7 +310,6 @@ export default function DashboardPage() {
     latestDiagnosisStatus,
     latestDiagnosisMessage,
     enterpriseId,
-    queryClient,
     message,
   ]);
 
@@ -312,8 +328,12 @@ export default function DashboardPage() {
 
   const isDiagnosing = !!runningTask;
 
-  // 检查最新诊断是否失败
-  const isLatestFailed = localFailure.isFailed || latestDiagnosisStatus === 'failed';
+  // 区分「取消」与「失败」
+  const isLatestCancelled =
+    localFailure.isCancelled ||
+    (latestDiagnosisStatus === 'failed' && isCancelMessage(localFailure.message || latestDiagnosisMessage || ''));
+  const isLatestFailed =
+    !isLatestCancelled && (localFailure.isFailed || latestDiagnosisStatus === 'failed');
 
   // 获取当前诊断阶段信息
   const currentStage = useMemo(() => {
@@ -340,7 +360,7 @@ export default function DashboardPage() {
       return;
     }
 
-    setLocalFailure({ isFailed: false, message: '' });
+    setLocalFailure({ isFailed: false, isCancelled: false, message: '' });
 
     try {
       const result = await startDiagnosis.mutateAsync({
@@ -348,11 +368,13 @@ export default function DashboardPage() {
         trigger_type: 'manual',
         async_mode: true,
       });
+      if (result.diagnosis_id) {
+        setPinnedDiagnosisId(result.diagnosis_id);
+      }
       if (result.status === 'failed') {
         message.error(result.message || '诊断任务提交失败');
       } else if ((result as { already_running?: boolean }).already_running) {
         message.info('已有诊断任务在执行，已为您显示进度');
-        await refetchList();
       } else {
         message.success('诊断任务已提交');
       }
@@ -381,10 +403,15 @@ export default function DashboardPage() {
     });
   };
 
+  const diagnosisCompletedAt =
+    (report as { completed_at?: string; created_at?: string } | undefined)?.completed_at ||
+    (report as { created_at?: string } | undefined)?.created_at ||
+    lastDiagnosisDate;
+
   // 格式化日期
   const formatLastDiagnosisDate = () => {
-    if (!lastDiagnosisDate) return '暂无记录';
-    return dayjs(lastDiagnosisDate).format('M月D日 HH:mm:ss');
+    if (!diagnosisCompletedAt) return '暂无记录';
+    return dayjs(diagnosisCompletedAt).format('M月D日 HH:mm:ss');
   };
 
   const mergedDimensionScores = useMemo(() => {
@@ -461,59 +488,6 @@ export default function DashboardPage() {
     };
     return titles[dimension] || dimension;
   }
-
-  // 获取方案列表（仅在有报告时请求，无报告时不展示异常/方案）
-  const solutionListDiagnosisId =
-    report && latestDiagnosisId && !isLatestFailed ? latestDiagnosisId : null;
-  const { data: solutionData } = useSolutionList(solutionListDiagnosisId);
-  const typedSolutionData = solutionData as SolutionGenerateResponse | undefined;
-  const hasSolutions = (typedSolutionData?.solutions?.length || 0) > 0;
-
-  // 计算已有方案的异常 ID 集合
-  const anomalyIdsWithSolutions = useMemo(() => {
-    const ids = new Set<string>();
-    typedSolutionData?.solutions?.forEach(s => {
-      s.anomaly_ids?.forEach(id => ids.add(id));
-    });
-    return ids;
-  }, [typedSolutionData]);
-
-  // 生成方案
-  const generateSolutions = useGenerateSolutions();
-  // 检测活跃的后台生成任务（仅在有报告时请求，无报告时不展示异常/生成状态）
-  const { isGenerating: isBackgroundGenerating } = useGenerationTask(solutionListDiagnosisId);
-  // 从企业配置读取方案排序策略（设置页维护）
-  const rankingStrategy = (enterpriseDetail as { config?: { solution_sort_strategy?: string } } | undefined)?.config?.solution_sort_strategy || 'balanced';
-
-  // 处理生成方案
-  const handleGenerateSolution = async (anomalyId: string) => {
-    if (!enterpriseId || !latestDiagnosisId) {
-      message.warning('请先完成诊断');
-      return;
-    }
-
-    try {
-      const result = await generateSolutions.mutateAsync({
-        enterprise_id: enterpriseId,
-        diagnosis_id: latestDiagnosisId,
-        anomaly_ids: [anomalyId],
-        ranking_strategy: rankingStrategy,
-      });
-
-      // 检查是否生成了方案
-      const solutionCount = (result as { solution_count?: number })?.solution_count || 0;
-      if (solutionCount === 0) {
-        message.error('未能生成任何方案。可能没有匹配的方案模板，请稍后重试。');
-        return;
-      }
-
-      message.success('方案生成成功，正在跳转到详情页...');
-      navigate(`/solutions/${latestDiagnosisId}?anomaly_id=${anomalyId}`);
-    } catch (error: any) {
-      const errorMessage = error?.message || '方案生成失败';
-      message.error(errorMessage);
-    }
-  };
 
   // 从报告中提取异常列表
   const anomalies = (report?.anomalies?.map(a => {
@@ -640,14 +614,14 @@ export default function DashboardPage() {
 
   // 诊断失败/取消提示组件
   const DiagnosisFailedAlert = () => {
-    if (!isLatestFailed || isDiagnosing) return null;
+    if ((!isLatestFailed && !isLatestCancelled) || isDiagnosing) return null;
 
-    const isCancelled =
-      (localFailure.message || latestDiagnosisMessage || '').includes('已取消');
-    const errorMessage =
+    const isCancelled = isLatestCancelled;
+    const rawMessage =
       localFailure.message ||
       latestDiagnosisMessage ||
       '诊断执行失败，请检查数据源连接';
+    const errorMessage = isCancelled ? '本次诊断已取消' : rawMessage;
 
     if (isCancelled) {
       return (
@@ -658,7 +632,7 @@ export default function DashboardPage() {
             </div>
             <div className="flex-1">
               <span className="text-secondary font-semibold text-base">诊断已取消</span>
-              <p className="text-secondary text-sm mt-1">可点击上方「立即诊断」重新开始</p>
+              <p className="text-secondary text-sm mt-1">本次结果未更新，可点击上方「立即诊断」重新开始</p>
             </div>
           </div>
         </div>
@@ -672,7 +646,7 @@ export default function DashboardPage() {
             ❌
           </div>
           <div className="flex-1">
-            <span className="text-accent-rose font-semibold text-base text-[#303133]">上次诊断执行失败</span>
+            <span className="text-accent-rose font-semibold text-base text-[#303133]">诊断执行失败</span>
             <p className="text-secondary text-sm mt-1 break-words text-[#303133]">
               {errorMessage}
             </p>
@@ -734,7 +708,7 @@ export default function DashboardPage() {
         {/* 诊断失败提示 */}
         <DiagnosisFailedAlert />
 
-        {!isDiagnosing && !isLatestFailed && (
+        {!isDiagnosing && !isLatestFailed && !isLatestCancelled && (
           <div className="flex items-center justify-center h-[50vh]">
             <Empty
               description="暂无诊断数据，请点击「立即诊断」开始首次诊断"
@@ -786,7 +760,7 @@ export default function DashboardPage() {
         </div>
         <div className="flex gap-3">
           <Button type="primary" icon={<CalendarOutlined />} className="!flex !items-center !gap-2" style={{ backgroundColor: '#fff', color: '#3B82F6 ', border: '1px solid #3B82F6', boxShadow: 'none' }}>
-            上次诊断: {formatLastDiagnosisDate()}
+            上次完成: {formatLastDiagnosisDate()}
           </Button>
           <Button
             type="primary"
@@ -926,19 +900,6 @@ export default function DashboardPage() {
             )}
           </div>
         }
-        extra={
-          !isDiagnosing && anomalies.length > 0 && latestDiagnosisId ? (
-            <Button
-              type="primary"
-              size="small"
-              icon={<ThunderboltOutlined />}
-              onClick={() => navigate(`/solutions/${latestDiagnosisId}`)}
-              style={{ backgroundColor: 'rgba(10, 67, 255, 1)', color: '#fff ', border: 'none' }}
-            >
-              查看优化方案
-            </Button>
-          ) : null
-        }
       >
         {isDiagnosing ? (
           <div className="flex flex-col items-center justify-center py-12 text-secondary">
@@ -950,10 +911,6 @@ export default function DashboardPage() {
           <AnomalyList
             anomalies={anomalies}
             diagnosisId={latestDiagnosisId}
-            hasSolutions={hasSolutions}
-            anomalyIdsWithSolutions={anomalyIdsWithSolutions}
-            generatingAnomalyId={isBackgroundGenerating || generateSolutions.isPending ? '__all__' : null}
-            onGenerateSolution={handleGenerateSolution}
           />
         )}
       </Card>

@@ -15,9 +15,42 @@ from src.api.routes import drill_down as drill_routes
 from src.services import diagnosis_service
 from src.core.calculator import INDICATOR_META, DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS
 from src.core.config import CN_TZ
+from src.runtime.progress_store import progress_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/diagnosis", tags=["诊断(兼容层)"])
+
+
+async def _recent_progress_messages(diagnosis_id: str, limit: int = 20) -> list[dict]:
+    events = await progress_cache.aget_history(diagnosis_id, limit=limit)
+    out: list[dict] = []
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get("message") or "").strip()
+        if not message:
+            continue
+        percent = item.get("percent")
+        event_type = str(item.get("type") or "").strip().lower()
+        normalized_percent = None
+        if percent is not None:
+            try:
+                normalized_percent = int(float(percent))
+            except (TypeError, ValueError):
+                normalized_percent = None
+        event_status = "pending" if not normalized_percent or normalized_percent <= 0 else "running"
+        if event_type == "error":
+            event_status = "failed"
+        out.append(
+            {
+                "status": event_status,
+                "progress": normalized_percent,
+                "message": message,
+                "timestamp": item.get("timestamp"),
+                "stage": item.get("stage"),
+            }
+        )
+    return out
 
 @router.get("/list", summary="诊断历史列表(兼容)")
 async def compat_diagnosis_list(
@@ -70,11 +103,16 @@ async def compat_benchmark_dimension_scores(
 @router.get("/status/{diagnosis_id}", summary="诊断状态(兼容)")
 async def compat_diagnosis_status(diagnosis_id: str):
     status_data = await diagnosis_service.get_diagnosis_status(diagnosis_id)
-    
+
     # 如果状态是 not_found，抛出 404
     if status_data.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="诊断记录不存在")
-    
+
+    recent_progress_messages = await _recent_progress_messages(diagnosis_id)
+    if recent_progress_messages:
+        status_data = dict(status_data)
+        status_data["recent_progress_messages"] = recent_progress_messages
+
     return status_data
 
 

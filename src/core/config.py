@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 与 CWD 无关：始终尝试加载仓库根目录 .env（避免从子目录启动时仍用默认 effect_track_delay_days=7）
+# 与 CWD 无关：始终尝试加载仓库根目录 .env
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = _REPO_ROOT / ".env"
 
@@ -39,11 +39,11 @@ class Settings(BaseSettings):
     # 为 True 时启用旧版双轨：先按 5.2.3 单独落库 rule_5.2.3 任务并执行规则券/消息；为 False（默认）时仅采纳方案落库
     exec_push_rule_tasks: bool = False
 
-    # 方案执行后延迟多少天再执行效果追踪复盘（0 = 立即执行，不延迟）
-    effect_track_delay_days: int = 7
+    # 方案执行后延迟多少分钟再执行效果追踪复盘（0 = 立即执行，不延迟）
+    effect_track_delay_minutes: int = 10080  # 7 天
 
-    # 追踪期间每隔多少天采集一次指标快照（0 = 不采集快照）
-    effect_snapshot_interval_days: int = 3
+    # 距自动复盘到期时刻前多少分钟起，允许定时任务采集唯一一次快照（0 = 不采集）
+    effect_snapshot_interval_minutes: int = 4320  # 3 天
 
     log_dir: str = "logs"
     log_level: str = "DEBUG"  # DEBUG / INFO / WARNING / ERROR
@@ -66,6 +66,22 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def format_delay_minutes_zh(total_minutes: int) -> str:
+    """将延迟分钟数格式化为简短中文（用于进度文案）。"""
+    m = max(0, int(total_minutes))
+    if m == 0:
+        return "0 分钟"
+    if m < 60:
+        return f"{m} 分钟"
+    if m % 1440 == 0:
+        d = m // 1440
+        return f"{d} 天" if d > 1 else "1 天"
+    if m % 60 == 0:
+        h = m // 60
+        return f"{h} 小时"
+    return f"{m} 分钟"
 
 
 def _uri_host_db(uri: str) -> str:

@@ -49,6 +49,26 @@ async def tracking_exists(thread_id: str) -> bool:
             return await cur.fetchone() is not None
 
 
+async def list_tracking_thread_ids_for_tenant_plan(tenant_id: str, plan_id: str) -> list[str]:
+    """同一租户下已绑定某 plan_id 的效果追踪 thread_id 列表（按创建时间倒序）。"""
+    tid = (tenant_id or "").strip()
+    pid = (plan_id or "").strip()
+    if not tid or not pid:
+        return []
+    async with get_conn() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT thread_id FROM ai_effect_tracking
+                WHERE tenant_id = %s AND COALESCE(tracking_data->>'plan_id', '') = %s
+                ORDER BY created_at DESC
+                """,
+                (tid[:32], pid[:512]),
+            )
+            rows = await cur.fetchall()
+    return [str((r or {}).get("thread_id") or "").strip() for r in rows if (r or {}).get("thread_id")]
+
+
 async def update_tracking_data(thread_id: str, tracking_data: dict) -> None:
     async with get_conn() as conn:
         async with conn.cursor() as cur:

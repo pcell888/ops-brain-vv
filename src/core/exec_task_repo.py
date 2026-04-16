@@ -7,6 +7,8 @@ import logging
 import uuid
 from datetime import datetime
 
+from psycopg.rows import dict_row
+
 from src.core.db_init import ensure_ai_exec_task
 from src.core.db_pool import get_conn
 
@@ -148,6 +150,33 @@ async def get_tasks_by_plan_id(tenant_id: str, store_id: str, plan_id: str, stat
     except Exception as e:
         logger.warning("获取任务列表失败: %s", e)
         return []
+
+
+async def list_distinct_plan_ids_for_thread(thread_id: str) -> list[str]:
+    """同一诊断下已落库的执行任务涉及的去重 plan_id（用于采纳互斥校验）。"""
+    if not (thread_id or "").strip():
+        return []
+    await ensure_ai_exec_task()
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT DISTINCT plan_id FROM ai_exec_task
+                    WHERE thread_id = %s AND COALESCE(TRIM(plan_id), '') <> ''
+                    """,
+                    (thread_id[:128],),
+                )
+                rows = await cur.fetchall()
+    except Exception as e:
+        logger.warning("查询诊断下 plan_id 列表失败 [%s]: %s", thread_id, e)
+        return []
+    out: list[str] = []
+    for row in rows or []:
+        pid = str((row or {}).get("plan_id") or "").strip()
+        if pid and pid not in out:
+            out.append(pid)
+    return out
 
 
 async def get_task_stats_by_thread(thread_id: str) -> dict[str, int]:

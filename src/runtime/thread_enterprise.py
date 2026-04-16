@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from src.runtime.running_tasks import running_tasks
 
 _thread_to_enterprise: dict[str, str] = {}
+
+
+def _thread_sort_key(thread_id: str) -> tuple[int, str]:
+    """优先按 thread_id 中的时间戳排序，无法解析时降级到最小值。"""
+    if thread_id.startswith("diag_"):
+        try:
+            ts = thread_id.split("_", 2)[1]
+            dt = datetime.strptime(ts, "%Y%m%d%H%M%S")
+            return int(dt.replace(tzinfo=timezone.utc).timestamp()), thread_id
+        except (IndexError, ValueError):
+            pass
+    return 0, thread_id
 
 
 def register_thread_enterprise(thread_id: str, enterprise_id: str) -> None:
@@ -32,7 +46,7 @@ async def get_running_threads_for_enterprise(enterprise_id: str) -> list[str]:
             local.append(tid)
     merged = set(local)
     merged.update(remote)
-    return list(merged)
+    return sorted(merged, key=_thread_sort_key, reverse=True)
 
 
 async def get_active_diagnosis_thread_for_tenant(enterprise_id: str) -> str | None:

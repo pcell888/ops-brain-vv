@@ -276,6 +276,10 @@ async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> d
 
     tracking_data["status"] = "completed"
     tracking_data["completed_at"] = now
+    try:
+        await save_effect_tracking(thread_id, tenant_id, store_id, tracking_data)
+    except Exception as e:
+        logger.warning("效果追踪完成态落库失败: %s", e)
 
     return {
         "tracking_data": tracking_data,

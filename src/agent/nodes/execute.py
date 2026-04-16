@@ -16,7 +16,7 @@ from src.core.indicator_push_rules import INDICATOR_PUSH_RULES
 from src.agent.nodes.rule_task_builder import (
     build_tasks_from_rule_specs,
     build_execution_tasks,
-    resolve_review_due_date,
+    resolve_review_due_at,
 )
 
 logger = logging.getLogger(__name__)
@@ -183,13 +183,16 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
     emit_progress(state, f"共创建 {len(all_tasks)} 个执行任务")
 
     settings = get_settings()
-    delay_days = settings.effect_track_delay_days
-    if delay_days > 0:
+    delay_minutes = settings.effect_track_delay_minutes
+    if delay_minutes > 0:
         thread_id = state.get("thread_id", "")
-        due_date = resolve_review_due_date(all_tasks, delay_days)
+        due_at = resolve_review_due_at(all_tasks, delay_minutes)
         try:
-            await save_pending_review(thread_id, tenant_id, store_id, due_date)
-            emit_progress(state, f"效果追踪已调度，将于 {due_date} 自动执行复盘")
+            await save_pending_review(thread_id, tenant_id, store_id, due_at)
+            emit_progress(
+                state,
+                f"效果追踪已调度，将于 {due_at.strftime('%Y-%m-%d %H:%M')} 自动执行复盘",
+            )
         except Exception as e:
             logger.warning("保存待复盘调度失败: %s", e)
 

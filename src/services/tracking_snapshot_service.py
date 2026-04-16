@@ -23,6 +23,7 @@ from src.core.compat_tracking_repo import (
     get_tracking,
     insert_snapshot,
     list_snapshots,
+    list_tracking_thread_ids_for_tenant_plan,
     update_tracking_data,
 )
 from src.core.config import CN_TZ, get_settings
@@ -173,6 +174,13 @@ async def _ensure_effect_tracking_row(thread_id: str, tenant_id: str) -> tuple[s
     et = await get_first_exec_task_plan_store(thread_id, tenant_id)
     plan_id = (et["plan_id"] or "") if et else ""
     store_id = (et["store_id"] or "") if et else ""
+    if plan_id:
+        for other_tid in await list_tracking_thread_ids_for_tenant_plan(tenant_id, plan_id):
+            if other_tid != thread_id:
+                raise TrackingServiceError(
+                    400,
+                    f"该方案已有效果追踪记录，请使用 tracking_id={other_tid}",
+                )
     now = datetime.now(CN_TZ)
     td = {
         "plan_id": plan_id,

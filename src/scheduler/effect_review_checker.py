@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 async def check_pending_reviews():
-    """扫描 review_due_date <= 今天的待复盘记录，逐个恢复 graph 执行效果追踪。"""
+    """扫描 review_due_date <= 当前时刻的待复盘记录，逐个恢复 graph 执行效果追踪。"""
     logger.info("===== 开始每日效果追踪复盘检查 =====")
     due_reviews = await get_due_reviews()
     if not due_reviews:

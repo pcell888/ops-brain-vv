@@ -26,7 +26,7 @@ async def compat_solution_list(diagnosis_id: str):
 @router.put("/{solution_id}/adopt", summary="采纳方案(兼容)")
 async def compat_adopt_solution(solution_id: str):
     try:
-        thread_id = await solution_service.resolve_thread_id_for_plan(solution_id)
+        thread_id = await solution_service.resolve_thread_id_for_plan(solution_id, prefer_wait_adoption=True)
     except solution_service.SolutionServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     return await adopt_plan(thread_id, AdoptPlanRequest(plan_id=solution_id))

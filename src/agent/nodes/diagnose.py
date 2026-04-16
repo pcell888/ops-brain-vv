@@ -103,6 +103,7 @@ class DiagnosisDataMissingError(RuntimeError):
 
 
 async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
+    emit_progress(state, "开始诊断分析", percent=35)
     emit_progress(state, "正在计算运营健康度...", percent=45)
 
     # ── 前置校验：确保 collect_data_node 已成功产出数据 ──
@@ -367,6 +368,9 @@ async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
         except Exception as e:
             logger.exception("诊断报告落库失败")
             emit_progress(state, f"诊断报告落库失败，历史记录可能无法查看: {e}")
+
+    # 在节点返回前写入，避免依赖 astream_events 的 on_chain_end（可能晚于下一节点首行 emit）
+    emit_progress(state, "根因分析完成", percent=70)
 
     return {
         "health_score": health_score,

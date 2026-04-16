@@ -86,6 +86,30 @@ def _list_item_cn_time(raw: object) -> tuple[str, str | None]:
     return local.strftime("诊断 %Y-%m-%d %H:%M"), local.isoformat(timespec="seconds")
 
 
+def _thread_id_created_at(thread_id: str) -> datetime | None:
+    if not thread_id.startswith("diag_"):
+        return None
+    try:
+        ts = thread_id.split("_", 2)[1]
+        dt = datetime.strptime(ts, "%Y%m%d%H%M%S")
+        return dt.replace(tzinfo=timezone.utc).astimezone(CN_TZ)
+    except (IndexError, ValueError):
+        return None
+
+
+def _item_created_at_sort_key(item: dict) -> tuple[float, str]:
+    raw = item.get("created_at")
+    if isinstance(raw, str) and raw:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00") if raw.endswith("Z") else raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp(), str(item.get("diagnosis_id") or "")
+        except (TypeError, ValueError):
+            pass
+    return 0.0, str(item.get("diagnosis_id") or "")
+
+
 async def _extract_error_message(values: dict, diagnosis_id: str) -> str:
     """从状态值/缓存中提取失败消息。"""
     cached = (await progress_cache.aget(diagnosis_id)) or {}
@@ -233,6 +257,10 @@ async def get_diagnosis_list_items(
         item = await _build_list_item_from_row(thread_id, row)
         result_items.append(item)
 
+    result_items.sort(key=_item_created_at_sort_key, reverse=True)
+    if skip == 0 and limit > 0:
+        result_items = result_items[:limit]
+
     adjusted_total = total + len(running_not_in_db)
     return result_items, adjusted_total
 
@@ -259,10 +287,10 @@ async def _build_running_item(thread_id: str) -> dict | None:
     except Exception:
         pass
 
-    _now = datetime.now(CN_TZ)
+    created_at = _thread_id_created_at(thread_id) or datetime.now(CN_TZ)
     return {
         "diagnosis_id": thread_id,
-        "name": _now.strftime("诊断 %Y-%m-%d %H:%M"),
+        "name": created_at.strftime("诊断 %Y-%m-%d %H:%M"),
         "status": status,
         "progress": progress,
         "message": message,
@@ -271,7 +299,7 @@ async def _build_running_item(thread_id: str) -> dict | None:
         "anomaly_count": None,
         "report_ready": False,
         "trigger_type": "manual",
-        "created_at": _now.isoformat(),
+        "created_at": created_at.isoformat(timespec="seconds"),
     }
 
 
@@ -692,11 +720,21 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
         msg = "诊断执行中..."
         cached = await progress_cache.aget(diagnosis_id)
         if cached:
+            cached_type = str(cached.get("type") or "").strip().lower()
             msg = cached.get("message", msg)
             try:
                 progress = int(float(cached.get("percent", 0) or 0))
             except (TypeError, ValueError):
                 pass
+            if cached_type == "error":
+                return _status_payload(
+                    diagnosis_id,
+                    status="failed",
+                    phase="diagnosis",
+                    progress=0,
+                    message=str(msg or "诊断执行失败"),
+                    health_score=None,
+                )
         else:
             try:
                 app = await get_graph_app()
@@ -884,11 +922,21 @@ async def _status_while_graph_running(diagnosis_id: str, report: dict | None) ->
     stage = ""
     if cached:
         msg = cached.get("message", msg)
+        cached_type = str(cached.get("type") or "").strip().lower()
         stage = str(cached.get("stage") or "").strip().lower()
         try:
             progress = int(float(cached.get("percent", 0) or 0))
         except (TypeError, ValueError):
             pass
+        if cached_type == "error":
+            return _status_payload(
+                diagnosis_id,
+                status="failed",
+                phase="diagnosis",
+                progress=0,
+                message=str(msg or "诊断执行失败"),
+                health_score=None,
+            )
     else:
         try:
             app = await get_graph_app()
