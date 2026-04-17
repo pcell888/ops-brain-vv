@@ -14,8 +14,14 @@ except ModuleNotFoundError:  # pragma: no cover - depends on runtime env
 
 from src.core.config import get_settings
 
-_BIZ_API_MCP_MIRROR_KEY = "_ops_brain_mcp_servers_mirror"
+_MCP_SERVERS_MIRROR_ATTR = "_ops_brain_mcp_servers_mirror"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+# 与 MCP 子进程共用 mcp-servers.log，便于按同一文件排查「HTTP 钻取 + 下游业务 API」。
+_MCP_SERVERS_MIRROR_LOGGERS: tuple[str, ...] = (
+    "src.mcp_servers.biz_api_client",
+    "src.api.routes.drill_down",
+    "src.api.routes.compat_diagnosis",
+)
 
 
 class TraceIdFilter(logging.Filter):
@@ -59,31 +65,52 @@ def _plain_formatter() -> logging.Formatter:
     )
 
 
-def _attach_biz_api_to_mcp_servers_log(
+def _remove_mcp_servers_mirror_handlers(lg: logging.Logger) -> None:
+    for h in lg.handlers[:]:
+        if getattr(h, _MCP_SERVERS_MIRROR_ATTR, False):
+            lg.removeHandler(h)
+            try:
+                h.flush()
+                h.close()
+            except Exception:
+                pass
+
+
+def _attach_mcp_servers_mirror_handlers(
     log_dir: Path, fmt: logging.Formatter, *, primary_log_path: Path
 ) -> None:
-    """将业务 API 客户端日志镜像到 mcp-servers.log（诊断钻取等与 MCP 工具同源排查）。"""
+    """将关键 logger 镜像到 mcp-servers.log（BizAPIClient + 指标钻取 HTTP，便于与 MCP 子进程同源排查）。"""
     mcp_path = (log_dir / "mcp-servers.log").resolve()
     if primary_log_path.resolve() == mcp_path:
         # MCP 子进程等：root 已写入 mcp-servers.log，再挂镜像会与 propagate 重复打两条
         return
-    biz = logging.getLogger("src.mcp_servers.biz_api_client")
-    for h in biz.handlers:
-        if getattr(h, _BIZ_API_MCP_MIRROR_KEY, False):
-            return
-    fh = logging.handlers.RotatingFileHandler(
-        str(mcp_path),
-        maxBytes=10 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8",
-    )
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(fmt)
-    fh.addFilter(TraceIdFilter())
-    fh.addFilter(ExtraContextFilter())
-    setattr(fh, _BIZ_API_MCP_MIRROR_KEY, True)
-    biz.addHandler(fh)
-    biz.setLevel(logging.DEBUG)
+    for name in _MCP_SERVERS_MIRROR_LOGGERS:
+        lg = logging.getLogger(name)
+        if any(getattr(h, _MCP_SERVERS_MIRROR_ATTR, False) for h in lg.handlers):
+            continue
+        fh = logging.handlers.RotatingFileHandler(
+            str(mcp_path),
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(fmt)
+        fh.addFilter(TraceIdFilter())
+        fh.addFilter(ExtraContextFilter())
+        setattr(fh, _MCP_SERVERS_MIRROR_ATTR, True)
+        lg.addHandler(fh)
+        if name == "src.mcp_servers.biz_api_client":
+            lg.setLevel(logging.DEBUG)
+
+
+def _undefer_loggers_after_fileconfig() -> None:
+    """fileConfig(disable_existing_loggers=True) 会把已存在的 Logger 标为 disabled；仅清 src.* / uvicorn.*。"""
+    for name, ref in list(logging.Logger.manager.loggerDict.items()):
+        if not isinstance(ref, logging.Logger) or not ref.disabled:
+            continue
+        if name == "src" or name.startswith("src.") or name.startswith("uvicorn"):
+            ref.disabled = False
 
 
 def setup_logging(
@@ -103,15 +130,8 @@ def setup_logging(
 
     # 同一进程内若先 ops-brain 再 mcp-servers，旧的 biz_api 镜像 handler 会残留，
     # 与 root 同写 mcp-servers.log 导致重复行。
-    biz_logger = logging.getLogger("src.mcp_servers.biz_api_client")
-    for h in biz_logger.handlers[:]:
-        if getattr(h, _BIZ_API_MCP_MIRROR_KEY, False):
-            biz_logger.removeHandler(h)
-            try:
-                h.flush()
-                h.close()
-            except Exception:
-                pass
+    for _name in _MCP_SERVERS_MIRROR_LOGGERS:
+        _remove_mcp_servers_mirror_handlers(logging.getLogger(_name))
 
     root = logging.getLogger()
     for h in root.handlers[:]:
@@ -153,5 +173,6 @@ def setup_logging(
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-    _attach_biz_api_to_mcp_servers_log(log_dir, fmt, primary_log_path=log_path)
+    _attach_mcp_servers_mirror_handlers(log_dir, fmt, primary_log_path=log_path)
+    _undefer_loggers_after_fileconfig()
     root.info("日志已初始化 | log_path=%s", str(log_path))

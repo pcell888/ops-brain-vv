@@ -143,6 +143,15 @@ async def compat_drill_down(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
 ):
+    logger.info(
+        "指标钻取(兼容API) 收到请求 metric_name=%s enterprise_id=%s dimension=%s days=%s page=%s page_size=%s",
+        metric_name,
+        enterprise_id,
+        dimension,
+        days,
+        page,
+        page_size,
+    )
     meta = INDICATOR_META.get(metric_name)
     if not meta:
         raise HTTPException(status_code=404, detail=f"未知指标: {metric_name}")

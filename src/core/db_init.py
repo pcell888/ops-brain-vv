@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 
+from src.core.logging_setup import setup_logging
+
 logger = logging.getLogger(__name__)
 
 async def run_alembic_upgrade() -> None:
@@ -24,6 +26,8 @@ async def run_alembic_upgrade() -> None:
             command.upgrade(cfg, "head")
 
         await asyncio.to_thread(_upgrade)
+        # env.py 内 fileConfig(alembic.ini) 会重置 root（去掉文件 handler、level=WARNING），须恢复。
+        setup_logging("ops-brain")
         logger.info("Alembic 迁移执行成功 (upgrade head)")
     except Exception as e:
         logger.exception("Alembic 迁移失败")

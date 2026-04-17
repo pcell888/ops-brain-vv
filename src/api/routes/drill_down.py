@@ -112,6 +112,14 @@ async def get_diagnosis_drill_down(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200),
 ):
+    logger.info(
+        "指标钻取(新API) 收到请求 metric_name=%s enterprise_id=%s dimension=%s page=%s page_size=%s",
+        metric_name,
+        enterprise_id,
+        dimension,
+        page,
+        page_size,
+    )
     if not enterprise_id:
         raise HTTPException(status_code=400, detail="enterprise_id 不能为空")
     metric_code = _resolve_metric_code(metric_name)
@@ -120,6 +128,16 @@ async def get_diagnosis_drill_down(
 
     tenant_config = await get_tenant_config(enterprise_id)
     days = int(tenant_config.get("analysis_period_days") or 30)
+    logger.info(
+        "指标钻取请求 metric_name=%s metric_code=%s enterprise_id=%s dimension=%s days=%s page=%s page_size=%s",
+        metric_name,
+        metric_code,
+        enterprise_id,
+        dimension,
+        days,
+        page,
+        page_size,
+    )
     rows, total = await query_drill_data_from_biz(metric_code, enterprise_id, days, page, page_size)
     now = datetime.now(CN_TZ)
     start = now - timedelta(days=days)

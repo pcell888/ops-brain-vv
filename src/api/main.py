@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.constants import API_PREFIX
+from src.api.middleware.access_log import AccessLogMiddleware
 from src.api.routes import diagnosis, solutions, sys_config, track, review, ws, mcp
 from src.api.routes import compat_enterprises, compat_diagnosis, compat_dimensions, compat_solutions, compat_ws, compat_execution, compat_tracking
 from src.agent.tools import close_all_sessions as close_mcp_sessions
@@ -68,6 +69,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# 后注册者在外层：可记录最终状态码并写入 root → ops-brain.log
+app.add_middleware(AccessLogMiddleware)
 
 api_router = APIRouter(prefix=API_PREFIX)
 _token_sync_dep = [Depends(sync_request_tokens_dependency)]
