@@ -73,7 +73,6 @@ async def start_effect_tracking(enterprise_id: str, plan_id: str, interval_days:
     tracking_data = {
         "plan_id": plan_id,
         "status": "active",
-        "solution_name": f"方案 {plan_id[:8]}",
         "current_score": None,
         "snapshot_count": 0,
         "started_at": now.isoformat(),
@@ -304,7 +303,14 @@ async def _complete_tracking_background(tracking_id: str) -> None:
                 }
             )
 
-        base_report = _build_base_report(tracking_id, td_work, now.isoformat(), scores)
+        adopted_plan_name = await _derive_adopted_plan_name(tracking_id, td_work)
+        base_report = _build_base_report(
+            tracking_id,
+            td_work,
+            now.isoformat(),
+            scores,
+            preferred_solution_name=adopted_plan_name,
+        )
         exec_tasks = await list_exec_tasks_for_report(tracking_id)
         llm_tracking_data = {
             **td_work,
@@ -322,6 +328,7 @@ async def _complete_tracking_background(tracking_id: str) -> None:
             snapshots=snapshot_payload,
             exec_tasks=exec_tasks,
             strict_llm=strict,
+            preferred_solution_name=adopted_plan_name,
         )
         report = _merge_llm_report(base_report, llm_report)
         if review_llm_usage:

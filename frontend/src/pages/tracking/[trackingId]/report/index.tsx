@@ -590,7 +590,7 @@ export default function TrackingReportPage() {
           </div>
           <div className="max-w-3xl mx-auto">
             <p className="text-[#303133] text-base leading-relaxed mb-2">
-              「<span className="font-semibold text-[#303133]">{reportData.solution_name}</span>」方案历时 
+              「<span className="font-semibold text-[#303133]">{reportData.solution_name}</span>」本轮追踪历时{' '}
               <span className="font-bold text-blue-400 mx-1">{reportData.tracking_duration_days}</span> 天完成追踪，
               共采集 <span className="font-bold text-amber-400 mx-1">{reportData.snapshot_count}</span> 次快照，
               最终综合评分

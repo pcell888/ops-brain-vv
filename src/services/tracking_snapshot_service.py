@@ -185,7 +185,6 @@ async def _ensure_effect_tracking_row(thread_id: str, tenant_id: str) -> tuple[s
     td = {
         "plan_id": plan_id,
         "status": "active",
-        "solution_name": (f"方案 {plan_id[:8]}" if plan_id else "效果追踪"),
         "current_score": None,
         "snapshot_count": 0,
         "started_at": now.isoformat(),

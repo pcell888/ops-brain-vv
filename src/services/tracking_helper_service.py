@@ -14,7 +14,7 @@ from src.core.compat_tracking_repo import (
     get_first_exec_task,
     get_latest_adopted_plan_name,
 )
-from src.core.tracking_names import resolve_solution_name
+from src.core.tracking_names import legacy_auto_solution_label, resolve_solution_name
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +61,15 @@ def _parse_dt(v) -> datetime | None:
         return None
 
 
-def _is_generic_solution_name(v: object) -> bool:
+def _is_generic_solution_name(v: object, plan_id: str | None = None) -> bool:
     name = str(v or "").strip()
-    return (not name) or name.startswith("效果追踪")
+    if (not name) or name.startswith("效果追踪"):
+        return True
+    pid = str(plan_id or "").strip()
+    legacy = legacy_auto_solution_label(pid)
+    if legacy and name == legacy:
+        return True
+    return False
 
 
 def _safe_json_dict(text: str) -> dict | None:

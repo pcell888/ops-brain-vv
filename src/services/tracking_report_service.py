@@ -19,7 +19,7 @@ from src.core.compat_tracking_repo import (
 from src.core.calculator import INDICATOR_META
 from src.core.config import CN_TZ, get_settings
 from src.core.llm import build_chat_llm
-from src.core.tracking_names import resolve_solution_name
+from src.core.tracking_names import legacy_auto_solution_label, resolve_solution_name
 from src.core.tracking_report_enrichment import needs_llm_enrichment
 from src.core.tracing import extract_or_estimate_llm_usage, llm_ainvoke_in_graph
 
@@ -44,6 +44,7 @@ async def _llm_review_report(
     exec_tasks: list[dict],
     *,
     strict_llm: bool = False,
+    preferred_solution_name: str | None = None,
 ) -> tuple[dict | None, dict | None]:
     settings = get_settings()
     if not settings.llm_enabled or not settings.llm_api_key:
@@ -55,8 +56,10 @@ async def _llm_review_report(
         timeout=settings.llm_httpx_timeout(),
         max_retries=0,
     )
+    td_for_prompt = dict(tracking_data)
+    td_for_prompt["solution_name"] = resolve_solution_name(tracking_data, preferred_solution_name)
     user_msg = REVIEW_ANALYSIS_USER.format(
-        tracking_data=json.dumps(tracking_data, ensure_ascii=False, indent=2),
+        tracking_data=json.dumps(td_for_prompt, ensure_ascii=False, indent=2),
         plans="[]",
         exec_tasks=json.dumps(exec_tasks, ensure_ascii=False, indent=2),
         snapshots=json.dumps(snapshots, ensure_ascii=False, indent=2),
@@ -93,11 +96,17 @@ async def _llm_review_report(
     return parsed, usage
 
 
-def _build_base_report(tracking_id: str, td: dict, now_iso: str, scores: list[float]) -> dict:
+def _build_base_report(
+    tracking_id: str,
+    td: dict,
+    now_iso: str,
+    scores: list[float],
+    preferred_solution_name: str | None = None,
+) -> dict:
     return {
         "tracking_id": tracking_id,
         "plan_id": td.get("plan_id", ""),
-        "solution_name": resolve_solution_name(td),
+        "solution_name": resolve_solution_name(td, preferred_solution_name),
         "total_snapshots": len(scores),
         "started_at": td.get("started_at"),
         "completed_at": now_iso,
@@ -218,6 +227,42 @@ def _build_sections(report: dict) -> list[dict]:
     return built
 
 
+def _apply_legacy_solution_placeholder_rewrite(out: dict, plan_id: object, solution_name: str) -> None:
+    """将正文里历史占位「方案 {plan_id[:8]}」替换为当前解析后的方案名（不改 JSON 字段结构）。"""
+    old = legacy_auto_solution_label(str(plan_id or ""))
+    new = str(solution_name or "").strip()
+    if not old or not new or old == new:
+        return
+
+    def rw(val: object) -> str:
+        t = str(val or "")
+        return t.replace(old, new) if old in t else t
+
+    if out.get("summary"):
+        out["summary"] = rw(out["summary"])
+    if out.get("executive_summary"):
+        out["executive_summary"] = rw(out["executive_summary"])
+    recs = out.get("recommendations")
+    if isinstance(recs, list):
+        out["recommendations"] = [rw(x) for x in recs]
+    lessons = out.get("lessons_learned")
+    if isinstance(lessons, list):
+        out["lessons_learned"] = [rw(x) for x in lessons]
+    ind = out.get("indicator_analysis")
+    if isinstance(ind, list):
+        for it in ind:
+            if isinstance(it, dict):
+                if it.get("analysis"):
+                    it["analysis"] = rw(it.get("analysis"))
+                if it.get("trend"):
+                    it["trend"] = rw(it.get("trend"))
+    sects = out.get("sections")
+    if isinstance(sects, list):
+        for it in sects:
+            if isinstance(it, dict) and it.get("content"):
+                it["content"] = rw(it.get("content"))
+
+
 def _normalize_report_payload(
     tracking_id: str,
     report: dict,
@@ -231,12 +276,14 @@ def _normalize_report_payload(
     preferred = str(preferred_solution_name or "").strip()
     report_name = str(out.get("solution_name") or "").strip()
     solution_name = report_name
-    if preferred and (_is_generic_solution_name(report_name) or not report_name):
+    if preferred and (
+        _is_generic_solution_name(report_name, tracking_data.get("plan_id")) or not report_name
+    ):
         solution_name = preferred
     if not solution_name:
         solution_name = resolve_solution_name(tracking_data, preferred)
     out["solution_name"] = solution_name
-    out["title"] = out.get("title") or f"{solution_name}复盘报告"
+    out["title"] = f"{solution_name}复盘报告"
     out["created_at"] = out.get("created_at") or _ser(report_created_at) or datetime.now(CN_TZ).isoformat()
 
     first_snapshot_at = _ser(snapshot_rows[0].get("snapshot_at")) if snapshot_rows else None
@@ -276,6 +323,7 @@ def _normalize_report_payload(
     if not isinstance(out.get("metric_effects"), list) or not out.get("metric_effects"):
         out["metric_effects"] = _build_metric_effects(snapshot_rows)
 
+    _apply_legacy_solution_placeholder_rewrite(out, tracking_data.get("plan_id"), solution_name)
     out["sections"] = _build_sections(out)
     return out
 
@@ -386,6 +434,7 @@ async def get_compat_review_report(tracking_id: str) -> dict:
                 td=tracking_data,
                 now_iso=_ser(row.get("created_at")) or datetime.now(CN_TZ).isoformat(),
                 scores=scores,
+                preferred_solution_name=adopted_plan_name,
             )
             llm_report, review_llm_usage = await _llm_review_report(
                 tracking_data={
@@ -396,6 +445,7 @@ async def get_compat_review_report(tracking_id: str) -> dict:
                 },
                 snapshots=snapshot_payload,
                 exec_tasks=exec_tasks or [],
+                preferred_solution_name=adopted_plan_name,
             )
             if llm_report:
                 report = _merge_llm_report(base_report, llm_report)
