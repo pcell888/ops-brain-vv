@@ -201,14 +201,14 @@ export default function DrillDownPage() {
           className="!flex !items-center"
         />
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg shadow-cyan-500/20">
+          <h1 className="text-3xl font-bold tracking-tight text-white flex items-center gap-3">
+            <span className="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg shadow-cyan-500/20 shrink-0">
               <LineChartOutlined />
             </span>
-            指标钻取分析
+            指标钻取
           </h1>
           <p className="text-gray-400 mt-1 text-sm">
-            深入分析 <span className="text-cyan-400">{getMetricDisplayName(metricName)}</span> 的明细数据
+            <span className="text-cyan-400">{getMetricDisplayName(metricName)}</span>
           </p>
           {drillData?.time_range && (
             <div className="text-gray-500 text-sm mt-2">

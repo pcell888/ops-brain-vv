@@ -203,8 +203,8 @@ export default function CaseDetailPage() {
         <div className='flex items-center gap-4'>
           <Button icon={<ArrowLeftOutlined />} style={{ backgroundColor: '#ffffff', color: '#000000', border: '1px solid #d9d9d9' }} onClick={handleBack} />
           <div>
-            <h1 className='text-2xl font-bold text-[#303133] flex items-center gap-3'>
-              <span className='w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20 text-white'>
+            <h1 className='text-3xl font-bold tracking-tight text-[#303133] flex items-center gap-3'>
+              <span className='w-11 h-11 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20 text-white shrink-0'>
                 <BookOutlined />
               </span>
               案例详情

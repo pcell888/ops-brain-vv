@@ -7,6 +7,7 @@ import logging
 
 import psycopg.rows
 
+from src.core.datetime_cn import serialize_instant_cn
 from src.core.db_init import ensure_ai_solution_knowledge
 from src.core.db_pool import get_conn
 
@@ -82,8 +83,8 @@ async def search_similar_plans(
                 )
                 rows = await cur.fetchall()
                 for r in rows:
-                    if hasattr(r.get("created_at"), "isoformat"):
-                        r["created_at"] = r["created_at"].isoformat()
+                    if r.get("created_at") is not None:
+                        r["created_at"] = serialize_instant_cn(r["created_at"])
                 return rows
     except Exception as e:
         logger.warning("检索方案知识库失败: %s", e)
@@ -133,8 +134,8 @@ async def list_knowledge(
                 )
                 rows = await cur.fetchall()
                 for r in rows:
-                    if hasattr(r.get("created_at"), "isoformat"):
-                        r["created_at"] = r["created_at"].isoformat()
+                    if r.get("created_at") is not None:
+                        r["created_at"] = serialize_instant_cn(r["created_at"])
                 return rows, total
     except Exception as e:
         logger.warning("查询方案知识库失败: %s", e)

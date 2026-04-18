@@ -382,6 +382,25 @@ export const customDimensionApi = {
     api.post('/custom-dimensions/generate-rules', data),
 };
 
+/** 兼容层 GET /solutions/{solution_id}/adopt/progress，与后端 _adopt_progress_payload + solution_id 对齐 */
+export type AdoptProgressResponse = {
+  thread_id?: string;
+  solution_id?: string;
+  status: string;
+  phase?: string;
+  phase_name?: string;
+  is_running: boolean;
+  percent?: number;
+  progress?: number;
+  overall_progress?: number;
+  message?: string;
+  last_timestamp?: string | null;
+  event_type?: string | null;
+  node?: string | null;
+  pending_adopt_plan_id?: string | null;
+  adopted_plan_ids?: string[];
+};
+
 // ============ 方案模块 API ============
 export const solutionApi = {
   // 生成优化方案
@@ -438,6 +457,10 @@ export const solutionApi = {
   // 采纳方案
   adopt: (solutionId: string) =>
     api.put(`/solutions/${solutionId}/adopt`),
+
+  /** 采纳后执行阶段进度（轮询，与 progress_cache 同源） */
+  getAdoptProgress: (solutionId: string) =>
+    api.get<AdoptProgressResponse>(`/solutions/${encodeURIComponent(solutionId)}/adopt/progress`),
   
   // 拒绝方案
   reject: (solutionId: string, reason?: string) =>

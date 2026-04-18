@@ -149,11 +149,11 @@ export default function DiagnosisDetailPage() {
             返回
           </Button>
           <div>
-            <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
-              <span className="w-10 h-10 text-[#fff] rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg shadow-cyan-500/20">
+            <h1 className="text-3xl font-bold tracking-tight text-[#303133] flex items-center gap-3">
+              <span className="w-11 h-11 text-[#fff] rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg shadow-cyan-500/20 shrink-0">
                 <FileSearchOutlined />
               </span>
-              诊断报告详情
+              诊断报告
             </h1>
           </div>
         </div>

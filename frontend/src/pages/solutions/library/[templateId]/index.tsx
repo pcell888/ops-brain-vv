@@ -120,7 +120,7 @@ export default function TemplateDetailPage() {
                 {categoryInfo.icon}
               </span>
               <div>
-                <h1 className="text-2xl font-bold text-white">{template.name}</h1>
+                <h1 className="text-3xl font-bold tracking-tight text-white">{template.name}</h1>
                 <div className="flex items-center gap-2 mt-1">
                   <Tag style={{ backgroundColor: `${categoryInfo.color}20`, color: categoryInfo.color, border: 'none' }}>{categoryInfo.label}</Tag>
                   <span className="text-gray-400 text-sm">ID: {template.template_id}</span>

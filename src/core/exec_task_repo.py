@@ -114,6 +114,28 @@ async def update_task_status(task_ids: list[str], status: str) -> None:
         logger.warning("更新任务状态失败: %s", e)
 
 
+async def patch_related_resources(task_id: str, patch: dict) -> None:
+    """合并写入 related_resources（jsonb ||），用于派发状态与错误信息。"""
+    if not task_id or not patch:
+        return
+    await ensure_ai_exec_task()
+    try:
+        patch_json = json.dumps(patch, ensure_ascii=False)
+        async with get_conn() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE ai_exec_task
+                    SET related_resources = COALESCE(related_resources, '{}'::jsonb) || %s::jsonb
+                    WHERE task_id = %s
+                    """,
+                    (patch_json, task_id[:128]),
+                )
+            await conn.commit()
+    except Exception as e:
+        logger.warning("patch_related_resources 失败 task_id=%s: %s", task_id, e)
+
+
 async def get_tasks_by_plan_id(tenant_id: str, store_id: str, plan_id: str, status: str | None = None) -> list[dict]:
     """获取指定方案的任务列表。"""
     await ensure_ai_exec_task()

@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { useQueries, useQueryClient } from '@tanstack/react-query';
 import {
@@ -28,6 +29,8 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { DiagnosisHistorySelect } from '@/components/diagnosis-history-select';
+import { TrackingHeaderStatus } from '@/components/tracking-header-status';
+import { formatListPersistentStatus } from '@/lib/tracking-persistent-status';
 import { useAppStore } from '@/stores/app-store';
 import {
   useCancelTracking,
@@ -37,8 +40,9 @@ import {
   useTakeSnapshot,
   useTrackingCompletionPoll,
   useTrackingList,
+  reviewProgressLooksActive,
 } from '@/lib/hooks';
-import type { TrackingSummary } from '@/lib/types';
+import type { TrackingSummary, TrackingReviewProgress } from '@/lib/types';
 import { trackingApi } from '@/lib/api';
 
 interface SnapshotItem {
@@ -78,7 +82,11 @@ export default function TrackingPage() {
     selectedDiagnosisId,
   );
 
-  const items = trackingsData?.items ?? [];
+  const items = (trackingsData?.items ?? []) as TrackingSummary[];
+  const itemsProgressKey = useMemo(
+    () => items.map((t) => `${t.tracking_id}:${t.status}`).join('|'),
+    [items],
+  );
   const takeSnapshot = useTakeSnapshot();
   const completeTracking = useCompleteTracking();
   const cancelTracking = useCancelTracking();
@@ -111,10 +119,51 @@ export default function TrackingPage() {
       completingFlowRef.current = false;
       message.error(errMsg);
       setCompleteProgress({ message: errMsg, type: 'error' });
-      setIsCompleting(false);
       setCompletionPollId(null);
+      void queryClient.invalidateQueries({ queryKey: ['tracking'] });
     },
   });
+
+  /** 刷新/返回列表：若某条追踪的复盘仍在跑，恢复状态文案与轮询 */
+  useEffect(() => {
+    if (!enterpriseId || !selectedDiagnosisId || isLoading || !itemsProgressKey) return;
+    if (isCompleting || completionPollId) return;
+
+    const candidates = items.filter((t) => t.status === 'active' || t.status === 'scheduled');
+    if (!candidates.length) return;
+
+    let cancelled = false;
+    (async () => {
+      for (const t of candidates) {
+        try {
+          const data = (await trackingApi.getReviewProgress(t.tracking_id)) as TrackingReviewProgress;
+          if (cancelled) return;
+          if (!reviewProgressLooksActive(data)) continue;
+          completingTrackingIdRef.current = t.tracking_id;
+          completingFlowRef.current = true;
+          flushSync(() => {
+            setIsCompleting(true);
+            setCompletionPollId(t.tracking_id);
+            const msg = (data.message && String(data.message).trim()) || '处理中…';
+            setCompleteProgress({ message: msg, type: 'progress' });
+          });
+          return;
+        } catch {
+          // 忽略
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    enterpriseId,
+    selectedDiagnosisId,
+    isLoading,
+    itemsProgressKey,
+    isCompleting,
+    completionPollId,
+  ]);
 
   const activeRow = useMemo(
     () => items.find((t: TrackingSummary) => t.status === 'active') ?? null,
@@ -232,9 +281,11 @@ export default function TrackingPage() {
         onOk: async () => {
           completingTrackingIdRef.current = activeRow.tracking_id;
           completingFlowRef.current = true;
-          setIsCompleting(true);
-          setCompletionPollId(activeRow.tracking_id);
-          setCompleteProgress({ message: '正在提交完成追踪…', type: 'progress' });
+          flushSync(() => {
+            setIsCompleting(true);
+            setCompletionPollId(activeRow.tracking_id);
+            setCompleteProgress({ message: '正在提交完成追踪…', type: 'progress' });
+          });
           try {
             await completeTracking.mutateAsync(activeRow.tracking_id);
           } catch {
@@ -242,6 +293,7 @@ export default function TrackingPage() {
             setIsCompleting(false);
             setCompletionPollId(null);
             setCompleteProgress({ message: '', type: '' });
+            void queryClient.invalidateQueries({ queryKey: ['tracking'] });
           }
         },
       });
@@ -329,116 +381,139 @@ export default function TrackingPage() {
     const tid = completingTrackingIdRef.current;
     if (!tid) return;
     completingFlowRef.current = true;
-    setCompletionPollId(tid);
-    setCompleteProgress({ message: '正在重新完成追踪…', type: 'progress' });
+    flushSync(() => {
+      setIsCompleting(true);
+      setCompletionPollId(tid);
+      setCompleteProgress({ message: '正在重新完成追踪…', type: 'progress' });
+    });
     void completeTracking.mutateAsync(tid).catch(() => {
       completingFlowRef.current = false;
       setIsCompleting(false);
       setCompletionPollId(null);
       setCompleteProgress({ message: '', type: '' });
+      void queryClient.invalidateQueries({ queryKey: ['tracking'] });
     });
   };
 
+  const completeRunning = isCompleting && completeProgress.type === 'progress';
+
+  const listPersistentLine = formatListPersistentStatus({
+    selectedDiagnosisId,
+    isLoading,
+    trackingStatusText,
+    totalTracking: stats.totalTracking,
+    snapshotTotal: stats.snapshotTotal,
+  });
+
   return (
     <div className="space-y-6">
-      <Modal
-        title="正在完成追踪"
-        open={isCompleting}
-        closable={completeProgress.type === 'completed' || completeProgress.type === 'error'}
-        maskClosable={false}
-        footer={
-          completeProgress.type === 'completed' ? (
-            <Button
-              type="primary"
-              onClick={() => {
-                setIsCompleting(false);
-                void queryClient.invalidateQueries({ queryKey: ['tracking'] });
-                const tid = completingTrackingIdRef.current;
-                if (tid) navigate(`/tracking/${encodeURIComponent(tid)}/report`);
-                else navigate('/tracking');
-              }}
-            >
-              查看复盘报告
-            </Button>
-          ) : completeProgress.type === 'error' ? (
-            <>
-              <Button onClick={handleCancelCompleting}>关闭</Button>
-              <Button type="primary" loading={completeTracking.isPending} onClick={handleRetryComplete}>
-                重试
-              </Button>
-            </>
-          ) : (
-            <Button onClick={handleCancelCompleting} disabled={completeTracking.isPending}>
-              关闭
-            </Button>
-          )
-        }
-      >
-        <div className="flex flex-col items-center justify-center gap-4 py-4">
-          {completeProgress.type !== 'completed' && completeProgress.type !== 'error' && (
-            <Spin size="large" />
-          )}
-          {completeProgress.type === 'completed' && (
-            <CheckCircleOutlined className="!text-5xl text-emerald-500" aria-hidden />
-          )}
-          <p
-            className={`text-center text-sm max-w-md ${
-              completeProgress.type === 'error' ? 'text-red-600' : 'text-[#606266]'
-            }`}
-          >
-            {completeProgress.message || '请稍候…'}
-          </p>
-        </div>
-      </Modal>
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-lg shadow-lg shadow-purple-500/20 text-white">
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between lg:gap-4">
+          <h1 className="m-0 text-3xl font-bold leading-tight tracking-tight text-[#303133] flex min-w-0 flex-1 items-center gap-3">
+            <span className="w-11 h-11 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-lg shadow-lg shadow-purple-500/20 text-white shrink-0">
               <LineChartOutlined />
             </span>
             效果追踪
           </h1>
-          <p className="text-[#303133] mt-2 text-sm">本次诊断全部追踪概况与采集明细</p>
-        </div>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:flex-wrap sm:justify-end">
-          {diagnosisItems.length > 0 && (
-            <DiagnosisHistorySelect
-              className="w-full sm:w-[min(100%,320px)]"
-              diagnosisItems={diagnosisItems}
-              value={selectedDiagnosisId}
-              onChange={setSelectedDiagnosisId}
-              loading={listLoading}
-            />
-          )}
-          <div className="flex flex-wrap gap-2 shrink-0 items-center">
-            <Tooltip title={selectedDiagnosisId ? '采集一次快照' : '请先选择历史诊断'}>
-              <span>
-                <Button
-                  icon={<CameraOutlined />}
-                  disabled={!selectedDiagnosisId}
-                  loading={takeSnapshot.isPending}
-                  onClick={handleSnapshot}
-                >
-                  快照
-                </Button>
-              </span>
-            </Tooltip>
-            <Button
-              type="primary"
-              icon={<ThunderboltOutlined />}
-              disabled={!selectedDiagnosisId}
-              loading={startReviewNow.isPending || completeTracking.isPending}
-              onClick={handleReviewNow}
-            >
-              立即复盘
-            </Button>
-            {(activeRow || scheduledRow) && (
-              <Button danger icon={<StopOutlined />} loading={cancelTracking.isPending} onClick={handleStop}>
-                停止追踪
-              </Button>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-wrap sm:justify-end lg:ml-auto shrink-0">
+            {diagnosisItems.length > 0 && (
+              <DiagnosisHistorySelect
+                className="max-w-full shrink-0 self-center"
+                diagnosisItems={diagnosisItems}
+                value={selectedDiagnosisId}
+                onChange={setSelectedDiagnosisId}
+                loading={listLoading}
+                disabled={completeRunning}
+              />
             )}
+            <div className="flex flex-wrap gap-2 shrink-0 items-center">
+              <Tooltip title={selectedDiagnosisId ? '采集一次快照' : '请先选择历史诊断'}>
+                <span>
+                  <Button
+                    icon={<CameraOutlined />}
+                    disabled={!selectedDiagnosisId || completeRunning}
+                    loading={takeSnapshot.isPending}
+                    onClick={handleSnapshot}
+                  >
+                    快照
+                  </Button>
+                </span>
+              </Tooltip>
+              <Button
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                disabled={!selectedDiagnosisId || completeRunning}
+                loading={startReviewNow.isPending || completeTracking.isPending}
+                onClick={handleReviewNow}
+              >
+                立即复盘
+              </Button>
+              {(activeRow || scheduledRow) && (
+                <Button
+                  danger
+                  icon={<StopOutlined />}
+                  disabled={completeRunning}
+                  loading={cancelTracking.isPending}
+                  onClick={handleStop}
+                >
+                  停止追踪
+                </Button>
+              )}
+            </div>
           </div>
         </div>
+        <TrackingHeaderStatus
+          persistent={listPersistentLine}
+          transient={
+            isCompleting ? (
+              <div>
+                <p
+                  className={`text-sm ${
+                    completeProgress.type === 'error' ? 'text-red-600' : 'text-[#606266]'
+                  }`}
+                >
+                  {completeProgress.type === 'completed'
+                    ? completeProgress.message || '复盘已完成'
+                    : completeProgress.message ||
+                      (completeProgress.type === 'progress' ? '正在处理中，请稍候…' : '')}
+                </p>
+                {completeProgress.type === 'completed' && (
+                  <Button
+                    type="link"
+                    size="small"
+                    className="mt-1 h-auto p-0"
+                    onClick={() => {
+                      setIsCompleting(false);
+                      void queryClient.invalidateQueries({ queryKey: ['tracking'] });
+                      const tid = completingTrackingIdRef.current;
+                      if (tid) navigate(`/tracking/${encodeURIComponent(tid)}/report`);
+                      else navigate('/tracking');
+                      setCompleteProgress({ message: '', type: '' });
+                    }}
+                  >
+                    查看复盘报告
+                  </Button>
+                )}
+                {completeProgress.type === 'error' && (
+                  <div className="mt-1 flex flex-wrap gap-x-3">
+                    <Button type="link" size="small" className="h-auto p-0" onClick={handleCancelCompleting}>
+                      关闭提示
+                    </Button>
+                    <Button
+                      type="link"
+                      size="small"
+                      className="h-auto p-0"
+                      loading={completeTracking.isPending}
+                      onClick={handleRetryComplete}
+                    >
+                      重试
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ) : undefined
+          }
+        />
       </div>
 
       {isLoading ? (

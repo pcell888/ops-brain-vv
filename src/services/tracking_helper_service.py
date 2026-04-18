@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime
 
+from src.core.datetime_cn import serialize_instant_cn
 from src.core.compat_tracking_repo import (
     get_diagnosis_health_score,
     get_earliest_exec_task_created_at,
@@ -19,8 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 def _ser(v):
-    if hasattr(v, "isoformat"):
-        return v.isoformat()
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return serialize_instant_cn(v)
+    if isinstance(v, date):
+        return serialize_instant_cn(v)
+    if isinstance(v, str):
+        return serialize_instant_cn(v)
+    if hasattr(v, "isoformat") and callable(v.isoformat):
+        return serialize_instant_cn(v) or v.isoformat()
     return v
 
 

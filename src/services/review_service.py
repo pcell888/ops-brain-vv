@@ -13,6 +13,7 @@ from src.runtime.graph_app import astream_events_with_retry, get_graph_app
 from src.runtime.progress_store import progress_cache, write_progress_cache
 from src.runtime.running_tasks import running_tasks
 from src.core.async_job_meta_repo import create_job
+from src.core.datetime_cn import serialize_instant_cn
 from src.core.diagnosis_errors import public_diagnosis_error_message
 from src.core.effect_review_repo import review_report_exists
 from src.core.pending_review_repo import cancel_pending_review, get_pending_review_by_thread
@@ -207,7 +208,8 @@ async def build_review_progress(thread_id: str) -> dict:
         pr = await get_pending_review_by_thread(thread_id)
         if pr:
             due = pr.get("review_due_date")
-            due_s = due.isoformat() if hasattr(due, "isoformat") else str(due) if due else ""
+            due_cn = serialize_instant_cn(due) if due else None
+            due_s = due_cn if due_cn else (str(due) if due else "")
             return _progress_payload(
                 thread_id,
                 status="scheduled",

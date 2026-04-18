@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Card, Table, Tag, Button, Empty, Spin, Input, Row, Col } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
+  BookOutlined,
   SearchOutlined,
   LoadingOutlined,
   EyeOutlined,
@@ -246,11 +247,12 @@ export default function CasesPage() {
 
   return (
     <div className='space-y-6'>
-      <div>
-        <p className='text-[#303133] mt-2 text-sm'>
-          浏览效果追踪沉淀下来的真实案例与指标结果
-        </p>
-      </div>
+      <h1 className='m-0 mb-1 flex items-center gap-3 text-3xl font-bold leading-tight tracking-tight text-[#303133]'>
+        <span className='flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-lg text-white shadow-lg shadow-indigo-500/20'>
+          <BookOutlined />
+        </span>
+        案例库
+      </h1>
 
       <Card size='small'>
         <Row gutter={16} align='middle' wrap={false}>

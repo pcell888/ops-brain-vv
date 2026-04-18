@@ -49,8 +49,8 @@ export default function ExecutionTaskDetailPage() {
       <div className="flex flex-wrap items-center gap-2 justify-between">
         <div className="flex items-center gap-3">
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
-          <h1 className="text-xl font-bold text-[#303133] flex items-center gap-2">
-            <span className="w-9 h-9 text-[#fff] rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
+          <h1 className="text-3xl font-bold tracking-tight text-[#303133] flex items-center gap-3">
+            <span className="w-11 h-11 text-[#fff] rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg shrink-0">
               <RocketOutlined />
             </span>
             任务详情

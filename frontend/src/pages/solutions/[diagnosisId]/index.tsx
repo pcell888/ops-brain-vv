@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Card, Row, Col, Tag, Button, Empty, Spin,
@@ -10,9 +10,12 @@ import {
   WarningOutlined, StarOutlined, SwapOutlined, AimOutlined, RocketOutlined,
 } from '@ant-design/icons';
 import {
-  useSolutionList, useAdoptSolution, useDiagnosisReport,
+  useSolutionList, useAdoptSolution, useDiagnosisReport, adoptProgressLooksActive,
 } from '@/lib/hooks';
+import { solutionApi, type AdoptProgressResponse } from '@/lib/api';
 import { useAppStore } from '@/stores/app-store';
+import { TrackingHeaderStatus } from '@/components/tracking-header-status';
+import { formatSolutionDetailPersistent } from '@/lib/solutions-header-status';
 import clsx from 'clsx';
 import type { SolutionSummary, SolutionGenerateResponse, DiagnosisReport, AIRecommendation } from '@/lib/types';
 // 严重程度配置
@@ -42,10 +45,14 @@ export default function SolutionDetailPage() {
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionProgress, setExecutionProgress] = useState<{ message: string; type: string }>({ message: '', type: '' });
   const [isAdopting, setIsAdopting] = useState(false);
-  const isExecutingRef = useRef(false);
-  const wsRef = useRef<WebSocket | null>(null);
+  /** 有值时轮询 GET /solutions/{id}/adopt/progress（与 executedPlanIdRef 同步于采纳开始） */
+  const [adoptPollPlanId, setAdoptPollPlanId] = useState<string | null>(null);
   const executedPlanIdRef = useRef<string | null>(null);
   const solutions = typedSolutionData?.solutions || [];
+  const solutionsProbeKey = useMemo(
+    () => solutions.map((s) => `${s.solution_id}:${s.status ?? ''}`).join('|'),
+    [solutions],
+  );
   const anySolutionAdopted = solutions.some((s) => s.status === 'adopted');
   const aiRecommendation: AIRecommendation | null = typedSolutionData?.ai_recommendation ?? null;
   const recommendedSolution = aiRecommendation
@@ -78,6 +85,7 @@ export default function SolutionDetailPage() {
           return;
         }
         executedPlanIdRef.current = solutionId;
+        setAdoptPollPlanId(solutionId);
         setIsExecuting(true);
         setExecutionProgress({ message: '正在采纳方案...', type: 'progress' });
       }
@@ -89,7 +97,8 @@ export default function SolutionDetailPage() {
         await refetch();
       } catch {
         message.error('采纳失败');
-        setIsExecuting(false);
+        setExecutionProgress({ message: '采纳失败', type: 'error' });
+        setAdoptPollPlanId(null);
       } finally {
         setIsAdopting(false);
       }
@@ -97,7 +106,7 @@ export default function SolutionDetailPage() {
     [anySolutionAdopted, solutions, message, adoptSolution, refetch],
   );
 
-  /** 从方案列表「采纳」跳转 ?auto_adopt=1 时，自动走同一套执行蒙层 + WS */
+  /** 从方案列表「采纳」跳转 ?auto_adopt=1 时，自动走同一套执行蒙层 + 进度轮询 */
   useEffect(() => {
     if (searchParams.get('auto_adopt') !== '1') return;
     if (solutionsLoading || typedSolutionData?.generating) return;
@@ -144,70 +153,133 @@ export default function SolutionDetailPage() {
     message,
   ]);
 
+  /** 刷新/返回页面：若后端采纳执行任务仍在跑，恢复状态文案与轮询 */
   useEffect(() => {
-    isExecutingRef.current = isExecuting;
-  }, [isExecuting]);
+    if (solutionsLoading || typedSolutionData?.generating || !diagnosisId || !solutionsProbeKey) return;
+    if (isExecuting || adoptPollPlanId || isAdopting) return;
 
-  useEffect(() => {
-    if (!diagnosisId) return;
-
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/api/v1/ws/diagnosis/${diagnosisId}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      console.log('[Execution] WebSocket connected');
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          stage?: string;
-          type?: string;
-          message?: string;
-          node?: string;
-        };
-        // 后端约定：采纳/执行任务进度均为 stage=execution；效果追踪为 effect_track，蒙层忽略
-        if (data.stage !== 'execution') return;
-        // 忽略历史 execution 缓存，避免进入详情页即被 completed 跳转
-        if (!isExecutingRef.current) return;
-
-        const line =
-          data.message ||
-          (data.type === 'node_complete' && data.node ? `节点已完成：${data.node}` : '') ||
-          (data.type === 'error' ? '执行失败' : '');
-
-        setExecutionProgress({
-          message: line,
-          type: data.type || 'progress',
-        });
-
-        if (data.type === 'completed') {
-          setTimeout(() => {
-            setIsExecuting(false);
-            navigate('/execution');
-          }, 1500);
-        } else if (data.type === 'error') {
-          message.error(data.message || '执行失败');
+    let cancelled = false;
+    (async () => {
+      const ordered = [...solutions]
+        .filter((s) => s.status !== 'rejected')
+        .sort((a, b) => (b.status === 'adopted' ? 1 : 0) - (a.status === 'adopted' ? 1 : 0));
+      for (const s of ordered) {
+        try {
+          const data = await solutionApi.getAdoptProgress(s.solution_id);
+          if (cancelled) return;
+          if (!adoptProgressLooksActive(data)) continue;
+          executedPlanIdRef.current = s.solution_id;
+          setAdoptPollPlanId(s.solution_id);
+          setIsExecuting(true);
+          const line = (data.message || '').trim() || '正在执行采纳方案…';
+          setExecutionProgress({ message: line, type: 'progress' });
+          return;
+        } catch {
+          // 无对应线程或已结束
         }
-      } catch (e) {
-        console.error('[Execution] Failed to parse message:', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    solutionsLoading,
+    typedSolutionData?.generating,
+    diagnosisId,
+    solutionsProbeKey,
+    isExecuting,
+    adoptPollPlanId,
+    isAdopting,
+  ]);
+
+  /** 采纳后执行阶段：轮询兼容层 adopt/progress（与 progress_cache 同源） */
+  useEffect(() => {
+    if (!isExecuting || !adoptPollPlanId) return;
+
+    const POLL_MS = 1200;
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+    let cancelled = false;
+    let completionTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const stopInterval = () => {
+      if (intervalId !== undefined) {
+        clearInterval(intervalId);
+        intervalId = undefined;
       }
     };
 
-    ws.onclose = () => {
-      console.log('[Execution] WebSocket disconnected');
+    const applyPayload = (data: AdoptProgressResponse) => {
+      if (cancelled) return;
+      const status = (data.status || '').toLowerCase();
+      const isRunning = Boolean(data.is_running);
+      const line = (data.message || '').trim() || '请稍候…';
+
+      if (status === 'failed' || data.event_type === 'error') {
+        stopInterval();
+        setAdoptPollPlanId(null);
+        setExecutionProgress({ message: line, type: 'error' });
+        message.error(line);
+        return;
+      }
+
+      if (status === 'completed' && !isRunning) {
+        stopInterval();
+        setExecutionProgress({ message: line, type: 'completed' });
+        completionTimer = setTimeout(() => {
+          if (cancelled) return;
+          setIsExecuting(false);
+          setAdoptPollPlanId(null);
+          setExecutionProgress({ message: '', type: '' });
+          navigate('/execution');
+        }, 1500);
+        return;
+      }
+
+      setExecutionProgress({
+        message: line,
+        type: 'progress',
+      });
     };
+
+    const tick = async () => {
+      try {
+        const data = await solutionApi.getAdoptProgress(adoptPollPlanId);
+        if (cancelled) return;
+        applyPayload(data);
+      } catch (e) {
+        if (cancelled) return;
+        stopInterval();
+        setAdoptPollPlanId(null);
+        const errText = e instanceof Error ? e.message : '进度查询失败';
+        setExecutionProgress({ message: errText, type: 'error' });
+        message.error('采纳执行进度查询失败');
+      }
+    };
+
+    void tick();
+    intervalId = setInterval(() => {
+      void tick();
+    }, POLL_MS);
 
     return () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      }
+      cancelled = true;
+      stopInterval();
+      if (completionTimer !== undefined) clearTimeout(completionTimer);
     };
-  }, [diagnosisId, navigate, message]);
+  }, [isExecuting, adoptPollPlanId, navigate, message]);
 
   const selectedSolution = solutions.find(s => s.solution_id === selectedSolutionId);
+
+  const detailPersistentLine = useMemo(
+    () =>
+      formatSolutionDetailPersistent({
+        selectedSolutionId,
+        selectedStatus: selectedSolution?.status,
+        solutionCount: solutions.length,
+        anySolutionAdopted,
+      }),
+    [selectedSolutionId, selectedSolution?.status, solutions.length, anySolutionAdopted],
+  );
 
   const handleAdoptDetailWithConfirm = () => {
     if (!selectedSolution || selectedSolution.status === 'adopted') return;
@@ -260,75 +332,76 @@ export default function SolutionDetailPage() {
 
   const handleCancelExecution = () => {
     setIsExecuting(false);
+    setAdoptPollPlanId(null);
     setExecutionProgress({ message: '', type: '' });
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
   };
 
   const handleViewTasks = () => {
+    setIsExecuting(false);
+    setAdoptPollPlanId(null);
+    setExecutionProgress({ message: '', type: '' });
     navigate('/execution');
   };
 
+  const adoptRunning = isExecuting && executionProgress.type === 'progress';
+
   return (
     <div className="space-y-6">
-      <Modal
-        title="正在执行方案"
-        open={isExecuting}
-        closable={executionProgress.type !== 'completed'}
-        maskClosable={false}
-        footer={
-          executionProgress.type === 'completed' ? (
-            <Button type="primary" onClick={handleViewTasks}>
-              查看执行任务
-            </Button>
-          ) : executionProgress.type === 'error' ? (
-            <>
-              <Button onClick={handleCancelExecution}>关闭</Button>
-              <Button 
-                type="primary" 
-                onClick={() => executedPlanIdRef.current && handleAdopt(executedPlanIdRef.current, true)}
-                loading={isAdopting}
-              >
-                重试
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button onClick={handleCancelExecution} disabled={isAdopting}>取消</Button>
-              <Button onClick={handleViewTasks}>查看详情</Button>
-            </>
-          )
-        }
-      >
-        <div className="flex flex-col items-center justify-center gap-4 py-4">
-          {executionProgress.type !== 'completed' && executionProgress.type !== 'error' && (
-            <Spin size="large" />
-          )}
-          {executionProgress.type === 'completed' && (
-            <CheckCircleOutlined className="!text-5xl text-emerald-500" aria-hidden />
-          )}
-          <p
-            className={`text-center text-sm max-w-md ${
-              executionProgress.type === 'error' ? 'text-red-600' : 'text-gray-600'
-            }`}
-          >
-            {executionProgress.message || '请稍候…'}
-          </p>
-        </div>
-      </Modal>
-      <div className="flex items-center gap-4">
+      <div className="flex items-start gap-4">
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
-        <div>
-          <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
-            <span className="text-[#fff] w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20">
+        <div className="min-w-0 flex-1">
+          <h1 className="m-0 flex items-center gap-3 text-3xl font-bold leading-tight tracking-tight text-[#303133]">
+            <span className="text-[#fff] w-11 h-11 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20 shrink-0">
               <BulbOutlined />
             </span>
             方案详情
           </h1>
-          <p className="text-[#303133] mt-1 text-sm break-all">
-            诊断ID: {diagnosisId}
+          <p className="text-muted mt-1 text-xs font-mono break-all">
+            {diagnosisId}
           </p>
+          {((detailPersistentLine != null && detailPersistentLine !== '') || isExecuting) && (
+            <TrackingHeaderStatus
+              className="!mt-0 border-t border-[#E4E7ED] pt-3"
+              persistent={detailPersistentLine}
+              transient={
+                isExecuting ? (
+                  <div>
+                    <p
+                      className={`text-sm ${
+                        executionProgress.type === 'error' ? 'text-red-600' : 'text-[#606266]'
+                      }`}
+                    >
+                      {executionProgress.type === 'completed'
+                        ? executionProgress.message || '执行已完成'
+                        : executionProgress.message ||
+                          (executionProgress.type === 'progress' ? '正在处理中，请稍候…' : '')}
+                    </p>
+                    {executionProgress.type === 'completed' && (
+                      <Button type="link" size="small" className="mt-1 h-auto p-0" onClick={handleViewTasks}>
+                        查看执行任务
+                      </Button>
+                    )}
+                    {executionProgress.type === 'error' && (
+                      <div className="mt-1 flex flex-wrap gap-x-3">
+                        <Button type="link" size="small" className="h-auto p-0" onClick={handleCancelExecution}>
+                          关闭提示
+                        </Button>
+                        <Button
+                          type="link"
+                          size="small"
+                          className="h-auto p-0"
+                          loading={isAdopting}
+                          onClick={() => executedPlanIdRef.current && handleAdopt(executedPlanIdRef.current, true)}
+                        >
+                          重试
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ) : undefined
+              }
+            />
+          )}
         </div>
       </div>
 
@@ -361,7 +434,8 @@ export default function SolutionDetailPage() {
                   onClick={() => handleAdopt(aiRecommendation.recommended_solution_id)}
                   loading={adoptSolution.isPending}
                   disabled={
-                    !recommendedSolution
+                    adoptRunning
+                    || !recommendedSolution
                     || recommendedSolution.status === 'adopted'
                     || (anySolutionAdopted && recommendedSolution.status !== 'adopted')
                   }
@@ -473,7 +547,7 @@ export default function SolutionDetailPage() {
                           size="small"
                           icon={<CheckCircleOutlined />}
                           onClick={(e) => { e.stopPropagation(); handleAdopt(solution.solution_id); }}
-                          disabled={solution.status === 'adopted' || anySolutionAdopted}
+                          disabled={adoptRunning || solution.status === 'adopted' || anySolutionAdopted}
                           loading={adoptSolution.isPending}
                           title={anySolutionAdopted && solution.status !== 'adopted' ? '已有方案被采纳' : undefined}
                         >
@@ -516,7 +590,7 @@ export default function SolutionDetailPage() {
                       icon={<CheckCircleOutlined />}
                       onClick={handleAdoptDetailWithConfirm}
                       loading={adoptSolution.isPending}
-                      disabled={selectedSolution.status === 'adopted' || anySolutionAdopted}
+                      disabled={adoptRunning || selectedSolution.status === 'adopted' || anySolutionAdopted}
                       title={anySolutionAdopted && selectedSolution.status !== 'adopted' ? '已有方案被采纳' : undefined}
                     >
                       {selectedSolution.status === 'adopted' ? '已采纳' : '采纳方案'}

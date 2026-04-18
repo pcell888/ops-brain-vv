@@ -34,13 +34,20 @@ export default function ExecutionPage() {
       key: 'name',
       ellipsis: true,
       render: (name: string, record) => (
-        <Button
-          type="link"
-          className="!text-primary !font-medium !p-0 h-auto text-left whitespace-normal"
+        <span
+          role="button"
+          tabIndex={0}
+          className="font-medium text-primary cursor-pointer hover:underline text-left"
           onClick={() => navigate(`/execution/task/${encodeURIComponent(record.id)}`)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate(`/execution/task/${encodeURIComponent(record.id)}`);
+            }
+          }}
         >
           {name || '—'}
-        </Button>
+        </span>
       ),
     },
     {
@@ -97,21 +104,18 @@ export default function ExecutionPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          {/* <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg text-white">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+        <div className="shrink-0">
+          <h1 className="text-3xl font-bold tracking-tight text-[#303133] flex items-center gap-3">
+            <span className="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg text-white shrink-0">
               <RocketOutlined />
             </span>
             任务派发
-          </h1> */}
-          <p className="text-[#303133] mt-2 text-sm">
-            列表展示已推送任务摘要；完整业务内容请点任务名称或「详情」。
-          </p>
+          </h1>
         </div>
         {diagnosisItems.length > 0 && (
           <DiagnosisHistorySelect
-            className="shrink-0 w-full sm:w-[min(100%,320px)]"
+            className="max-w-full shrink-0 sm:ml-auto"
             diagnosisItems={diagnosisItems}
             value={selectedDiagnosisId}
             onChange={setSelectedDiagnosisId}
@@ -120,7 +124,7 @@ export default function ExecutionPage() {
         )}
       </div>
 
-      <Card title="任务列表">
+      <Card>
         {pageLoading ? (
           <div className="flex items-center justify-center py-20">
             <Spin indicator={<LoadingOutlined style={{ fontSize: 48 }} spin />} />
@@ -129,6 +133,7 @@ export default function ExecutionPage() {
           <Empty description="请先完成诊断" />
         ) : (
           <Table
+            bordered={false}
             columns={columns}
             dataSource={tasks}
             rowKey="id"

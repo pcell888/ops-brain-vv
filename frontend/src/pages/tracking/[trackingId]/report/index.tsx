@@ -250,13 +250,13 @@ export default function TrackingReportPage() {
             返回追踪
           </Button>
           <div>
-            <h1 className="text-3xl font-bold text-[#303133] flex items-center gap-3 mb-2">
-              <span className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-600 flex items-center justify-center text-xl shadow-lg shadow-indigo-500/30 animate-pulse">
+            <h1 className="text-3xl font-bold tracking-tight text-[#303133] flex items-center gap-3 mb-2">
+              <span className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-600 flex items-center justify-center text-xl shadow-lg shadow-indigo-500/30 animate-pulse shrink-0">
                 <FileTextOutlined />
               </span>
               复盘报告
             </h1>
-            <p className="text-[#303133] text-base font-medium">{reportData.solution_name}</p>
+            <p className="text-sm text-muted font-medium truncate max-w-[min(100%,42rem)]">{reportData.solution_name}</p>
           </div>
         </div>
       </div>

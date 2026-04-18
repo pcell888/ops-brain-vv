@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from psycopg.rows import dict_row
 
 from src.core.config import get_settings
+from src.core.datetime_cn import serialize_instant_cn
 from src.core.db_pool import get_conn
 from src.mcp_servers.biz_api_client import BizAPIClient, BizAPIError
 from src.mcp_servers.tenant_router import TenantNotFoundError, TenantRouter
@@ -79,8 +80,8 @@ def _row_to_enterprise(row: dict) -> dict:
             "solution_sort_strategy": normalized_config.get("solution_sort_strategy", "balanced"),
         },
         "stores": normalized_config.get("stores", []),
-        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
-        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        "created_at": serialize_instant_cn(row["created_at"]) if row.get("created_at") else None,
+        "updated_at": serialize_instant_cn(row["updated_at"]) if row.get("updated_at") else None,
     }
 
 

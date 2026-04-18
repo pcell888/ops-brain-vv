@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
@@ -15,6 +15,7 @@ from src.api.routes import drill_down as drill_routes
 from src.services import diagnosis_service
 from src.core.calculator import INDICATOR_META, DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS
 from src.core.config import CN_TZ
+from src.core.datetime_cn import serialize_instant_cn
 from src.runtime.progress_store import progress_cache
 
 logger = logging.getLogger(__name__)
@@ -185,8 +186,11 @@ async def compat_drill_down(
     for row in rows:
         item = {}
         for k, v in row.items():
-            if hasattr(v, "isoformat"):
-                item[k] = v.isoformat()
+            if isinstance(v, (datetime, date)):
+                item[k] = serialize_instant_cn(v)
+            elif hasattr(v, "isoformat") and callable(v.isoformat):
+                s = serialize_instant_cn(v)
+                item[k] = s if s is not None else v.isoformat()
             elif isinstance(v, (int, float, str, bool, type(None))):
                 item[k] = v
             else:

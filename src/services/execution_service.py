@@ -10,6 +10,7 @@ from datetime import timedelta
 
 from psycopg.rows import dict_row
 
+from src.core.datetime_cn import serialize_instant_cn, to_utc_aware
 from src.core.db_pool import get_conn
 
 logger = logging.getLogger(__name__)
@@ -47,12 +48,12 @@ def _task_progress_percent(status: str | None, related) -> int:
 
 
 def _dispatch_status_from_related(related) -> str:
-    """派发状态：落库成功即视为已派发；可扩展 dispatch_failed 等。"""
+    """派发状态以 related_resources.dispatch_status 为准，缺省为待派发。"""
     if isinstance(related, dict):
         ds = related.get("dispatch_status")
         if isinstance(ds, str) and ds.strip():
             return ds.strip().lower()[:32]
-    return "dispatched"
+    return "pending"
 
 
 def _recipient_from_row(row: dict) -> str:
@@ -109,13 +110,13 @@ def task_row_to_dict(row: dict, *, include_plan_meta: bool = False) -> dict:
         "status": task_status,
         "execution_type": _execution_type_from_related(related),
         "dependencies": [],
-        "scheduled_start": row["created_at"].isoformat() if row.get("created_at") else None,
-        "scheduled_end": row["deadline"],
+        "scheduled_start": serialize_instant_cn(row["created_at"]) if row.get("created_at") else None,
+        "scheduled_end": serialize_instant_cn(row["deadline"]) if row.get("deadline") not in (None, "") else None,
         "progress": _task_progress_percent(task_status, related),
         "assigned_to": recipient,
         "recipient": recipient,
         "dispatch_status": _dispatch_status_from_related(related),
-        "dispatch_time": row["created_at"].isoformat() if row.get("created_at") else None,
+        "dispatch_time": serialize_instant_cn(row["created_at"]) if row.get("created_at") else None,
     }
     
     if include_plan_meta:
@@ -204,6 +205,9 @@ async def get_execution_plans(
                 continue
 
             created = row["created_at"]
+            planned_end = None
+            if created:
+                planned_end = serialize_instant_cn(to_utc_aware(created) + timedelta(days=30))
             items.append({
                 "plan_id": row["plan_id"],
                 "solution_id": row["plan_id"],
@@ -220,8 +224,8 @@ async def get_execution_plans(
                     "failed": failed_t,
                     "cancelled": 0,
                 },
-                "planned_start": created.isoformat() if created else None,
-                "planned_end": (created + timedelta(days=30)).isoformat() if created else None,
+                "planned_start": serialize_instant_cn(created) if created else None,
+                "planned_end": planned_end,
             })
 
         return items, total
@@ -417,6 +421,9 @@ async def get_plan_summary(plan_id: str) -> dict | None:
     plan_status = _calculate_plan_status(completed_t, running_t, failed_t, pending_t, total_t)
     progress = _calculate_plan_progress(completed_t, total_t)
     created = row["created_at"]
+    planned_end = None
+    if created:
+        planned_end = serialize_instant_cn(to_utc_aware(created) + timedelta(days=30))
 
     return {
         "plan_id": plan_id,
@@ -433,8 +440,8 @@ async def get_plan_summary(plan_id: str) -> dict | None:
             "failed": failed_t,
             "cancelled": 0,
         },
-        "planned_start": created.isoformat() if created else None,
-        "planned_end": (created + timedelta(days=30)).isoformat() if created else None,
+        "planned_start": serialize_instant_cn(created) if created else None,
+        "planned_end": planned_end,
     }
 
 

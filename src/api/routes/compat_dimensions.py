@@ -93,10 +93,6 @@ _SYSTEM_DIMENSIONS = _build_system_dimensions()
 async def get_all_dimensions(
     enterprise_id: str | None = Query(default=None),
 ):
-    """兼容前端 GET /custom-dimensions/all-dimensions?enterprise_id=。
-
-    返回系统内置维度 + 自定义维度（当前仅系统维度）。
-    """
     return {
         "system_dimensions": _SYSTEM_DIMENSIONS,
         "custom_dimensions": [],

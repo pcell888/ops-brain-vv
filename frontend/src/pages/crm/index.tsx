@@ -203,15 +203,12 @@ export default function CRMRealtimeDashboard() {
       {/* 页面标题 */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-600 flex items-center justify-center text-lg shadow-lg shadow-blue-500/20">
+          <h1 className="text-3xl font-bold tracking-tight text-white flex items-center gap-3">
+            <span className="w-11 h-11 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-600 flex items-center justify-center text-lg shadow-lg shadow-blue-500/20 shrink-0">
               📊
             </span>
-            CRM 线索实时看板
+            线索看板
           </h1>
-          <p className="text-gray-400 text-sm mt-2">
-            实时监控线索流转、预警事件和转化情况
-          </p>
         </div>
         <div className="flex items-center gap-3">
           <Badge

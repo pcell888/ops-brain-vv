@@ -7,6 +7,7 @@ import logging
 
 import psycopg.rows
 
+from src.core.datetime_cn import serialize_instant_cn
 from src.core.db_init import ensure_ai_effect_snapshot
 from src.core.db_pool import get_conn
 
@@ -53,8 +54,8 @@ async def list_snapshots(thread_id: str) -> list[dict]:
                 )
                 rows = await cur.fetchall()
                 for r in rows:
-                    if hasattr(r.get("snapshot_at"), "isoformat"):
-                        r["snapshot_at"] = r["snapshot_at"].isoformat()
+                    if r.get("snapshot_at") is not None:
+                        r["snapshot_at"] = serialize_instant_cn(r["snapshot_at"])
                 return rows
     except Exception as e:
         logger.warning("查询快照失败 [%s]: %s", thread_id, e)

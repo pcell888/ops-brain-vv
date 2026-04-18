@@ -155,15 +155,12 @@ export default function SolutionLibraryPage() {
       {/* 页面标题 */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20">
+          <h1 className="text-3xl font-bold tracking-tight text-white flex items-center gap-3">
+            <span className="w-11 h-11 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-lg shadow-lg shadow-indigo-500/20 shrink-0">
               <AppstoreOutlined />
             </span>
             方案库
           </h1>
-          <p className="text-gray-400 mt-2 text-sm">
-            浏览和管理标准化方案模板，支持按分类筛选
-          </p>
         </div>
         <Select
           placeholder="选择分类"

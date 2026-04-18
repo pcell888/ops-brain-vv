@@ -22,6 +22,7 @@ from src.runtime.progress_store import progress_cache
 from src.runtime.running_tasks import running_tasks
 from src.runtime.thread_enterprise import get_running_threads_for_enterprise
 from src.core.config import CN_TZ
+from src.core.datetime_cn import serialize_instant_cn
 from src.core.async_job_meta_repo import (
     JOB_STATUS_CANCELLED,
     JOB_STATUS_FAILED,
@@ -230,10 +231,10 @@ async def get_diagnosis_list_items(
     page = skip // limit + 1 if limit else 1
     items, total = await list_reports(tenant_id, store_id, page, limit)
 
-    # 格式化时间字段
+    # 格式化时间字段（与 API 其它出参一致：北京时间 ISO）
     for row in items:
-        if "created_at" in row and hasattr(row["created_at"], "isoformat"):
-            row["created_at"] = row["created_at"].isoformat()
+        if "created_at" in row and row.get("created_at") is not None:
+            row["created_at"] = serialize_instant_cn(row["created_at"])
 
     db_thread_ids = {row.get("thread_id", "") for row in items}
 

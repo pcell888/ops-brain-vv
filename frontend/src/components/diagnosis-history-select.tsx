@@ -7,10 +7,11 @@ type Props = {
   value: string | null;
   onChange: (id: string) => void;
   loading?: boolean;
+  disabled?: boolean;
   className?: string;
 };
 
-export function DiagnosisHistorySelect({ diagnosisItems, value, onChange, loading, className }: Props) {
+export function DiagnosisHistorySelect({ diagnosisItems, value, onChange, loading, disabled, className }: Props) {
   if (diagnosisItems.length === 0) return null;
 
   const options = diagnosisItems.map((i) => ({
@@ -27,24 +28,30 @@ export function DiagnosisHistorySelect({ diagnosisItems, value, onChange, loadin
     ),
   }));
 
+  const rootClass = ['flex max-w-full flex-nowrap items-center gap-2', className].filter(Boolean).join(' ');
+
   return (
-    <div className={className}>
-      <div className="text-gray-500 text-xs mb-1">历史诊断</div>
-      <Select
-        className="w-full"
-        value={value ?? undefined}
-        options={options}
-        loading={loading}
-        onChange={onChange}
-        placeholder="选择诊断"
-        showSearch
-        filterOption={(input, opt) => {
-          const item = diagnosisItems.find((x) => x.diagnosis_id === opt?.value);
-          if (!item) return false;
-          const t = dayjs(item.created_at).format('YYYY-MM-DD HH:mm');
-          return t.includes(input.trim()) || item.diagnosis_id.includes(input.trim());
-        }}
-      />
+    <div className={rootClass}>
+      <span className="shrink-0 whitespace-nowrap text-sm text-gray-500">历史诊断</span>
+      <div className="min-w-0 max-w-[240px] flex-1 sm:w-[240px] sm:flex-initial">
+        <Select
+          className="w-full"
+          popupMatchSelectWidth={280}
+          value={value ?? undefined}
+          options={options}
+          loading={loading}
+          disabled={disabled}
+          onChange={onChange}
+          placeholder="选择诊断"
+          showSearch
+          filterOption={(input, opt) => {
+            const item = diagnosisItems.find((x) => x.diagnosis_id === opt?.value);
+            if (!item) return false;
+            const t = dayjs(item.created_at).format('YYYY-MM-DD HH:mm');
+            return t.includes(input.trim()) || item.diagnosis_id.includes(input.trim());
+          }}
+        />
+      </div>
     </div>
   );
 }

@@ -9,31 +9,19 @@ from src.agent.state import DiagnosisState
 from src.core.config import CN_TZ, get_settings
 from src.core.dept_resolver import resolve_default_assignee
 from src.core.push_log_repo import save_push_log
-from src.core.exec_task_repo import save_exec_tasks, update_task_status
+from src.core.exec_task_repo import patch_related_resources, save_exec_tasks, update_task_status
 from src.core.pending_review_repo import save_pending_review
 from src.agent.tools import mcp_call, emit_progress
 from src.core.indicator_push_rules import INDICATOR_PUSH_RULES
 from src.agent.nodes.rule_task_builder import (
-    build_tasks_from_rule_specs,
     build_execution_tasks,
+    build_tasks_from_rule_specs,
     resolve_review_due_at,
 )
 
 logger = logging.getLogger(__name__)
 
 RULE_PLAN_ID = "rule_5.2.3"
-
-
-def _merge_task_ids(local_tasks: list[dict], created: list[dict] | None) -> list[dict]:
-    if not created or len(created) != len(local_tasks):
-        return [dict(t) for t in local_tasks]
-    out: list[dict] = []
-    for loc, cr in zip(local_tasks, created):
-        m = dict(loc)
-        if isinstance(cr, dict) and cr.get("task_id"):
-            m["task_id"] = cr["task_id"]
-        out.append(m)
-    return out
 
 
 def _needs_approval(plan: dict) -> bool:
@@ -47,6 +35,47 @@ async def _send_task_notifications(tenant_id: str, store_id: str, tasks: list[di
     if not notifiable:
         return
     await mcp_call("notify-server", "send_task_assignment_notification", {"tenant_id": tenant_id, "store_id": store_id, "tasks": notifiable})
+
+
+async def _push_exec_tasks_one_by_one(
+    tenant_id: str,
+    store_id: str,
+    plan_id: str,
+    tasks: list[dict],
+    saved_task_ids: list[str],
+) -> tuple[list[dict], list[tuple[str, str]]]:
+    """逐条调用企服 batch-create（每次 1 条）。成功写 dispatched，失败写 failed + dispatch_error。"""
+    created_merged: list[dict] = []
+    failures: list[tuple[str, str]] = []
+    for idx, t in enumerate(tasks):
+        tid = saved_task_ids[idx]
+        loc = dict(t)
+        loc["task_id"] = tid
+        name = str(loc.get("task_name") or tid)
+        try:
+            result = await mcp_call(
+                "task-server",
+                "create_execution_tasks",
+                {"tenant_id": tenant_id, "store_id": store_id, "plan_id": plan_id, "tasks": [loc]},
+            )
+            cr_list = result.get("created_tasks", []) if isinstance(result, dict) else []
+            cr0 = cr_list[0] if cr_list and isinstance(cr_list[0], dict) else None
+            merged = dict(loc)
+            if isinstance(cr0, dict) and cr0.get("task_id"):
+                merged["task_id"] = cr0["task_id"]
+            created_merged.append(merged)
+            await patch_related_resources(tid, {"dispatch_status": "dispatched"})
+            await update_task_status([tid], "running")
+        except Exception as e:
+            err_msg = str(e)
+            failures.append((name, err_msg))
+            await patch_related_resources(
+                tid,
+                {"dispatch_status": "failed", "dispatch_error": err_msg[:500]},
+            )
+            await update_task_status([tid], "failed")
+            logger.warning("任务派发失败 task_id=%s name=%s: %s", tid, name, err_msg)
+    return created_merged, failures
 
 
 async def execute_plans_node(state: DiagnosisState) -> dict:
@@ -97,18 +126,42 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
                 rule_tasks.append(t)
 
     if rule_tasks and exec_push_enabled:
-        try:
-            result = await mcp_call("task-server", "create_execution_tasks", {"tenant_id": tenant_id, "store_id": store_id, "plan_id": RULE_PLAN_ID, "tasks": rule_tasks})
-            created = result.get("created_tasks", rule_tasks) if isinstance(result, dict) else rule_tasks
-            all_tasks.extend(created)
-            emit_progress(state, f"已按规范推送 {len(rule_tasks)} 项指标动作任务")
-            await _send_task_notifications(tenant_id, store_id, created)
-            to_save = _merge_task_ids(rule_tasks, result.get("created_tasks") if isinstance(result, dict) else None)
-            await save_exec_tasks(state.get("thread_id", ""), tenant_id, store_id, RULE_PLAN_ID, to_save)
-            await save_push_log(state.get("thread_id", ""), tenant_id, store_id, "task", "exec_task", "5.2.3 指标动作任务", f"已推送 {len(rule_tasks)} 项指标动作任务", {"plan_id": RULE_PLAN_ID, "count": len(rule_tasks), "task_names": [t.get("task_name") for t in rule_tasks]})
-        except Exception as e:
-            emit_progress(state, f"指标动作任务派发失败: {e}", level="warning")
-            logger.warning("指标动作任务派发失败: %s", e)
+        thread_id = state.get("thread_id", "")
+        rule_created: list[dict] = []
+        rule_failed_names: list[str] = []
+        for rt in rule_tasks:
+            saved_ids = await save_exec_tasks(thread_id, tenant_id, store_id, RULE_PLAN_ID, [rt])
+            merged, fails = await _push_exec_tasks_one_by_one(
+                tenant_id, store_id, RULE_PLAN_ID, [rt], saved_ids
+            )
+            rule_created.extend(merged)
+            rule_failed_names.extend([n for n, _ in fails])
+        if rule_created:
+            emit_progress(state, f"已按规范推送 {len(rule_created)} 项指标动作任务")
+            await _send_task_notifications(tenant_id, store_id, rule_created)
+            await save_push_log(
+                thread_id,
+                tenant_id,
+                store_id,
+                "task",
+                "exec_task",
+                "5.2.3 指标动作任务",
+                f"已推送 {len(rule_created)} 项指标动作任务",
+                {
+                    "plan_id": RULE_PLAN_ID,
+                    "count": len(rule_created),
+                    "task_names": [t.get("task_name") for t in rule_created],
+                },
+            )
+        if rule_failed_names:
+            preview = "、".join(rule_failed_names[:5])
+            emit_progress(
+                state,
+                f"指标动作任务 {len(rule_failed_names)} 条派发失败：{preview}",
+                level="warning",
+            )
+            logger.warning("指标动作任务部分派发失败: %s", rule_failed_names)
+        all_tasks.extend(rule_created)
 
     if exec_push_enabled:
         seen_coupon_ind: set[str] = set()
@@ -157,17 +210,41 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
 
         saved_task_ids = await save_exec_tasks(state.get("thread_id", ""), tenant_id, store_id, plan.get("plan_id", ""), tasks)
 
-        try:
-            result = await mcp_call("task-server", "create_execution_tasks", {"tenant_id": tenant_id, "store_id": store_id, "plan_id": plan.get("plan_id", ""), "tasks": tasks})
-            created = result.get("created_tasks", tasks) if isinstance(result, dict) else tasks
-            all_tasks.extend(created)
-            await update_task_status(saved_task_ids, "running")
+        created, push_failures = await _push_exec_tasks_one_by_one(
+            tenant_id,
+            store_id,
+            plan.get("plan_id", ""),
+            tasks,
+            saved_task_ids,
+        )
+        all_tasks.extend(created)
+        if created:
             await _send_task_notifications(tenant_id, store_id, created)
-            await save_push_log(state.get("thread_id", ""), tenant_id, store_id, "task", "exec_task", f"方案执行任务：{plan_name}", f"已创建 {len(created)} 个执行任务", {"plan_id": plan.get("plan_id"), "plan_name": plan_name, "count": len(created), "task_names": [t.get("task_name") for t in created]})
-        except Exception as e:
-            await update_task_status(saved_task_ids, "failed")
-            emit_progress(state, f"方案「{plan_name}」任务派发失败: {str(e)}")
-            logger.warning("任务派发失败: %s", e)
+            await save_push_log(
+                state.get("thread_id", ""),
+                tenant_id,
+                store_id,
+                "task",
+                "exec_task",
+                f"方案执行任务：{plan_name}",
+                f"已创建 {len(created)} 个执行任务",
+                {
+                    "plan_id": plan.get("plan_id"),
+                    "plan_name": plan_name,
+                    "count": len(created),
+                    "task_names": [t.get("task_name") for t in created],
+                },
+            )
+        if push_failures:
+            preview = "、".join(n for n, _ in push_failures[:5])
+            emit_progress(
+                state,
+                f"方案「{plan_name}」{len(push_failures)} 个任务派发失败：{preview}",
+                level="warning",
+            )
+            for n, msg in push_failures:
+                logger.warning("任务派发失败 name=%s: %s", n, msg)
+        if not created:
             continue
 
         for action in plan.get("auto_actions", []):

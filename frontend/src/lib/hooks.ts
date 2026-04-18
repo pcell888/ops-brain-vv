@@ -10,6 +10,7 @@ import {
   trackingApi,
   reviewApi,
   customDimensionApi,
+  type AdoptProgressResponse,
 } from './api';
 import { wsManager, type TaskStatusMessage, type TaskStatus } from './websocket';
 import type {
@@ -767,17 +768,31 @@ export function useAnalyzeEffect(trackingId: string | null, options?: { enabled?
   });
 }
 
-// 完成追踪
+// 完成追踪（不在 onSuccess 里 invalidate：避免与 /review/progress 轮询抢请求；结束后由轮询 onCompleted 统一 invalidate）
 export function useCompleteTracking() {
-  const queryClient = useQueryClient();
-  
   return useMutation({
     mutationFn: (trackingId: string) => trackingApi.complete(trackingId),
-    onSuccess: (_, trackingId) => {
-      queryClient.invalidateQueries({ queryKey: ['tracking', 'summary', trackingId] });
-      queryClient.invalidateQueries({ queryKey: ['tracking', 'list'] });
-    },
   });
+}
+
+/** 进入页面对 GET .../review/progress 做一次拉取时，判断是否需要恢复轮询 UI */
+export function reviewProgressLooksActive(data: TrackingReviewProgress): boolean {
+  const st = (data.status || '').toLowerCase();
+  const ev = data.event_type;
+  if (st === 'failed' || ev === 'error') return false;
+  const isTerminalDone = ev === 'completed' || (st === 'completed' && ev !== 'progress');
+  if (isTerminalDone) return false;
+  if (st === 'idle' || st === 'scheduled' || st === 'ready') return false;
+  return Boolean(data.is_running) || st === 'running' || ev === 'progress';
+}
+
+/** 进入页面对 GET .../adopt/progress 做一次拉取时，判断是否需要恢复轮询 UI */
+export function adoptProgressLooksActive(data: AdoptProgressResponse): boolean {
+  const st = (data.status || '').toLowerCase();
+  if (st === 'failed' || data.event_type === 'error') return false;
+  if (st === 'completed' && !data.is_running) return false;
+  if (st === 'idle' || st === 'pending_adoption') return false;
+  return Boolean(data.is_running) || st === 'running';
 }
 
 /**
@@ -821,10 +836,13 @@ export function useTrackingCompletionPoll(
         if (cancelled || stopped) return;
 
         const msg = (data.message && String(data.message).trim()) || '处理中…';
+        const overall = (data as { overall_progress?: number }).overall_progress;
         const pct =
-          typeof data.percent === 'number' && !Number.isNaN(data.percent)
-            ? Math.max(0, Math.min(100, data.percent))
-            : 0;
+          typeof overall === 'number' && !Number.isNaN(overall)
+            ? Math.max(0, Math.min(100, overall))
+            : typeof data.percent === 'number' && !Number.isNaN(data.percent)
+              ? Math.max(0, Math.min(100, data.percent))
+              : 0;
         cb.onProgress({ message: msg, percent: pct });
 
         const ev = data.event_type;
@@ -843,7 +861,9 @@ export function useTrackingCompletionPoll(
           return;
         }
       } catch {
-        // 单次失败不终止，继续下一轮轮询
+        if (cancelled || stopped) return;
+        // 避免首包失败或 Strict Mode 取消首请求时，界面长时间停在「正在提交…」
+        cb.onProgress({ message: '正在获取复盘进度…', percent: 0 });
       }
     };
 
@@ -851,6 +871,9 @@ export function useTrackingCompletionPoll(
       void tick();
     }, intervalMs);
     void tick();
+    queueMicrotask(() => {
+      if (!cancelled && !stopped) void tick();
+    });
 
     return () => {
       cancelled = true;
@@ -871,17 +894,10 @@ export function useCancelTracking() {
   });
 }
 
-/** 待自动复盘时：跳过等待，恢复 LangGraph 执行 track_effects（复盘与沉淀） */
+/** 待自动复盘时：跳过等待，恢复 LangGraph 执行 track_effects（复盘与沉淀）；不在 onSuccess invalidate，避免与复盘进度轮询抢请求 */
 export function useStartReviewNow() {
-  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (threadId: string) => reviewApi.start(threadId),
-    onSuccess: (_data, threadId) => {
-      queryClient.invalidateQueries({ queryKey: ['tracking', 'list'] });
-      queryClient.invalidateQueries({ queryKey: ['tracking', 'summary', threadId] });
-      queryClient.invalidateQueries({ queryKey: ['tracking', 'analyze', threadId] });
-      queryClient.invalidateQueries({ queryKey: ['tracking', 'snapshots', threadId] });
-    },
   });
 }
 

@@ -4,7 +4,6 @@ import { useState } from 'react';
 import { Card, Table, Tag, Button, Empty, Spin, Progress, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { 
-  FileSearchOutlined, 
   CheckCircleOutlined,
   ClockCircleOutlined,
   SyncOutlined,
@@ -65,52 +64,6 @@ export default function DiagnosisReportsPage() {
           {id.substring(0, 8)}...
         </span>
       ),
-    },
-    {
-      title: '状态/进度',
-      dataIndex: 'status',
-      key: 'status',
-      width: 200,
-      render: (status: string, record: DiagnosisListItem) => {
-        const config = statusConfig[status] || statusConfig.pending;
-        const isRunning = status === 'running' || status === 'pending';
-        const isFailed = status === 'failed';
-        const errorMessage = record.error_message || record.message;
-        
-        return (
-          <div className="space-y-1">
-            <Tag icon={config.icon} style={{ backgroundColor: config.color === 'success' ? 'rgba(82, 196, 26, 0.2)' : config.color === 'processing' ? 'rgba(16, 142, 233, 0.2)' : config.color === 'error' ? 'rgba(245, 34, 45, 0.2)' : 'rgba(0, 0, 0, 0.2)', color: config.color === 'success' ? '#52c41a' : config.color === 'processing' ? '#108ee9' : config.color === 'error' ? '#f5222d' : '#000000', border: 'none' }}>
-              {config.text}
-            </Tag>
-            {isRunning && (
-              <div className="w-full">
-                <Progress 
-                  percent={record.progress || 0} 
-                  size="small" 
-                  status="active"
-                  format={(percent) => `${percent}%`}
-                  strokeColor={{
-                    '0%': '#108ee9',
-                    '100%': '#87d068',
-                  }}
-                />
-                {record.message && (
-                  <div className="text-xs text-muted truncate" title={record.message}>
-                  {record.message}
-                </div>
-                )}
-              </div>
-            )}
-            {isFailed && errorMessage && (
-              <Tooltip title={errorMessage} placement="topLeft">
-                <div className="text-xs text-accent-rose truncate max-w-[180px] cursor-help">
-                  {errorMessage}
-                </div>
-              </Tooltip>
-            )}
-          </div>
-        );
-      },
     },
     {
       title: '健康度评分',
@@ -180,6 +133,52 @@ export default function DiagnosisReportsPage() {
       },
     },
     {
+      title: '状态/进度',
+      dataIndex: 'status',
+      key: 'status',
+      width: 200,
+      render: (status: string, record: DiagnosisListItem) => {
+        const config = statusConfig[status] || statusConfig.pending;
+        const isRunning = status === 'running' || status === 'pending';
+        const isFailed = status === 'failed';
+        const errorMessage = record.error_message || record.message;
+
+        return (
+          <div className="space-y-1">
+            <Tag icon={config.icon} style={{ backgroundColor: config.color === 'success' ? 'rgba(82, 196, 26, 0.2)' : config.color === 'processing' ? 'rgba(16, 142, 233, 0.2)' : config.color === 'error' ? 'rgba(245, 34, 45, 0.2)' : 'rgba(0, 0, 0, 0.2)', color: config.color === 'success' ? '#52c41a' : config.color === 'processing' ? '#108ee9' : config.color === 'error' ? '#f5222d' : '#000000', border: 'none' }}>
+              {config.text}
+            </Tag>
+            {isRunning && (
+              <div className="w-full">
+                <Progress
+                  percent={record.progress || 0}
+                  size="small"
+                  status="active"
+                  format={(percent) => `${percent}%`}
+                  strokeColor={{
+                    '0%': '#108ee9',
+                    '100%': '#87d068',
+                  }}
+                />
+                {record.message && (
+                  <div className="text-xs text-muted truncate" title={record.message}>
+                  {record.message}
+                </div>
+                )}
+              </div>
+            )}
+            {isFailed && errorMessage && (
+              <Tooltip title={errorMessage} placement="topLeft">
+                <div className="text-xs text-accent-rose truncate max-w-[180px] cursor-help">
+                  {errorMessage}
+                </div>
+              </Tooltip>
+            )}
+          </div>
+        );
+      },
+    },
+    {
       title: '诊断时间',
       dataIndex: 'created_at',
       key: 'created_at',
@@ -217,26 +216,8 @@ export default function DiagnosisReportsPage() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* 页面标题 */}
-      <div className="flex justify-between items-center">
-        <div>
-          {/* <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg shadow-cyan-500/20 text-white">
-              <FileSearchOutlined />
-            </span>
-            诊断历史
-          </h1> */}
-          <p className="text-[#303133] mt-2 text-sm">
-            查看历史诊断报告，追踪企业运营健康度变化趋势
-          </p>
-        </div>
-        <div className="flex gap-3 items-center text-xs text-muted">
-          运行中任务每 2 秒自动刷新
-        </div>
-      </div>
-
-      {/* 报告列表 */}
+    <div>
+      <div className="mb-2 flex justify-end text-xs text-muted">运行中每 2 秒刷新</div>
       <Card>
         {isLoading ? (
           <div className="flex items-center justify-center py-20">

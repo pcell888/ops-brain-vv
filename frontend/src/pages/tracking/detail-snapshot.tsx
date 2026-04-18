@@ -81,9 +81,9 @@ export default function TrackingSnapshotDetailPage() {
       <div className="flex items-center gap-4">
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/tracking')} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回列表</Button>
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-lg shadow-lg shadow-purple-500/20"><CameraOutlined /></span>
-            采集详情
+          <h1 className="text-3xl font-bold tracking-tight text-white flex items-center gap-3">
+            <span className="w-11 h-11 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-lg shadow-lg shadow-purple-500/20 shrink-0"><CameraOutlined /></span>
+            快照详情
           </h1>
           <p className="text-gray-400 mt-1 text-sm font-mono break-all">{trackingId}</p>
         </div>

@@ -82,13 +82,12 @@ export default function SettingsPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          {/* <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-gray-500 to-gray-700 flex items-center justify-center text-lg shadow-lg text-white">
+          <h1 className="text-3xl font-bold tracking-tight text-[#303133] flex items-center gap-3">
+            <span className="w-11 h-11 rounded-xl bg-gradient-to-br from-gray-500 to-gray-700 flex items-center justify-center text-lg shadow-lg text-white shrink-0">
               <SettingOutlined />
             </span>
             系统设置
-          </h1> */}
-          <p className="text-[#303133] mt-2 text-sm">配置企业信息和诊断参数</p>
+          </h1>
         </div>
         <Button type="primary" icon={<SaveOutlined />} loading={loading} onClick={handleSave}>保存设置</Button>
       </div>

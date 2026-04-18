@@ -15,7 +15,8 @@ from src.runtime.progress_store import progress_cache
 from src.runtime.progress_store import write_progress_cache
 from src.runtime.running_tasks import running_tasks
 from src.core.diagnosis_report_repo import find_thread_id_by_plan_id, list_reports, update_plan_ids
-from src.core.exec_task_repo import get_tasks_by_plan_id, list_distinct_plan_ids_for_thread, update_task_status
+from src.agent.nodes.rule_task_builder import task_db_row_to_push_payload
+from src.core.exec_task_repo import get_tasks_by_plan_id, list_distinct_plan_ids_for_thread, patch_related_resources, update_task_status
 from src.worker.arq_queue import enqueue_adoption_job
 from src.services import async_job_service
 
@@ -806,7 +807,9 @@ async def redistribute_plan_tasks(thread_id: str, plan_id: str) -> dict:
     redistributed = []
     failed_count = 0
     for task in tasks_to_redistribute:
+        tid = str(task.get("task_id") or "")
         try:
+            payload = task_db_row_to_push_payload(task)
             await mcp_call(
                 "task-server",
                 "create_execution_tasks",
@@ -814,14 +817,16 @@ async def redistribute_plan_tasks(thread_id: str, plan_id: str) -> dict:
                     "tenant_id": tenant_id,
                     "store_id": store_id,
                     "plan_id": plan_id,
-                    "tasks": [task],
+                    "tasks": [payload],
                 },
             )
-            await update_exec_tasks_status([str(task.get("task_id") or "")], "running")
+            await patch_related_resources(tid, {"dispatch_status": "dispatched"})
+            await update_exec_tasks_status([tid], "running")
             redistributed.append(task.get("task_id"))
         except Exception as e:
             logger.warning("任务派发失败: task_id=%s, error=%s", task.get("task_id"), e)
-            await update_exec_tasks_status([str(task.get("task_id") or "")], "failed")
+            await patch_related_resources(tid, {"dispatch_status": "failed", "dispatch_error": str(e)[:500]})
+            await update_exec_tasks_status([tid], "failed")
             failed_count += 1
 
     remaining_pending = await list_exec_tasks_by_plan_status(tenant_id, store_id, plan_id, "pending")

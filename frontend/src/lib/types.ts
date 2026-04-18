@@ -318,7 +318,7 @@ export interface ExecutionTask {
   recipient?: string;
   /** 派发状态：如 dispatched */
   dispatch_status?: string;
-  /** 派发时间（与 created_at 一致，ISO） */
+  /** 派发时间（任务 created_at，北京时间 ISO +08:00） */
   dispatch_time?: string;
   /** 落库于 related_resources.implementation_steps */
   implementation_steps?: string[];

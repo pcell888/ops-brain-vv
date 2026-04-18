@@ -1,11 +1,9 @@
-import { Suspense, useMemo } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, Table, Tag, Button, Empty, Spin, Row, Col, App } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   BulbOutlined,
-  CheckCircleOutlined,
-  TrophyOutlined,
   ClockCircleOutlined,
   LoadingOutlined,
   RocketOutlined,
@@ -14,9 +12,13 @@ import {
   useDiagnosisSelection,
   useDiagnosisReport,
   useSolutionList,
+  adoptProgressLooksActive,
 } from '@/lib/hooks';
+import { solutionApi, type AdoptProgressResponse } from '@/lib/api';
 import { DiagnosisHistorySelect } from '@/components/diagnosis-history-select';
+import { TrackingHeaderStatus } from '@/components/tracking-header-status';
 import { useAppStore } from '@/stores/app-store';
+import { formatSolutionsListPersistent } from '@/lib/solutions-header-status';
 import type { SolutionSummary, Anomaly } from '@/lib/types';
 
 export default function SolutionsPageWrapper() {
@@ -48,15 +50,137 @@ function SolutionsPage() {
   const { data: solutionData, isLoading: solutionsLoading } = useSolutionList(
     isCompleted && selectedDiagnosisId ? selectedDiagnosisId : null,
   );
-  const anySolutionAdopted = solutionData?.solutions?.some((s) => s.status === 'adopted') ?? false;
 
   const isLoading = listLoading || (isCompleted && (reportLoading || solutionsLoading));
 
-  const handleAdopt = (solutionId: string) => {
-    if (!selectedDiagnosisId) return;
-    navigate(
-      `/solutions/${encodeURIComponent(selectedDiagnosisId)}?solution_id=${encodeURIComponent(solutionId)}&auto_adopt=1`,
-    );
+  const solutions = (solutionData?.solutions ?? []) as SolutionSummary[];
+  const solutionsProbeKey = useMemo(
+    () => solutions.map((s) => `${s.solution_id}:${s.status ?? ''}`).join('|'),
+    [solutions],
+  );
+
+  const [adoptPollPlanId, setAdoptPollPlanId] = useState<string | null>(null);
+  const [adoptUiActive, setAdoptUiActive] = useState(false);
+  const [adoptLine, setAdoptLine] = useState<{ message: string; type: string }>({ message: '', type: '' });
+  const adoptExecutedPlanIdRef = useRef<string | null>(null);
+
+  const adoptMonitorPause =
+    isLoading || !selectedDiagnosisId || !isCompleted || Boolean(solutionData?.generating);
+
+  /** 从详情页采纳后返回列表：若执行仍在进行，展示状态并轮询 */
+  useEffect(() => {
+    if (adoptMonitorPause || !selectedDiagnosisId || !solutionsProbeKey) return;
+    if (adoptUiActive || adoptPollPlanId) return;
+
+    let cancelled = false;
+    (async () => {
+      const ordered = [...solutions]
+        .filter((s) => s.status !== 'rejected')
+        .sort((a, b) => (b.status === 'adopted' ? 1 : 0) - (a.status === 'adopted' ? 1 : 0));
+      for (const s of ordered) {
+        try {
+          const data = await solutionApi.getAdoptProgress(s.solution_id);
+          if (cancelled) return;
+          if (!adoptProgressLooksActive(data)) continue;
+          adoptExecutedPlanIdRef.current = s.solution_id;
+          setAdoptPollPlanId(s.solution_id);
+          setAdoptUiActive(true);
+          const line = (data.message || '').trim() || '正在执行采纳方案…';
+          setAdoptLine({ message: line, type: 'progress' });
+          return;
+        } catch {
+          // 无对应线程或已结束
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [adoptMonitorPause, selectedDiagnosisId, solutionsProbeKey, adoptUiActive, adoptPollPlanId]);
+
+  useEffect(() => {
+    if (!adoptUiActive || !adoptPollPlanId) return;
+
+    const POLL_MS = 1200;
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+    let cancelled = false;
+    let completionTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const stopInterval = () => {
+      if (intervalId !== undefined) {
+        clearInterval(intervalId);
+        intervalId = undefined;
+      }
+    };
+
+    const applyPayload = (data: AdoptProgressResponse) => {
+      if (cancelled) return;
+      const status = (data.status || '').toLowerCase();
+      const isRunning = Boolean(data.is_running);
+      const line = (data.message || '').trim() || '请稍候…';
+      if (status === 'failed' || data.event_type === 'error') {
+        stopInterval();
+        setAdoptPollPlanId(null);
+        setAdoptLine({ message: line, type: 'error' });
+        message.error(line);
+        return;
+      }
+
+      if (status === 'completed' && !isRunning) {
+        stopInterval();
+        setAdoptLine({ message: line, type: 'completed' });
+        completionTimer = setTimeout(() => {
+          if (cancelled) return;
+          setAdoptUiActive(false);
+          setAdoptPollPlanId(null);
+          setAdoptLine({ message: '', type: '' });
+          navigate('/execution');
+        }, 1500);
+        return;
+      }
+
+      setAdoptLine({ message: line, type: 'progress' });
+    };
+
+    const tick = async () => {
+      try {
+        const data = await solutionApi.getAdoptProgress(adoptPollPlanId);
+        if (cancelled) return;
+        applyPayload(data);
+      } catch (e) {
+        if (cancelled) return;
+        stopInterval();
+        setAdoptPollPlanId(null);
+        const errText = e instanceof Error ? e.message : '进度查询失败';
+        setAdoptLine({ message: errText, type: 'error' });
+        message.error('采纳执行进度查询失败');
+      }
+    };
+
+    void tick();
+    intervalId = setInterval(() => {
+      void tick();
+    }, POLL_MS);
+
+    return () => {
+      cancelled = true;
+      stopInterval();
+      if (completionTimer !== undefined) clearTimeout(completionTimer);
+    };
+  }, [adoptUiActive, adoptPollPlanId, navigate, message]);
+
+  const handleDismissAdoptBar = () => {
+    setAdoptUiActive(false);
+    setAdoptPollPlanId(null);
+    setAdoptLine({ message: '', type: '' });
+  };
+
+  const handleRetryAdoptMonitor = () => {
+    const sid = adoptExecutedPlanIdRef.current;
+    if (!sid) return;
+    setAdoptPollPlanId(sid);
+    setAdoptUiActive(true);
+    setAdoptLine({ message: '正在重新查询采纳执行…', type: 'progress' });
   };
 
   const handleViewDetail = (solutionId: string) => {
@@ -148,25 +272,13 @@ function SolutionsPage() {
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 160,
       render: (_, record) => {
         const isAdopted = record.status === 'adopted';
-        const isRejected = record.status === 'rejected';
-        const adoptDisabled = isRejected || isAdopted || anySolutionAdopted;
         return (
           <div className="flex gap-1">
             <Button type="link" size="small" onClick={() => handleViewDetail(record.solution_id)}>
               详情
-            </Button>
-            <Button
-              type="link"
-              size="small"
-              icon={<CheckCircleOutlined />}
-              onClick={() => handleAdopt(record.solution_id)}
-              disabled={adoptDisabled}
-              title={anySolutionAdopted && !isAdopted ? '已有方案被采纳' : undefined}
-            >
-              {isAdopted ? '已采纳' : '采纳'}
             </Button>
             {isAdopted && (
               <Button
@@ -184,6 +296,28 @@ function SolutionsPage() {
     },
   ];
 
+  const anyAdopted = useMemo(() => solutions.some((s) => s.status === 'adopted'), [solutions]);
+
+  const listPersistentLine = useMemo(
+    () =>
+      formatSolutionsListPersistent({
+        selectedDiagnosisId,
+        isCompleted,
+        isLoading,
+        generating: Boolean(solutionData?.generating),
+        solutionCount: solutions.length,
+        anyAdopted,
+      }),
+    [
+      selectedDiagnosisId,
+      isCompleted,
+      isLoading,
+      solutionData?.generating,
+      solutions.length,
+      anyAdopted,
+    ],
+  );
+
   if (!enterpriseId) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
@@ -192,27 +326,64 @@ function SolutionsPage() {
     );
   }
 
+  const adoptRunning = adoptUiActive && adoptLine.type === 'progress';
+
   return (
     <div className="space-y-6 bg-[#F0F1F9] min-h-screen">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          {/* <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
-            <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20 text-white">
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+          <h1 className="m-0 flex shrink-0 items-center gap-3 text-3xl font-bold leading-tight tracking-tight text-[#303133]">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 text-lg text-white shadow-lg shadow-amber-500/20">
               <BulbOutlined />
             </span>
             优化方案
-          </h1> */}
-          <p className="text-[#303133] mt-2 text-sm">
-            诊断完成后自动生成的优化方案，按综合评分排序
-          </p>
+          </h1>
+          {enterpriseId && diagnosisItems.length > 0 && (
+            <DiagnosisHistorySelect
+              className="max-w-full shrink-0 sm:ml-auto"
+              diagnosisItems={diagnosisItems}
+              value={selectedDiagnosisId}
+              onChange={setSelectedDiagnosisId}
+              loading={listLoading}
+              disabled={adoptRunning}
+            />
+          )}
         </div>
-        {enterpriseId && diagnosisItems.length > 0 && (
-          <DiagnosisHistorySelect
-            className="shrink-0 w-full sm:w-[min(100%,320px)]"
-            diagnosisItems={diagnosisItems}
-            value={selectedDiagnosisId}
-            onChange={setSelectedDiagnosisId}
-            loading={listLoading}
+        {((listPersistentLine != null && listPersistentLine !== '') || adoptUiActive) && (
+          <TrackingHeaderStatus
+            className="!mt-0 border-t border-[#E4E7ED] pt-3"
+            persistent={listPersistentLine}
+            transient={
+              adoptUiActive ? (
+                <div>
+                  <p
+                    className={`text-sm ${
+                      adoptLine.type === 'error' ? 'text-red-600' : 'text-[#606266]'
+                    }`}
+                  >
+                    {adoptLine.type === 'completed'
+                      ? adoptLine.message || '执行已完成'
+                      : adoptLine.message ||
+                        (adoptLine.type === 'progress' ? '正在处理中，请稍候…' : '')}
+                  </p>
+                  {adoptLine.type === 'completed' && (
+                    <Button type="link" size="small" className="mt-1 h-auto p-0" onClick={() => navigate('/execution')}>
+                      查看执行任务
+                    </Button>
+                  )}
+                  {adoptLine.type === 'error' && (
+                    <div className="mt-1 flex flex-wrap gap-x-3">
+                      <Button type="link" size="small" className="h-auto p-0" onClick={handleDismissAdoptBar}>
+                        关闭提示
+                      </Button>
+                      <Button type="link" size="small" className="h-auto p-0" onClick={handleRetryAdoptMonitor}>
+                        重试
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ) : undefined
+            }
           />
         )}
       </div>

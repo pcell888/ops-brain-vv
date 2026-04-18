@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   Card, Table, Button, Empty, Spin,
-  Row, Col, Statistic, Typography,
+  Row, Col, Statistic,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -115,15 +115,12 @@ export default function ExecutionDetailPage() {
         <div className="flex items-center gap-4">
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
           <div>
-            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-              <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg">
+            <h1 className="text-3xl font-bold tracking-tight text-white flex items-center gap-3">
+              <span className="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-lg shadow-lg shrink-0">
                 <RocketOutlined />
               </span>
-              {plan.name || '执行计划详情'}
+              {plan.name || '执行计划'}
             </h1>
-            <Typography.Text type="secondary" className="!text-gray-400 text-sm mt-1 block">
-              方案采纳后任务已自动创建并派发，进度以下方任务状态为准。
-            </Typography.Text>
           </div>
         </div>
       </div>
@@ -152,11 +149,12 @@ export default function ExecutionDetailPage() {
       </Row>
 
       <div id="execution-task-list" ref={taskListAnchorRef}>
-        <Card title="任务列表">
+        <Card>
           {tasksLoading ? (
             <div className="flex items-center justify-center py-10"><Spin /></div>
           ) : (
             <Table
+              bordered={false}
               columns={columns}
               dataSource={tasks}
               rowKey="id"

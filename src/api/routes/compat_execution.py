@@ -23,11 +23,6 @@ async def list_execution_plans(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
 ):
-    """兼容前端 GET /execution/plans。
-
-    参数映射：enterprise_id -> tenant_id, diagnosis_id -> thread_id
-    调用 Service 层获取数据。
-    """
     # 参数映射
     tenant_id = enterprise_id
     thread_id = diagnosis_id
@@ -52,14 +47,7 @@ async def list_tasks(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
 ):
-    """按企业/诊断拉平查询 ai_exec_task，供「任务执行」列表页展示任务行（非计划聚合）。
-    
-    参数映射：enterprise_id -> tenant_id
-    """
-    # 参数映射
     tenant_id = enterprise_id
-
-    # 调用 Service 层
     items, total, stats = await execution_service.get_execution_tasks(
         tenant_id=tenant_id,
         thread_id=thread_id,
@@ -73,8 +61,6 @@ async def list_tasks(
 
 @router.get("/tasks/{task_id}", summary="执行任务详情(兼容)")
 async def get_task_detail(task_id: str):
-    """单条任务完整信息，供详情页展示业务内容（标题、说明、实施步骤、指派等）。"""
-    # 调用 Service 层
     task = await execution_service.get_task_detail(task_id)
     
     if task is None:
@@ -85,11 +71,6 @@ async def get_task_detail(task_id: str):
 
 @router.get("/plans/{plan_id}", summary="执行计划摘要(兼容)")
 async def get_plan_summary(plan_id: str):
-    """兼容前端 GET /execution/plans/{planId}。
-
-    计划状态由 ai_exec_task 行聚合得到；采纳方案后任务由 execute 节点自动创建/派发，无单独「启动计划」步骤。
-    """
-    # 调用 Service 层
     plan = await execution_service.get_plan_summary(plan_id)
     
     if plan is None:
@@ -100,7 +81,6 @@ async def get_plan_summary(plan_id: str):
 
 @router.get("/plans/{plan_id}/tasks", summary="计划任务列表(兼容)")
 async def list_plan_tasks(plan_id: str, status: str | None = Query(default=None)):
-    """兼容前端 GET /execution/plans/{planId}/tasks。"""
     # 调用 Service 层
     items, total = await execution_service.get_plan_tasks(plan_id, status)
     
@@ -109,8 +89,6 @@ async def list_plan_tasks(plan_id: str, status: str | None = Query(default=None)
 
 @router.post("/tasks/{task_id}/complete", summary="完成任务(兼容)")
 async def complete_task(task_id: str):
-    """标记任务为已完成。"""
-    # 调用 Service 层
     success = await execution_service.update_task_status(task_id, "completed")
     
     if not success:
@@ -121,8 +99,6 @@ async def complete_task(task_id: str):
 
 @router.post("/tasks/{task_id}/fail", summary="任务失败(兼容)")
 async def fail_task(task_id: str):
-    """标记任务为失败。"""
-    # 调用 Service 层
     success = await execution_service.update_task_status(task_id, "failed")
     
     if not success:
@@ -133,8 +109,6 @@ async def fail_task(task_id: str):
 
 @router.post("/tasks/{task_id}/retry", summary="重试任务(兼容)")
 async def retry_task(task_id: str):
-    """重试任务（设置为运行中状态）。"""
-    # 调用 Service 层
     success = await execution_service.update_task_status(task_id, "running")
     
     if not success:

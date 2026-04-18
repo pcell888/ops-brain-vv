@@ -16,6 +16,7 @@ from src.core.compat_tracking_repo import (
     list_snapshots,
     update_review_report,
 )
+from src.core.calculator import INDICATOR_META
 from src.core.config import CN_TZ, get_settings
 from src.core.llm import build_chat_llm
 from src.core.tracking_names import resolve_solution_name
@@ -177,23 +178,43 @@ def _build_metric_effects(snapshot_rows: list[dict]) -> list[dict]:
     return effects
 
 
+def _indicator_display_name(code: str) -> str:
+    c = str(code or "").strip()
+    if not c:
+        return "未知指标"
+    meta = INDICATOR_META.get(c) or {}
+    name = meta.get("name") if isinstance(meta.get("name"), str) else None
+    if name and name.strip():
+        return name.strip()
+    return c
+
+
 def _build_sections(report: dict) -> list[dict]:
-    sections = report.get("sections")
-    if isinstance(sections, list) and sections:
-        return sections
-    built: list[dict] = []
-    summary = str(report.get("summary") or "").strip()
-    if summary:
-        built.append({"title": "复盘总结", "content": summary})
     indicator_analysis = report.get("indicator_analysis")
+    metric_content: str | None = None
     if isinstance(indicator_analysis, list) and indicator_analysis:
         lines = [
-            f"- **{str(it.get('indicator_code') or it.get('metric_name') or '未知指标')}**：趋势 `{str(it.get('trend') or '无变化')}`。{str(it.get('analysis') or '').strip()}".strip()
+            f"- **{_indicator_display_name(str(it.get('indicator_code') or it.get('metric_name') or ''))}**：趋势 `{str(it.get('trend') or '无变化')}`。{str(it.get('analysis') or '').strip()}".strip()
             for it in indicator_analysis
             if isinstance(it, dict)
         ]
         if lines:
-            built.append({"title": "指标分析", "content": "\n".join(lines)})
+            metric_content = "\n".join(lines)
+
+    sections = report.get("sections")
+    if isinstance(sections, list) and sections:
+        if metric_content:
+            out = [s for s in sections if isinstance(s, dict) and s.get("title") != "指标分析"]
+            out.append({"title": "指标分析", "content": metric_content})
+            return out
+        return sections
+
+    built: list[dict] = []
+    summary = str(report.get("summary") or "").strip()
+    if summary:
+        built.append({"title": "复盘总结", "content": summary})
+    if metric_content:
+        built.append({"title": "指标分析", "content": metric_content})
     return built
 
 

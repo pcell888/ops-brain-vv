@@ -94,20 +94,17 @@ export default function AnomalyDetailPage() {
             className="!flex !items-center"
           />
           <div>
-            <h1 className="text-2xl font-bold text-[#303133] flex items-center gap-3">
+            <h1 className="text-3xl font-bold tracking-tight text-[#303133] flex items-center gap-3">
               <span className={clsx(
-                'w-10 h-10 rounded-xl flex items-center justify-center text-white text-lg shadow-lg',
+                'w-11 h-11 rounded-xl flex items-center justify-center text-white text-lg shadow-lg shrink-0',
                 anomaly.severity === 'critical' || anomaly.severity === 'high'
                   ? 'bg-gradient-to-br from-rose-500 to-rose-600 shadow-rose-500/20'
                   : 'bg-gradient-to-br from-amber-500 to-amber-600 shadow-amber-500/20'
               )}>
                 <ExclamationCircleOutlined />
               </span>
-              异常指标明细
+              异常详情
             </h1>
-            <p className="text-gray-400 mt-1 text-sm">
-              查看异常指标的详细信息和根因分析
-            </p>
           </div>
         </div>
         <div className="flex gap-3">
