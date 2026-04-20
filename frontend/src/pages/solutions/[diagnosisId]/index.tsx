@@ -14,8 +14,13 @@ import {
 } from '@/lib/hooks';
 import { solutionApi, type AdoptProgressResponse } from '@/lib/api';
 import { useAppStore } from '@/stores/app-store';
+import { HeaderAsyncProgress } from '@/components/header-async-progress';
 import { TrackingHeaderStatus } from '@/components/tracking-header-status';
-import { formatSolutionDetailPersistent } from '@/lib/solutions-header-status';
+import {
+  formatAdoptFailureLine,
+  formatAdoptCompletedTransientLine,
+  formatSolutionDetailPersistent,
+} from '@/lib/solutions-header-status';
 import clsx from 'clsx';
 import type { SolutionSummary, SolutionGenerateResponse, DiagnosisReport, AIRecommendation } from '@/lib/types';
 // 严重程度配置
@@ -49,6 +54,8 @@ export default function SolutionDetailPage() {
   const [adoptPollPlanId, setAdoptPollPlanId] = useState<string | null>(null);
   const executedPlanIdRef = useRef<string | null>(null);
   const solutions = typedSolutionData?.solutions || [];
+  const solutionsRef = useRef(solutions);
+  solutionsRef.current = solutions;
   const solutionsProbeKey = useMemo(
     () => solutions.map((s) => `${s.solution_id}:${s.status ?? ''}`).join('|'),
     [solutions],
@@ -95,9 +102,10 @@ export default function SolutionDetailPage() {
         await adoptSolution.mutateAsync(solutionId);
         message.success('方案已采纳');
         await refetch();
-      } catch {
-        message.error('采纳失败');
-        setExecutionProgress({ message: '采纳失败', type: 'error' });
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : '请求失败';
+        setExecutionProgress({ message: formatAdoptFailureLine(reason), type: 'error' });
+        setIsExecuting(false);
         setAdoptPollPlanId(null);
       } finally {
         setIsAdopting(false);
@@ -217,14 +225,22 @@ export default function SolutionDetailPage() {
       if (status === 'failed' || data.event_type === 'error') {
         stopInterval();
         setAdoptPollPlanId(null);
-        setExecutionProgress({ message: line, type: 'error' });
-        message.error(line);
+        setIsExecuting(false);
+        setExecutionProgress({ message: formatAdoptFailureLine(line), type: 'error' });
+        message.error(formatAdoptFailureLine(line));
         return;
       }
 
       if (status === 'completed' && !isRunning) {
         stopInterval();
-        setExecutionProgress({ message: line, type: 'completed' });
+        const adoptedPid =
+          (data.adopted_plan_ids && data.adopted_plan_ids[0]) || adoptPollPlanId || '';
+        const planName =
+          solutionsRef.current.find((s) => s.solution_id === adoptedPid)?.name ?? null;
+        setExecutionProgress({
+          message: formatAdoptCompletedTransientLine(data, planName),
+          type: 'completed',
+        });
         completionTimer = setTimeout(() => {
           if (cancelled) return;
           setIsExecuting(false);
@@ -250,9 +266,10 @@ export default function SolutionDetailPage() {
         if (cancelled) return;
         stopInterval();
         setAdoptPollPlanId(null);
+        setIsExecuting(false);
         const errText = e instanceof Error ? e.message : '进度查询失败';
-        setExecutionProgress({ message: errText, type: 'error' });
-        message.error('采纳执行进度查询失败');
+        setExecutionProgress({ message: formatAdoptFailureLine(errText), type: 'error' });
+        message.error(formatAdoptFailureLine(errText));
       }
     };
 
@@ -280,6 +297,10 @@ export default function SolutionDetailPage() {
       }),
     [selectedSolutionId, selectedSolution?.status, solutions.length, anySolutionAdopted],
   );
+
+  useEffect(() => {
+    setExecutionProgress((prev) => (prev.type === 'error' ? { message: '', type: '' } : prev));
+  }, [selectedSolutionId]);
 
   const handleAdoptDetailWithConfirm = () => {
     if (!selectedSolution || selectedSolution.status === 'adopted') return;
@@ -330,12 +351,6 @@ export default function SolutionDetailPage() {
     );
   }
 
-  const handleCancelExecution = () => {
-    setIsExecuting(false);
-    setAdoptPollPlanId(null);
-    setExecutionProgress({ message: '', type: '' });
-  };
-
   const handleViewTasks = () => {
     setIsExecuting(false);
     setAdoptPollPlanId(null);
@@ -347,62 +362,40 @@ export default function SolutionDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start gap-4">
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
-        <div className="min-w-0 flex-1">
-          <h1 className="m-0 flex items-center gap-3 text-3xl font-bold leading-tight tracking-tight text-[#303133]">
-            <span className="text-[#fff] w-11 h-11 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20 shrink-0">
-              <BulbOutlined />
-            </span>
-            方案详情
-          </h1>
-          <p className="text-muted mt-1 text-xs font-mono break-all">
-            {diagnosisId}
-          </p>
-          {((detailPersistentLine != null && detailPersistentLine !== '') || isExecuting) && (
-            <TrackingHeaderStatus
-              className="!mt-0 border-t border-[#E4E7ED] pt-3"
-              persistent={detailPersistentLine}
-              transient={
-                isExecuting ? (
-                  <div>
-                    <p
-                      className={`text-sm ${
-                        executionProgress.type === 'error' ? 'text-red-600' : 'text-[#606266]'
-                      }`}
-                    >
-                      {executionProgress.type === 'completed'
-                        ? executionProgress.message || '执行已完成'
-                        : executionProgress.message ||
-                          (executionProgress.type === 'progress' ? '正在处理中，请稍候…' : '')}
-                    </p>
-                    {executionProgress.type === 'completed' && (
-                      <Button type="link" size="small" className="mt-1 h-auto p-0" onClick={handleViewTasks}>
-                        查看执行任务
-                      </Button>
-                    )}
-                    {executionProgress.type === 'error' && (
-                      <div className="mt-1 flex flex-wrap gap-x-3">
-                        <Button type="link" size="small" className="h-auto p-0" onClick={handleCancelExecution}>
-                          关闭提示
-                        </Button>
-                        <Button
-                          type="link"
-                          size="small"
-                          className="h-auto p-0"
-                          loading={isAdopting}
-                          onClick={() => executedPlanIdRef.current && handleAdopt(executedPlanIdRef.current, true)}
-                        >
-                          重试
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                ) : undefined
-              }
-            />
-          )}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-start gap-4">
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ backgroundColor: '#fff', color: '#000', border: '1px solid #d9d9d9' }}>返回</Button>
+          <div className="min-w-0 flex-1">
+            <h1 className="m-0 flex items-center gap-3 text-3xl font-bold leading-tight tracking-tight text-[#303133]">
+              <span className="text-[#fff] w-11 h-11 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-lg shadow-lg shadow-amber-500/20 shrink-0">
+                <BulbOutlined />
+              </span>
+              方案详情
+            </h1>
+            <p className="text-muted mt-1 text-xs font-mono break-all">
+              {diagnosisId}
+            </p>
+          </div>
         </div>
+        {((detailPersistentLine != null && detailPersistentLine !== '') ||
+          isExecuting ||
+          executionProgress.type === 'error') && (
+          <TrackingHeaderStatus
+            className="!mt-0 w-full border-t border-[#E4E7ED] pt-3 text-left"
+            persistent={detailPersistentLine}
+            transient={
+              isExecuting || executionProgress.type === 'error' ? (
+                <HeaderAsyncProgress
+                  line={executionProgress}
+                  completedFallback="执行已完成"
+                  completedLinkLabel="查看执行任务"
+                  onCompletedLink={handleViewTasks}
+                  showErrorActions={false}
+                />
+              ) : undefined
+            }
+          />
+        )}
       </div>
 
       {aiRecommendation && (

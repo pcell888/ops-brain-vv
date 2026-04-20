@@ -238,6 +238,29 @@ async def get_earliest_exec_task_created_at(thread_id: str) -> datetime | None:
             return (row or {}).get("t")
 
 
+async def get_diagnosis_thread_id_for_plan(tenant_id: str, plan_id: str) -> str | None:
+    """同一租户下该 plan 对应诊断会话 thread_id（exec 任务上最早出现的 thread_id）。"""
+    tid = (tenant_id or "").strip()
+    pid = (plan_id or "").strip()
+    if not tid or not pid:
+        return None
+    async with get_conn() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT MIN(thread_id) AS diagnosis_thread_id
+                FROM ai_exec_task
+                WHERE tenant_id = %s
+                  AND plan_id = %s
+                  AND COALESCE(TRIM(thread_id), '') <> ''
+                """,
+                (tid[:32], pid[:512]),
+            )
+            row = await cur.fetchone()
+    out = str((row or {}).get("diagnosis_thread_id") or "").strip()
+    return out or None
+
+
 async def get_first_exec_task_plan_store(thread_id: str, tenant_id: str) -> dict | None:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:

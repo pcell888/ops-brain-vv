@@ -6,12 +6,13 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.runtime.diagnosis_ws_manager import send_thread_progress
 from src.core.compat_tracking_repo import (
     count_trackings,
     create_tracking,
+    get_diagnosis_thread_id_for_plan,
     list_tracking_thread_ids_for_tenant_plan,
     get_diagnosis_scores,
     get_latest_snapshot,
@@ -39,6 +40,7 @@ from src.services.tracking_helper_service import (
     _derive_adopted_plan_name,
     _derive_tracking_status,
     _get_diagnosis_health_score,
+    _parse_dt,
     _scheduled_row_enrichment,
     _scheduled_tracking_started_at,
     _ser,
@@ -52,6 +54,50 @@ from src.services.tracking_report_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _resolve_auto_complete_expected_at(row: dict, td: dict) -> datetime:
+    """追踪进行中：自动完成/复盘触发时刻，供前端常驻文案；优先待复盘表，其次计划天数与配置回退。"""
+    tenant_id = str(row.get("tenant_id") or "").strip()
+    plan_id = str(td.get("plan_id") or "").strip()
+    if tenant_id and plan_id:
+        diagnosis_tid = await get_diagnosis_thread_id_for_plan(tenant_id, plan_id)
+        if diagnosis_tid:
+            pr = await get_pending_review_by_thread(diagnosis_tid)
+            if pr and pr.get("review_due_date"):
+                raw = pr["review_due_date"]
+                if isinstance(raw, datetime):
+                    dt = raw
+                else:
+                    dt = _parse_dt(str(raw))
+                if dt:
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=CN_TZ)
+                    return dt
+
+    started = _parse_dt(str(td.get("started_at") or "").strip()) if td.get("started_at") else None
+    if started is None and row.get("created_at"):
+        c = row["created_at"]
+        if isinstance(c, datetime):
+            started = c if c.tzinfo else c.replace(tzinfo=CN_TZ)
+        else:
+            started = _parse_dt(str(c))
+    if started is None:
+        return datetime.now(CN_TZ) + timedelta(days=7)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=CN_TZ)
+
+    total = float(td.get("total_duration_days") or 0)
+    if total > 0:
+        return started + timedelta(days=int(round(total)))
+    interval = int(td.get("tracking_interval_days") or 0)
+    if interval > 0:
+        return started + timedelta(days=interval)
+    delay_m = int(getattr(get_settings(), "effect_track_delay_minutes", None) or 0)
+    if delay_m > 0:
+        return started + timedelta(minutes=delay_m)
+    return started + timedelta(days=7)
+
 
 _complete_tracking_inflight: set[str] = set()
 _complete_tracking_lock = asyncio.Lock()
@@ -214,11 +260,12 @@ async def get_tracking_summary_payload(tracking_id: str) -> dict:
             effective_score = td.get("overall_achievement_rate")
         if effective_score is None:
             effective_score = await _get_diagnosis_health_score(tracking_id)
-        return {
+        status_val = _derive_tracking_status(td)
+        out: dict = {
             "tracking_id": row["thread_id"],
             "plan_id": td.get("plan_id", ""),
             "solution_name": resolve_solution_name(td, adopted_plan_name),
-            "status": _derive_tracking_status(td),
+            "status": status_val,
             "current_score": effective_score,
             "snapshot_count": td.get("snapshot_count", 0),
             "started_at": td.get("started_at", _ser(row["created_at"])),
@@ -226,6 +273,10 @@ async def get_tracking_summary_payload(tracking_id: str) -> dict:
             "completed_at": td.get("completed_at"),
             "total_duration_days": total_duration_days,
         }
+        if status_val == "active":
+            due_at = await _resolve_auto_complete_expected_at(row, td)
+            out["review_due_date"] = _ser(due_at)
+        return out
     except TrackingServiceError:
         raise
     except Exception as e:

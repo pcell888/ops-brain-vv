@@ -17,6 +17,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import ReactECharts from 'echarts-for-react';
 import { DiagnosisHistorySelect } from '@/components/diagnosis-history-select';
+import { HeaderAsyncProgress } from '@/components/header-async-progress';
 import { TrackingHeaderStatus } from '@/components/tracking-header-status';
 import { formatDetailPersistentStatus } from '@/lib/tracking-persistent-status';
 import {
@@ -578,50 +579,21 @@ export default function TrackingDetailPage() {
                 persistent={persistentStatusLine}
                 transient={
                   isCompleting ? (
-                    <div>
-                      <p
-                        className={`text-sm ${
-                          completeProgress.type === 'error' ? 'text-red-600' : 'text-[#606266]'
-                        }`}
-                      >
-                        {completeProgress.type === 'completed'
-                          ? completeProgress.message || '复盘已完成'
-                          : completeProgress.message ||
-                            (completeProgress.type === 'progress' ? '正在处理中，请稍候…' : '')}
-                      </p>
-                      {completeProgress.type === 'completed' && (
-                        <Button
-                          type='link'
-                          size='small'
-                          className='mt-1 h-auto p-0'
-                          onClick={() => {
-                            setIsCompleting(false);
-                            void queryClient.invalidateQueries({ queryKey: ['tracking'] });
-                            const tid = completingTrackingIdRef.current || resolvedTrackingId;
-                            navigate(`/tracking/${encodeURIComponent(tid)}/report`);
-                            setCompleteProgress({ message: '', type: '' });
-                          }}
-                        >
-                          查看复盘报告
-                        </Button>
-                      )}
-                      {completeProgress.type === 'error' && (
-                        <div className='mt-1 flex flex-wrap gap-x-3'>
-                          <Button type='link' size='small' className='h-auto p-0' onClick={handleCancelCompleting}>
-                            关闭提示
-                          </Button>
-                          <Button
-                            type='link'
-                            size='small'
-                            className='h-auto p-0'
-                            loading={completeOrReviewPending}
-                            onClick={handleRetryComplete}
-                          >
-                            重试
-                          </Button>
-                        </div>
-                      )}
-                    </div>
+                    <HeaderAsyncProgress
+                      line={completeProgress}
+                      completedFallback="复盘已完成"
+                      completedLinkLabel="查看复盘报告"
+                      onCompletedLink={() => {
+                        setIsCompleting(false);
+                        void queryClient.invalidateQueries({ queryKey: ['tracking'] });
+                        const tid = completingTrackingIdRef.current || resolvedTrackingId;
+                        navigate(`/tracking/${encodeURIComponent(tid)}/report`);
+                        setCompleteProgress({ message: '', type: '' });
+                      }}
+                      onDismissError={handleCancelCompleting}
+                      onRetryError={handleRetryComplete}
+                      retryLoading={completeOrReviewPending}
+                    />
                   ) : undefined
                 }
               />

@@ -56,6 +56,23 @@ def _calc_overall_progress(phase: str, phase_progress: int) -> int:
     return int(round(lo + (hi - lo) * (p / 100.0)))
 
 
+async def _seed_adoption_progress_after_submit(thread_id: str, plan_id: str) -> None:
+    """采纳已写入 checkpoint、任务已入队后立刻落一条进度，避免首屏轮询落在空缓存上。"""
+    try:
+        await progress_cache.aset(
+            thread_id,
+            {
+                "type": "progress",
+                "stage": "execution",
+                "message": f"已提交采纳方案（{plan_id}），正在拉起执行任务…",
+                "percent": 8,
+                "timestamp": datetime.now(CN_TZ).isoformat(),
+            },
+        )
+    except Exception as e:
+        logger.debug("采纳初始进度写入失败 thread_id=%s: %s", thread_id, e)
+
+
 def _adopt_progress_payload(
     *,
     thread_id: str,
@@ -480,6 +497,7 @@ async def adopt_plan_and_enqueue(thread_id: str, plan_id: str) -> dict:
         payload={"thread_id": thread_id},
     )
     await running_tasks.register_job(thread_id, tenant_id, job_id)
+    await _seed_adoption_progress_after_submit(thread_id, plan_id)
     return {"status": "resumed", "adopted_plan_id": plan_id}
 
 
@@ -565,7 +583,11 @@ async def get_adopt_execution_progress_payload(thread_id: str) -> dict:
             adopted=adopted,
             phase="adoption",
         )
-    adoption_exec_running = is_running and (pending is not None or (stage == "execution"))
+    # 已提交采纳（checkpoint 有 pending）且图仍在 wait_adoption：worker 可能尚未写 Redis，
+    # 不能仅依赖 is_running，否则易误判为 idle。
+    adoption_exec_running = (is_running and (pending is not None or stage == "execution")) or (
+        pending is not None and wait_adopt
+    )
     if adoption_exec_running:
         p = 50 if percent is None else max(0, min(100, percent))
         return _adopt_progress_payload(
@@ -581,6 +603,42 @@ async def get_adopt_execution_progress_payload(thread_id: str) -> dict:
             adopted=adopted,
             phase="execution",
         )
+    # checkpoint 仍挂 pending，但图已不在 wait_adoption 且未标记已采纳：典型不一致/过期态
+    if pending and not wait_adopt and not adopted:
+        logger.warning(
+            "adopt_progress_stale_pending thread_id=%s pending=%s adopted=%s is_running=%s "
+            "cache_type=%s cache_stage=%s",
+            thread_id,
+            pending,
+            adopted,
+            is_running,
+            event_type,
+            stage,
+        )
+        return _adopt_progress_payload(
+            thread_id=thread_id,
+            status="idle",
+            is_running=False,
+            percent=0,
+            message=message or "采纳进度与诊断状态不一致，可能已过期；请刷新或从诊断历史重新进入",
+            last_ts=last_ts,
+            event_type=event_type,
+            node=node,
+            pending=pending,
+            adopted=adopted,
+            phase="adoption",
+        )
+    logger.debug(
+        "adopt_progress_idle thread_id=%s wait_adopt=%s pending=%s adopted=%s is_running=%s "
+        "cache_type=%s cache_stage=%s",
+        thread_id,
+        wait_adopt,
+        pending,
+        adopted,
+        is_running,
+        event_type,
+        stage,
+    )
     return _adopt_progress_payload(
         thread_id=thread_id,
         status="idle",

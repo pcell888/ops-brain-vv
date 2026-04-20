@@ -19,9 +19,9 @@ export function TrackingHeaderStatus({ persistent, transient, className }: Props
   return (
     <div className={['mt-2', className].filter(Boolean).join(' ')}>
       {hasT ? (
-        <div>{transient}</div>
+        <div className="text-left">{transient}</div>
       ) : (
-        <div className="text-sm leading-relaxed text-[#909399]">{persistent}</div>
+        <div className="text-left text-sm leading-relaxed text-[#909399]">{persistent}</div>
       )}
     </div>
   );

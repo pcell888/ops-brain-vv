@@ -16,9 +16,14 @@ import {
 } from '@/lib/hooks';
 import { solutionApi, type AdoptProgressResponse } from '@/lib/api';
 import { DiagnosisHistorySelect } from '@/components/diagnosis-history-select';
+import { HeaderAsyncProgress } from '@/components/header-async-progress';
 import { TrackingHeaderStatus } from '@/components/tracking-header-status';
 import { useAppStore } from '@/stores/app-store';
-import { formatSolutionsListPersistent } from '@/lib/solutions-header-status';
+import {
+  formatAdoptFailureLine,
+  formatAdoptCompletedTransientLine,
+  formatSolutionsListPersistent,
+} from '@/lib/solutions-header-status';
 import type { SolutionSummary, Anomaly } from '@/lib/types';
 
 export default function SolutionsPageWrapper() {
@@ -54,6 +59,8 @@ function SolutionsPage() {
   const isLoading = listLoading || (isCompleted && (reportLoading || solutionsLoading));
 
   const solutions = (solutionData?.solutions ?? []) as SolutionSummary[];
+  const solutionsRef = useRef(solutions);
+  solutionsRef.current = solutions;
   const solutionsProbeKey = useMemo(
     () => solutions.map((s) => `${s.solution_id}:${s.status ?? ''}`).join('|'),
     [solutions],
@@ -121,14 +128,22 @@ function SolutionsPage() {
       if (status === 'failed' || data.event_type === 'error') {
         stopInterval();
         setAdoptPollPlanId(null);
-        setAdoptLine({ message: line, type: 'error' });
-        message.error(line);
+        setAdoptUiActive(false);
+        setAdoptLine({ message: formatAdoptFailureLine(line), type: 'error' });
+        message.error(formatAdoptFailureLine(line));
         return;
       }
 
       if (status === 'completed' && !isRunning) {
         stopInterval();
-        setAdoptLine({ message: line, type: 'completed' });
+        const adoptedPid =
+          (data.adopted_plan_ids && data.adopted_plan_ids[0]) || adoptPollPlanId || '';
+        const planName =
+          solutionsRef.current.find((s) => s.solution_id === adoptedPid)?.name ?? null;
+        setAdoptLine({
+          message: formatAdoptCompletedTransientLine(data, planName),
+          type: 'completed',
+        });
         completionTimer = setTimeout(() => {
           if (cancelled) return;
           setAdoptUiActive(false);
@@ -151,9 +166,10 @@ function SolutionsPage() {
         if (cancelled) return;
         stopInterval();
         setAdoptPollPlanId(null);
+        setAdoptUiActive(false);
         const errText = e instanceof Error ? e.message : '进度查询失败';
-        setAdoptLine({ message: errText, type: 'error' });
-        message.error('采纳执行进度查询失败');
+        setAdoptLine({ message: formatAdoptFailureLine(errText), type: 'error' });
+        message.error(formatAdoptFailureLine(errText));
       }
     };
 
@@ -169,19 +185,9 @@ function SolutionsPage() {
     };
   }, [adoptUiActive, adoptPollPlanId, navigate, message]);
 
-  const handleDismissAdoptBar = () => {
-    setAdoptUiActive(false);
-    setAdoptPollPlanId(null);
-    setAdoptLine({ message: '', type: '' });
-  };
-
-  const handleRetryAdoptMonitor = () => {
-    const sid = adoptExecutedPlanIdRef.current;
-    if (!sid) return;
-    setAdoptPollPlanId(sid);
-    setAdoptUiActive(true);
-    setAdoptLine({ message: '正在重新查询采纳执行…', type: 'progress' });
-  };
+  useEffect(() => {
+    setAdoptLine((prev) => (prev.type === 'error' ? { message: '', type: '' } : prev));
+  }, [selectedDiagnosisId]);
 
   const handleViewDetail = (solutionId: string) => {
     if (selectedDiagnosisId) {
@@ -297,6 +303,10 @@ function SolutionsPage() {
   ];
 
   const anyAdopted = useMemo(() => solutions.some((s) => s.status === 'adopted'), [solutions]);
+  const adoptedPlanName = useMemo(() => {
+    const row = solutions.find((s) => s.status === 'adopted');
+    return row?.name?.trim() || null;
+  }, [solutions]);
 
   const listPersistentLine = useMemo(
     () =>
@@ -307,6 +317,7 @@ function SolutionsPage() {
         generating: Boolean(solutionData?.generating),
         solutionCount: solutions.length,
         anyAdopted,
+        adoptedPlanName,
       }),
     [
       selectedDiagnosisId,
@@ -315,6 +326,7 @@ function SolutionsPage() {
       solutionData?.generating,
       solutions.length,
       anyAdopted,
+      adoptedPlanName,
     ],
   );
 
@@ -349,39 +361,21 @@ function SolutionsPage() {
             />
           )}
         </div>
-        {((listPersistentLine != null && listPersistentLine !== '') || adoptUiActive) && (
+        {((listPersistentLine != null && listPersistentLine !== '') ||
+          adoptUiActive ||
+          adoptLine.type === 'error') && (
           <TrackingHeaderStatus
             className="!mt-0 border-t border-[#E4E7ED] pt-3"
             persistent={listPersistentLine}
             transient={
-              adoptUiActive ? (
-                <div>
-                  <p
-                    className={`text-sm ${
-                      adoptLine.type === 'error' ? 'text-red-600' : 'text-[#606266]'
-                    }`}
-                  >
-                    {adoptLine.type === 'completed'
-                      ? adoptLine.message || '执行已完成'
-                      : adoptLine.message ||
-                        (adoptLine.type === 'progress' ? '正在处理中，请稍候…' : '')}
-                  </p>
-                  {adoptLine.type === 'completed' && (
-                    <Button type="link" size="small" className="mt-1 h-auto p-0" onClick={() => navigate('/execution')}>
-                      查看执行任务
-                    </Button>
-                  )}
-                  {adoptLine.type === 'error' && (
-                    <div className="mt-1 flex flex-wrap gap-x-3">
-                      <Button type="link" size="small" className="h-auto p-0" onClick={handleDismissAdoptBar}>
-                        关闭提示
-                      </Button>
-                      <Button type="link" size="small" className="h-auto p-0" onClick={handleRetryAdoptMonitor}>
-                        重试
-                      </Button>
-                    </div>
-                  )}
-                </div>
+              adoptUiActive || adoptLine.type === 'error' ? (
+                <HeaderAsyncProgress
+                  line={adoptLine}
+                  completedFallback="执行已完成"
+                  completedLinkLabel="查看执行任务"
+                  onCompletedLink={() => navigate('/execution')}
+                  showErrorActions={false}
+                />
               ) : undefined
             }
           />

@@ -1,26 +1,28 @@
-"""定期指标快照采集 — 在效果追踪等待期间按间隔采集指标快照。"""
+"""效果追踪指标快照落库（定时由 weekly_diagnosis 注册）。
+
+目标 thread：待复盘 pending，以及「已建 ai_effect_tracking 且仍为 active 的 diag_*」（首次快照会 cancel 待复盘但仍需周期采集）。
+调度间隔见 Settings.effect_snapshot_interval_minutes（0=每日 3:00；>0=每 N 分钟）。
+复盘节点 track_effects 仍会实时拉指标。"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 from src.runtime.graph_app import get_graph_app
-from src.agent.tools import mcp_call
+from src.core.compat_tracking_repo import get_tracking
 from src.core.config import CN_TZ, get_settings
 from src.core.calculator import resolve_active_indicators
 from src.core.snapshot_repo import save_snapshot, get_last_snapshot_time
-from src.core.tenant_config import get_tenant_config
+from src.services.tracking_snapshot_service import _build_effect_tracking_snapshot
 
 logger = logging.getLogger(__name__)
 
-DIMENSION_TOOL_MAP: dict[str, str] = {
-    "crm": "get_crm_indicators",
-    "marketing": "get_marketing_indicators",
-    "retention": "get_retention_indicators",
-    "efficiency": "get_efficiency_indicators",
-}
+# IntervalTrigger 与 max_instances 配合：上一轮若仍在打 MCP，新触发可进入本协程并立即返回，避免被调度器整段丢弃。
+_snapshot_collect_lock = asyncio.Lock()
+_snapshot_collect_busy = False
 
 
 async def _get_pending_threads() -> list[dict]:
@@ -42,93 +44,172 @@ async def _get_pending_threads() -> list[dict]:
         return []
 
 
+async def _get_active_diag_tracking_threads(exclude_thread_ids: set[str]) -> list[dict]:
+    """采纳后若用户曾走「首次快照」接口，会 cancel 掉 ai_pending_review，但 ai_effect_tracking 仍为 active。
+
+    此类诊断仍应用 LangGraph checkpoint 做周期快照，故在此补全目标列表（仅 diag_ 前缀，与 checkpoint thread_id 一致）。
+    """
+    from src.core.db_init import ensure_ai_effect_tracking
+    from src.core.db_pool import get_conn
+    import psycopg.rows
+
+    await ensure_ai_effect_tracking()
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT t.thread_id, t.tenant_id, t.store_id, NULL::timestamptz AS review_due_date
+                    FROM ai_effect_tracking t
+                    WHERE LEFT(t.thread_id, 5) = 'diag_'
+                      AND (
+                        t.tracking_data->>'status' IS NULL
+                        OR TRIM(COALESCE(t.tracking_data->>'status', '')) IN ('', 'active')
+                      )
+                    """
+                )
+                rows = await cur.fetchall()
+        return [r for r in rows if str(r.get("thread_id") or "") not in exclude_thread_ids]
+    except Exception as e:
+        logger.warning("查询 active 效果追踪(diag)失败: %s", e)
+        return []
+
+
+async def _get_snapshot_target_threads() -> list[dict]:
+    pending = await _get_pending_threads()
+    seen = {str(r.get("thread_id") or "") for r in pending}
+    extra = await _get_active_diag_tracking_threads(seen)
+    return pending + extra
+
+
+def _to_cn(dt: datetime) -> datetime:
+    if dt.tzinfo:
+        return dt.astimezone(CN_TZ)
+    return dt.replace(tzinfo=CN_TZ)
+
+
 async def _collect_snapshot_for_thread(thread: dict) -> None:
     thread_id = thread["thread_id"]
+    diagnosis_id = thread_id  # 与 LangGraph / 前端「诊断 ID」一致
     tenant_id = thread["tenant_id"]
     store_id = thread["store_id"]
 
     settings = get_settings()
-    interval = settings.effect_snapshot_interval_minutes
-    if interval <= 0:
-        return
-
-    # 1:1 关系：每个 thread 只采集一次快照
-    last_time = await get_last_snapshot_time(thread_id)
-    if last_time:
-        return
+    sched_interval = settings.effect_snapshot_interval_minutes
 
     now_cn = datetime.now(CN_TZ)
-    due_raw = thread.get("review_due_date")
-    if due_raw is not None:
-        if isinstance(due_raw, datetime):
-            due_dt = due_raw.astimezone(CN_TZ) if due_raw.tzinfo else due_raw.replace(tzinfo=CN_TZ)
-        elif isinstance(due_raw, date):
-            due_dt = datetime.combine(due_raw, datetime.min.time(), tzinfo=CN_TZ)
-        else:
-            due_dt = None
-        if due_dt is not None:
-            collect_from = due_dt - timedelta(minutes=interval)
-            if now_cn < collect_from:
+    last_raw = await get_last_snapshot_time(thread_id)
+    if last_raw is not None and isinstance(last_raw, datetime):
+        last_cn = _to_cn(last_raw)
+        if sched_interval > 0:
+            gap = timedelta(minutes=max(1, sched_interval))
+            if now_cn - last_cn < gap:
+                logger.info(
+                    "快照跳过 diagnosis_id=%s: 距上次快照不足调度间隔 (last=%s 需间隔≥%s分钟)",
+                    diagnosis_id,
+                    last_cn.isoformat(),
+                    max(1, sched_interval),
+                )
                 return
+        elif last_cn.date() == now_cn.date():
+            logger.info("快照跳过 diagnosis_id=%s: 今日已采过（每日 3:00 模式）", diagnosis_id)
+            return
+
+    # 不在此用 review_due_date 拦截：execute 写入的到期日常为「任务 deadline 当日 00:00」，
+    # 当天午后会误判为已到期，导致整日无法自动快照。是否仍应采集由 status=pending 界定。
 
     app = await get_graph_app()
     config = {"configurable": {"thread_id": thread_id}}
     state = await app.aget_state(config)
     if not state.values:
+        logger.info(
+            "快照跳过 diagnosis_id=%s: LangGraph 无状态（checkpoint 缺失或 thread_id 不一致）",
+            diagnosis_id,
+        )
         return
+
+    tracking_data: dict = {}
+    row = await get_tracking(thread_id)
+    if row and row.get("tracking_data") is not None:
+        raw_td = row["tracking_data"]
+        if isinstance(raw_td, str):
+            tracking_data = json.loads(raw_td) if raw_td.strip() else {}
+        elif isinstance(raw_td, dict):
+            tracking_data = dict(raw_td)
+    if state.values.get("selected_dimensions") is not None:
+        tracking_data["selected_dimensions"] = state.values.get("selected_dimensions")
+    if state.values.get("selected_indicators") is not None:
+        tracking_data["selected_indicators"] = state.values.get("selected_indicators")
 
     active_dims, _ = resolve_active_indicators(
-        state.values.get("selected_dimensions"),
-        state.values.get("selected_indicators"),
+        tracking_data.get("selected_dimensions"),
+        tracking_data.get("selected_indicators"),
     )
-
-    tenant_config = await get_tenant_config(tenant_id)
-    lookback_days = int(tenant_config.get("analysis_period_days") or settings.diagnosis_lookback_days)
-    now = now_cn.strftime("%Y-%m-%d %H:%M:%S")
-    start = (now_cn - timedelta(days=lookback_days)).strftime("%Y-%m-%d %H:%M:%S")
-    common_args = {
-        "tenant_id": tenant_id,
-        "store_id": store_id,
-        "start_date": start,
-        "end_date": now,
-    }
-
-    ordered_dims: list[str] = []
-    tasks: list = []
-    for dim in ("crm", "marketing", "retention", "efficiency"):
-        if dim in active_dims:
-            tasks.append(mcp_call("metrics-server", DIMENSION_TOOL_MAP[dim], common_args))
-            ordered_dims.append(dim)
-
-    if not tasks:
+    if not active_dims:
+        logger.info(
+            "快照跳过 diagnosis_id=%s: 无可用指标维度 (active_dims=%s selected_dimensions=%s)",
+            diagnosis_id,
+            sorted(active_dims),
+            tracking_data.get("selected_dimensions"),
+        )
         return
 
+    auth_raw = state.values.get("auth_token")
+    auth_token = str(auth_raw).strip() if auth_raw else None
+    if not auth_token:
+        logger.warning(
+            "快照 diagnosis_id=%s: checkpoint 无 auth_token，企服指标可能为空（与手动带 Token 不一致）",
+            diagnosis_id,
+        )
+
     try:
-        results = await asyncio.gather(*tasks)
-        snapshot_data = dict(zip(ordered_dims, results))
-        await save_snapshot(thread_id, tenant_id, store_id, snapshot_data)
-        logger.info("快照采集完成: thread=%s", thread_id)
+        logger.info(
+            "快照拉取指标 diagnosis_id=%s tenant_id=%s store_id=%s has_auth_token=%s",
+            diagnosis_id,
+            tenant_id,
+            store_id or "",
+            bool(auth_token),
+        )
+        snapshot_payload = await _build_effect_tracking_snapshot(
+            tenant_id,
+            store_id or "",
+            tracking_data,
+            snapshot_at=now_cn,
+            auth_token=auth_token,
+        )
+        await save_snapshot(thread_id, tenant_id, store_id, snapshot_payload)
+        logger.info("快照采集完成 diagnosis_id=%s", diagnosis_id)
     except Exception as e:
-        logger.error("快照采集失败: thread=%s, error=%s", thread_id, e)
+        logger.error("快照采集失败 diagnosis_id=%s, error=%s", diagnosis_id, e)
 
 
 async def collect_effect_snapshots():
-    """入口：扫描所有追踪中的 thread，按间隔采集快照。"""
-    settings = get_settings()
-    if settings.effect_snapshot_interval_minutes <= 0:
-        return
+    """入口：扫描所有追踪中的 thread，按调度与节流规则采集快照。"""
+    global _snapshot_collect_busy
+    async with _snapshot_collect_lock:
+        if _snapshot_collect_busy:
+            logger.debug("效果追踪快照采集跳过：上一轮仍在执行")
+            return
+        _snapshot_collect_busy = True
+    try:
+        logger.info("===== 开始效果追踪快照采集 =====")
+        threads = await _get_snapshot_target_threads()
+        if not threads:
+            logger.info("无追踪中的诊断会话（待复盘 + active diag 效果追踪）")
+            return
 
-    logger.info("===== 开始效果追踪快照采集 =====")
-    threads = await _get_pending_threads()
-    if not threads:
-        logger.info("无追踪中的诊断会话")
-        return
+        logger.info("共 %d 个追踪中的诊断会话（待复盘 + active diag 效果追踪）", len(threads))
+        for thread in threads:
+            try:
+                await _collect_snapshot_for_thread(thread)
+            except Exception as e:
+                logger.error(
+                    "快照采集异常 diagnosis_id=%s, error=%s",
+                    thread.get("thread_id"),
+                    e,
+                )
 
-    logger.info("共 %d 个追踪中的诊断会话", len(threads))
-    for thread in threads:
-        try:
-            await _collect_snapshot_for_thread(thread)
-        except Exception as e:
-            logger.error("快照采集异常: thread=%s, error=%s", thread.get("thread_id"), e)
-
-    logger.info("===== 效果追踪快照采集完成 =====")
+        logger.info("===== 效果追踪快照采集完成 =====")
+    finally:
+        async with _snapshot_collect_lock:
+            _snapshot_collect_busy = False

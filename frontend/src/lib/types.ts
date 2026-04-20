@@ -380,7 +380,7 @@ export interface TrackingSummary {
   started_at: string;
   last_snapshot_at?: string;
   completed_at?: string;
-  /** 延迟复盘时后端返回，预计自动执行 track_effects 的日期 */
+  /** 预计自动完成追踪/触发复盘的时刻；追踪中为 active 时由后端必算并返回 */
   review_due_date?: string;
   scheduled?: boolean;
   /** 计划总时长（天），优先用于展示“已用/总时长” */

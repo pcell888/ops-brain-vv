@@ -42,8 +42,8 @@ class Settings(BaseSettings):
     # 方案执行后延迟多少分钟再执行效果追踪复盘（0 = 立即执行，不延迟）
     effect_track_delay_minutes: int = 10080  # 7 天
 
-    # 距自动复盘到期时刻前多少分钟起，允许定时任务采集唯一一次快照（0 = 不采集）
-    effect_snapshot_interval_minutes: int = 4320  # 3 天
+    # 效果追踪自动快照调度：0=每日凌晨 3:00（中国时区）跑一次；>0=每 N 分钟跑一次（APScheduler IntervalTrigger）。
+    effect_snapshot_interval_minutes: int = 0
 
     log_dir: str = "logs"
     log_level: str = "DEBUG"  # DEBUG / INFO / WARNING / ERROR
@@ -133,6 +133,12 @@ def log_diagnosis_service_config(logger: logging.Logger | None = None, *, prefix
         prefix,
         _uri_host_db(st.postgres_uri),
         _redis_host_db(st.redis_url),
+    )
+    log.info(
+        "%s | effect_track_delay_minutes=%s effect_snapshot_interval_minutes=%s (0=每日3:00快照)",
+        prefix,
+        st.effect_track_delay_minutes,
+        st.effect_snapshot_interval_minutes,
     )
 
 

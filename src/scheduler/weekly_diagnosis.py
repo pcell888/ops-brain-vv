@@ -8,6 +8,7 @@ import logging
 import psycopg.rows
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from src.runtime.graph_app import astream_events_with_retry, generate_thread_id
 from src.core.config import CN_TZ, get_settings
@@ -97,19 +98,37 @@ def start_scheduler():
         replace_existing=True,
     )
     scheduler.add_job(
-        collect_effect_snapshots,
-        trigger=CronTrigger(hour=3, minute=0, timezone=CN_TZ),
-        id="snapshot_collector",
-        name="每日效果追踪快照采集",
-        replace_existing=True,
-    )
-    scheduler.add_job(
         check_pending_reviews,
         trigger=CronTrigger(hour=4, minute=0, timezone=CN_TZ),
         id="effect_review_checker",
         name="每日效果追踪复盘检查",
         replace_existing=True,
     )
+    settings = get_settings()
+    snap_m = settings.effect_snapshot_interval_minutes
+    if snap_m > 0:
+        scheduler.add_job(
+            collect_effect_snapshots,
+            trigger=IntervalTrigger(minutes=snap_m, timezone=CN_TZ),
+            id="effect_snapshot_collector",
+            name="效果追踪快照采集（按间隔）",
+            replace_existing=True,
+            # 默认 max_instances=1 时，若单次采集耗时 > 间隔，后续触发会被丢弃，表现为「没有按间隔跑」
+            max_instances=8,
+        )
+        snap_desc = f"效果快照: 每 {snap_m} 分钟 (max_instances=8)"
+    else:
+        scheduler.add_job(
+            collect_effect_snapshots,
+            trigger=CronTrigger(hour=3, minute=0, timezone=CN_TZ),
+            id="effect_snapshot_collector",
+            name="效果追踪快照采集（每日3:00）",
+            replace_existing=True,
+        )
+        snap_desc = "效果快照: 每日3:00"
     scheduler.start()
-    logger.info("定时任务调度器已启动 (周度诊断: 每周一2:00, 任务检查: 每日9:00, 快照采集: 每日3:00, 复盘检查: 每日4:00)")
+    logger.info(
+        "定时任务调度器已启动 (周度诊断: 每周一2:00, 任务检查: 每日9:00, 复盘检查: 每日4:00, %s)",
+        snap_desc,
+    )
     return scheduler

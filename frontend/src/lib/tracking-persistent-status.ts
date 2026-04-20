@@ -1,12 +1,5 @@
 import dayjs from 'dayjs';
 
-function elapsedDays(startedAt?: string, endedAt?: string | null): number {
-  if (!startedAt) return 0;
-  const start = dayjs(startedAt);
-  const end = endedAt ? dayjs(endedAt) : dayjs();
-  return Math.max(0, end.diff(start, 'day'));
-}
-
 export type TrackingSummaryLike = {
   status: string;
   snapshot_count?: number;
@@ -15,6 +8,27 @@ export type TrackingSummaryLike = {
   completed_at?: string | null;
   total_duration_days?: number;
 };
+
+function elapsedDays(startedAt?: string, endedAt?: string | null): number {
+  if (!startedAt) return 0;
+  const start = dayjs(startedAt);
+  const end = endedAt ? dayjs(endedAt) : dayjs();
+  return Math.max(0, end.diff(start, 'day'));
+}
+
+/** 展示用预计时刻：后端 active 摘要会带 review_due_date；旧数据仅前端回退推算 */
+function resolveExpectedAutoCompleteAt(s: TrackingSummaryLike): string {
+  if (s.review_due_date) {
+    return dayjs(s.review_due_date).format('YYYY-MM-DD HH:mm');
+  }
+  const td = Number(s.total_duration_days);
+  if (s.started_at && Number.isFinite(td) && td > 0) {
+    return dayjs(s.started_at).add(Math.round(td), 'day').format('YYYY-MM-DD HH:mm');
+  }
+  return dayjs(s.started_at || undefined)
+    .add(7, 'day')
+    .format('YYYY-MM-DD HH:mm');
+}
 
 /** 效果追踪详情页：副标题下常驻一句（不含轮询临时文案） */
 export function formatDetailPersistentStatus(params: {
@@ -26,17 +40,10 @@ export function formatDetailPersistentStatus(params: {
   const s = params.summary;
   const snap = Math.max(Number(s.snapshot_count ?? 0), params.snapshotItemsLength);
   const usedDays = elapsedDays(s.started_at, s.completed_at);
-  const totalPlan = Number(s.total_duration_days);
 
   if (s.status === 'active') {
-    const bits: string[] = ['追踪中', `${snap} 次快照`];
-    if (Number.isFinite(totalPlan) && totalPlan > 0) {
-      bits.push(`约 ${usedDays}/${Math.round(totalPlan)} 天`);
-    } else {
-      bits.push(`约 ${usedDays} 天`);
-    }
-    bits.push('复盘前请「完成追踪」');
-    return bits.join(' · ');
+    const expectedAt = resolveExpectedAutoCompleteAt(s);
+    return `已追踪「${usedDays}」天，采集快照「${snap}」次，系统预计在「${expectedAt}」自动完成追踪`;
   }
 
   if (s.status === 'scheduled') {
