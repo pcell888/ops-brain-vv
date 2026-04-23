@@ -19,14 +19,13 @@ from src.core.compat_tracking_repo import (
 from src.core.calculator import INDICATOR_META
 from src.core.config import CN_TZ, get_settings
 from src.core.llm import build_chat_llm
-from src.core.tracking_names import legacy_auto_solution_label, resolve_solution_name
+from src.core.tracking_names import legacy_auto_solution_label, resolve_solution_name, _is_generic_solution_name
 from src.core.tracking_report_enrichment import needs_llm_enrichment
 from src.core.tracing import extract_or_estimate_llm_usage, llm_ainvoke_in_graph
 
 from src.services.tracking_error_service import LLMReviewReportError, TrackingServiceError
 from src.services.tracking_helper_service import (
     _derive_adopted_plan_name,
-    _is_generic_solution_name,
     _is_tracking_completed,
     _parse_dt,
     _safe_json_dict,
@@ -51,7 +50,7 @@ async def _llm_review_report(
         return None, None
 
     llm = build_chat_llm(
-        model=settings.llm_model,
+        model=settings.llm_model_review,
         temperature=0.3,
         timeout=settings.llm_httpx_timeout(),
         max_retries=0,
@@ -436,7 +435,7 @@ async def get_compat_review_report(tracking_id: str) -> dict:
                 scores=scores,
                 preferred_solution_name=adopted_plan_name,
             )
-            llm_report, review_llm_usage = await _llm_review_report(
+            llm_report, _review_llm_usage = await _llm_review_report(
                 tracking_data={
                     **tracking_data,
                     "tracking_id": tracking_id,
@@ -449,8 +448,6 @@ async def get_compat_review_report(tracking_id: str) -> dict:
             )
             if llm_report:
                 report = _merge_llm_report(base_report, llm_report)
-                if review_llm_usage:
-                    report["review_llm_usage"] = review_llm_usage
 
         normalized = _normalize_report_payload(
             tracking_id=tracking_id,

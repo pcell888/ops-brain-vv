@@ -93,9 +93,9 @@ async def _resolve_auto_complete_expected_at(row: dict, td: dict) -> datetime:
     interval = int(td.get("tracking_interval_days") or 0)
     if interval > 0:
         return started + timedelta(days=interval)
-    delay_m = int(getattr(get_settings(), "effect_track_delay_minutes", None) or 0)
-    if delay_m > 0:
-        return started + timedelta(minutes=delay_m)
+    delay_d = float(getattr(get_settings(), "effect_track_delay_days", None) or 0)
+    if delay_d > 0:
+        return started + timedelta(days=delay_d)
     return started + timedelta(days=7)
 
 
@@ -374,7 +374,7 @@ async def _complete_tracking_background(tracking_id: str) -> None:
         strict = bool(settings.llm_enabled and settings.llm_api_key)
         if strict:
             await send_thread_progress(tracking_id, {"type": "progress", "stage": "effect_track", "message": "正在生成 AI 复盘报告，请稍候…"})
-        llm_report, review_llm_usage = await _llm_review_report(
+        llm_report, _review_llm_usage = await _llm_review_report(
             tracking_data=llm_tracking_data,
             snapshots=snapshot_payload,
             exec_tasks=exec_tasks,
@@ -382,8 +382,6 @@ async def _complete_tracking_background(tracking_id: str) -> None:
             preferred_solution_name=adopted_plan_name,
         )
         report = _merge_llm_report(base_report, llm_report)
-        if review_llm_usage:
-            report["review_llm_usage"] = review_llm_usage
 
         if should_create_closing_snapshot and closing_data:
             await insert_snapshot(
@@ -393,6 +391,7 @@ async def _complete_tracking_background(tracking_id: str) -> None:
                 snapshot_data=closing_data,
                 snapshot_at=now,
             )
+        td_work["solution_name"] = resolve_solution_name(td_work, adopted_plan_name)
         await update_tracking_data(tracking_id, td_work)
         await upsert_review_report(
             thread_id=tracking_id,

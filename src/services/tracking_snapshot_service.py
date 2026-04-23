@@ -229,7 +229,8 @@ async def take_tracking_snapshot(tracking_id: str, enterprise_id: str | None, au
             snapshot_data = await _build_effect_tracking_snapshot(tenant_id, store_id, td, snapshot_at=now, auth_token=auth_token)
         except MCPToolInvocationError as e:
             logger.exception("采集快照 MCP 业务错误 tracking_id=%s", tracking_id)
-            raise TrackingServiceError(502, "指标采集失败，请稍后重试") from e
+            msg = str(e).strip() or "指标采集失败，请稍后重试"
+            raise TrackingServiceError(502, msg) from e
         except RuntimeError as err:
             logger.exception("采集快照指标服务不可用 tracking_id=%s", tracking_id)
             raise TrackingServiceError(502, "指标服务暂不可用，请稍后重试") from err

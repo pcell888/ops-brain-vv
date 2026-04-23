@@ -70,10 +70,10 @@ async def _llm_root_cause_analysis(
 
     required_codes = json.dumps([a["indicator_code"] for a in anomalies], ensure_ascii=False)
     user_msg = ROOT_CAUSE_ANALYSIS_USER.format(
-        store_profile=json.dumps(store_profile, ensure_ascii=False, indent=2),
+        store_profile=json.dumps(store_profile, ensure_ascii=False),
         required_codes=required_codes,
-        anomalies=json.dumps(anomalies, ensure_ascii=False, indent=2),
-        all_indicators=json.dumps(all_indicators, ensure_ascii=False, indent=2),
+        anomalies=json.dumps(anomalies, ensure_ascii=False),
+        all_indicators=json.dumps(all_indicators, ensure_ascii=False),
     )
     logger.info("LLM根因分析输入: %d chars (异常数: %d)", len(user_msg), len(anomalies))
 
@@ -85,6 +85,7 @@ async def _llm_root_cause_analysis(
             temperature=0.3,
             max_tokens=8192,
             runnable_config=runnable_config,
+            model=settings.llm_model_root_cause,
         )
     except Exception as e:
         logger.warning("LLM根因分析调用失败: %s", e)
@@ -232,17 +233,15 @@ async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
     slim_anomalies = _slim_anomalies(anomalies)
 
     root_causes: list[dict] = []
-    root_cause_llm_usage: dict | None = None
     if anomalies:
         emit_progress(state, "AI正在分析异常根因...", percent=55)
         merged: dict[str, dict] = {}
-        batch, batch_usage = await _llm_root_cause_analysis(
+        batch, _batch_usage = await _llm_root_cause_analysis(
             store_profile=slim_profile,
             anomalies=slim_anomalies,
             all_indicators=slim_indicators,
             runnable_config=config,
         )
-        root_cause_llm_usage = merge_llm_usage(root_cause_llm_usage, batch_usage)
         batch = normalize_llm_root_causes(batch, anomalies)
         merged.update(_root_causes_by_code(batch))
         for _round in range(2):
@@ -254,13 +253,12 @@ async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
                 f"补全遗漏根因 ({len(missing)}/{len(anomalies)})...",
                 percent=56 + _round,
             )
-            extra, extra_usage = await _llm_root_cause_analysis(
+            extra, _extra_usage = await _llm_root_cause_analysis(
                 store_profile=slim_profile,
                 anomalies=_slim_anomalies(missing),
                 all_indicators=slim_indicators,
                 runnable_config=config,
             )
-            root_cause_llm_usage = merge_llm_usage(root_cause_llm_usage, extra_usage)
             extra = normalize_llm_root_causes(extra, missing)
             merged.update(_root_causes_by_code(extra))
         root_causes = list(merged.values())
@@ -272,15 +270,6 @@ async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
                 len(anomalies),
                 still,
             )
-    if root_cause_llm_usage:
-        logger.info(
-            "根因分析汇总 tokens: prompt=%s completion=%s total=%s calls=%s",
-            root_cause_llm_usage.get("prompt_tokens", 0),
-            root_cause_llm_usage.get("completion_tokens", 0),
-            root_cause_llm_usage.get("total_tokens", 0),
-            root_cause_llm_usage.get("calls", 0),
-        )
-
     diagnosis_report = build_diagnosis_report(
         store_profile=state.get("store_profile", {}),
         health_score=health_score,
@@ -290,21 +279,6 @@ async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
         anomalies=anomalies,
         root_causes=root_causes,
     )
-    diagnosis_llm_usage_summary = {
-        "prompt_tokens": root_cause_llm_usage.get("prompt_tokens", 0) if root_cause_llm_usage else 0,
-        "completion_tokens": root_cause_llm_usage.get("completion_tokens", 0) if root_cause_llm_usage else 0,
-        "total_tokens": root_cause_llm_usage.get("total_tokens", 0) if root_cause_llm_usage else 0,
-        "input_tokens": root_cause_llm_usage.get("input_tokens", 0) if root_cause_llm_usage else 0,
-        "output_tokens": root_cause_llm_usage.get("output_tokens", 0) if root_cause_llm_usage else 0,
-        "calls": root_cause_llm_usage.get("calls", 0) if root_cause_llm_usage else 0,
-        "stages": {
-            "root_cause": root_cause_llm_usage,
-        },
-    }
-    if root_cause_llm_usage:
-        diagnosis_report["root_cause_llm_usage"] = root_cause_llm_usage
-    diagnosis_report["llm_usage_summary"] = diagnosis_llm_usage_summary
-
     is_scheduled = state.get("trigger_type") == "scheduled"
     scope_label = "全企业" if not state.get("store_id") else f"店铺 {state['store_id']}"
     emit_progress(state, f"{scope_label}诊断完成，正在推送报告...", percent=68)
@@ -378,6 +352,4 @@ async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
         "anomalies": anomalies,
         "root_causes": root_causes,
         "diagnosis_report": diagnosis_report,
-        "root_cause_llm_usage": root_cause_llm_usage,
-        "llm_usage_summary": diagnosis_llm_usage_summary,
     }

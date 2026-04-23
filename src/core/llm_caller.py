@@ -33,7 +33,20 @@ def _strip_json_fence(s: str) -> str:
 
 def _extract_text(resp: Any) -> str:
     c = getattr(resp, "content", "")
-    return c.strip() if isinstance(c, str) else str(c).strip()
+    if isinstance(c, str):
+        return c.strip()
+    if isinstance(c, list):
+        parts: list[str] = []
+        for block in c:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "".join(parts).strip()
+    return str(c).strip()
+
+
+_NO_THINK_SUFFIX = "/no_think"
 
 
 async def llm_call_json(
@@ -44,6 +57,7 @@ async def llm_call_json(
     temperature: float = 0.3,
     max_tokens: int | None = None,
     runnable_config: RunnableConfig | None = None,
+    model: str | None = None,
 ) -> tuple[Any, str, dict | None]:
     """统一的 LLM JSON 调用流程。
 
@@ -59,11 +73,21 @@ async def llm_call_json(
         overrides["max_tokens"] = max_tokens
     overrides["timeout"] = settings.llm_httpx_timeout()
 
+    if not settings.llm_thinking_enabled:
+        overrides["extra_body"] = {"enable_thinking": False}
+
+    if model is not None:
+        overrides["model"] = model
+
     llm = build_chat_llm(**overrides)
+
+    effective_user_prompt = user_prompt
+    if not settings.llm_thinking_enabled:
+        effective_user_prompt = user_prompt.rstrip() + _NO_THINK_SUFFIX
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": effective_user_prompt},
     ]
 
     resp = await llm_ainvoke_in_graph(llm, messages, runnable_config=runnable_config)

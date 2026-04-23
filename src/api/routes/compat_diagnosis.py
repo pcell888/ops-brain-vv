@@ -119,8 +119,10 @@ async def compat_diagnosis_status(diagnosis_id: str):
 
 def _empty_drill_response(metric_name: str, dimension: str, days: int, page: int, page_size: int) -> dict:
     now = datetime.now(CN_TZ)
+    disp = str((INDICATOR_META.get(metric_name) or {}).get("name") or "").strip()
     return {
         "metric_name": metric_name,
+        "metric_display_name": disp,
         "dimension": dimension,
         "drill_desc": "",
         "time_range": {
@@ -199,6 +201,7 @@ async def compat_drill_down(
 
     return {
         "metric_name": metric_name,
+        "metric_display_name": str(meta.get("name") or "").strip(),
         "dimension": dimension,
         "drill_desc": meta.get("drill_desc", ""),
         "time_range": {

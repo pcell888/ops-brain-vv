@@ -59,17 +59,17 @@ async def _get_tenant_row(tenant_id: str) -> dict | None:
         return None
 
 
-def _row_to_enterprise(row: dict) -> dict:
-    raw_config = row.get("config") or {}
+def _row_to_enterprise(tnt: dict) -> dict:
+    raw_config = tnt.get("config") or {}
     if isinstance(raw_config, str):
         raw_config = json.loads(raw_config)
     normalized_config = normalize_tenant_config(raw_config)
 
     return {
-        "id": row["tenant_id"],
-        "name": row.get("tenant_name") or row["tenant_id"],
-        "industry": row.get("industry_code") or "general",
-        "industry_name": row.get("industry_name"),
+        "id": tnt["tenant_id"],
+        "name": tnt.get("tenant_name") or tnt["tenant_id"],
+        "industry": tnt.get("industry_code") or "general",
+        "industry_name": tnt.get("industry_name"),
         "scale": normalized_config.get("scale"),
         "team_size": normalized_config.get("team_size"),
         "config": {
@@ -80,8 +80,8 @@ def _row_to_enterprise(row: dict) -> dict:
             "solution_sort_strategy": normalized_config.get("solution_sort_strategy", "balanced"),
         },
         "stores": normalized_config.get("stores", []),
-        "created_at": serialize_instant_cn(row["created_at"]) if row.get("created_at") else None,
-        "updated_at": serialize_instant_cn(row["updated_at"]) if row.get("updated_at") else None,
+        "created_at": serialize_instant_cn(tnt["created_at"]) if tnt.get("created_at") else None,
+        "updated_at": serialize_instant_cn(tnt["updated_at"]) if tnt.get("updated_at") else None,
     }
 
 

@@ -107,10 +107,13 @@ async def check_benchmark_dimensions(base_url: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-async def start_diagnosis(base_url: str, enterprise_id: str) -> tuple[bool, str, dict | None]:
+async def start_diagnosis(
+    base_url: str, enterprise_id: str, store_id: str = ""
+) -> tuple[bool, str, dict | None]:
     url = base_url.rstrip("/") + f"{API_PREFIX}/diagnosis/start"
     body = {
         "enterprise_id": enterprise_id,
+        "store_id": (store_id or "").strip(),
         "trigger_type": "manual",
         "async_mode": True,
     }
@@ -253,14 +256,19 @@ async def fetch_execution_tasks(base_url: str, diagnosis_id: str, limit: int = 1
         return False, str(e)
 
 
-async def fetch_tracking_list(base_url: str, diagnosis_id: str, limit: int = 20) -> tuple[bool, dict | str]:
+async def fetch_tracking_list(
+    base_url: str,
+    diagnosis_id: str,
+    limit: int = 20,
+    enterprise_id: str | None = None,
+) -> tuple[bool, dict | str]:
     url = base_url.rstrip("/") + f"{API_PREFIX}/tracking/list"
     try:
+        params: dict[str, str | int] = {"diagnosis_id": diagnosis_id, "skip": 0, "limit": max(1, min(limit, 100))}
+        if enterprise_id:
+            params["enterprise_id"] = enterprise_id.strip()
         async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(
-                url,
-                params={"diagnosis_id": diagnosis_id, "skip": 0, "limit": max(1, min(limit, 100))},
-            )
+            r = await client.get(url, params=params)
             if r.status_code == 200:
                 return True, r.json()
             return False, f"HTTP {r.status_code}: {r.text[:200]}"
@@ -292,11 +300,19 @@ async def fetch_tracking_report(base_url: str, tracking_id: str) -> tuple[bool, 
         return False, str(e)
 
 
-async def post_tracking_snapshot(base_url: str, tracking_id: str) -> tuple[bool, dict | str]:
+async def post_tracking_snapshot(
+    base_url: str,
+    tracking_id: str,
+    *,
+    enterprise_id: str | None = None,
+) -> tuple[bool, dict | str]:
     url = base_url.rstrip("/") + f"{API_PREFIX}/tracking/{tracking_id}/snapshot"
+    body: dict[str, str] = {}
+    if enterprise_id:
+        body["enterprise_id"] = enterprise_id.strip()
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(url, json={})
+            r = await client.post(url, json=body or {})
             if r.status_code != 200:
                 return False, f"HTTP {r.status_code}: {r.text[:200]}"
             return True, r.json()
@@ -652,9 +668,12 @@ def print_tracking_list(diagnosis_id: str, data: dict) -> None:
 def print_drill_down(data: dict) -> None:
     rows = data.get("data") or []
     labels = data.get("field_labels") or {}
+    mn = str(data.get("metric_name") or "-")
+    md = str(data.get("metric_display_name") or "").strip()
+    label_line = f"指标: {md}（{mn}）" if md else f"指标: {mn}"
     console.print(
         Text(
-            f"指标: {data.get('metric_name', '-')}  总数: {data.get('total', 0)}  "
+            f"{label_line}  总数: {data.get('total', 0)}  "
             f"分页: {data.get('page', 1)}",
             style="dim",
         )
@@ -663,7 +682,10 @@ def print_drill_down(data: dict) -> None:
         console.print(Text("无钻取数据。", style="yellow"))
         return
     keys = list(labels.keys()) if isinstance(labels, dict) and labels else list(rows[0].keys())
-    t = Table(title="指标钻取结果(前10)", show_header=True, header_style="bold")
+    tbl_title = "指标钻取结果(前10)"
+    if md:
+        tbl_title = f"{tbl_title} · {md}"
+    t = Table(title=tbl_title, show_header=True, header_style="bold")
     for k in keys:
         t.add_column(str(labels.get(k, k)), style="white")
     for row in rows[:10]:
@@ -1106,6 +1128,7 @@ async def run_enterprises(base_url: str, detail_tenant_id: str | None, sync_tena
 async def run_diagnose(
     base_url: str,
     enterprise_id: str,
+    store_id: str,
     adopt_solution_id: str | None,
     poll_interval: float,
     timeout_seconds: int,
@@ -1141,8 +1164,13 @@ async def run_diagnose(
         failed += 1
 
     console.print()
-    console.print(Panel(f"[bold]/api/v1/diagnosis/start[/bold] (enterprise_id={enterprise_id!r})", style="dim"))
-    ok, msg, start_data = await start_diagnosis(base_url, enterprise_id)
+    console.print(
+        Panel(
+            f"[bold]/api/v1/diagnosis/start[/bold] (enterprise_id={enterprise_id!r}, store_id={(store_id or '').strip()!r})",
+            style="dim",
+        )
+    )
+    ok, msg, start_data = await start_diagnosis(base_url, enterprise_id, store_id)
     if not ok:
         console.print(Text("FAIL ", style="bold red") + Text(msg, style="red"))
         return 1 if failed else 1
@@ -1190,6 +1218,11 @@ def main() -> int:
     p = argparse.ArgumentParser(description="兼容接口 CLI（诊断/报告/方案/钻取/采纳）")
     p.add_argument("--base-url", default=DEFAULT_BASE, help=f"服务 base URL（默认 {DEFAULT_BASE}）")
     p.add_argument("--enterprise-id", default="wlwq_local", help="企业ID（默认 wlwq_local）")
+    p.add_argument(
+        "--store-id",
+        default="",
+        help="门店ID；空则全企业诊断（兼容层 /diagnosis/start 的 store_id）",
+    )
     p.add_argument("--adopt", metavar="SOLUTION_ID", help="诊断完成后自动采纳该 solution_id")
     p.add_argument("--diagnosis-id", metavar="ID", default=None, help="配合 --view-solutions / --progress 指定诊断 ID")
     p.add_argument("--view-solutions", action="store_true", help="进入仅看方案模式")
@@ -1243,6 +1276,7 @@ def main() -> int:
         run_diagnose(
             base_url=args.base_url,
             enterprise_id=args.enterprise_id,
+            store_id=(args.store_id or "").strip(),
             adopt_solution_id=args.adopt,
             poll_interval=max(0.5, args.poll_interval),
             timeout_seconds=max(10, args.timeout),

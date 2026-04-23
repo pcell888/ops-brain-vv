@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from src.agent.tools import clear_progress_sender, mcp_call, set_progress_sender
-from src.core.config import CN_TZ, format_delay_minutes_zh, get_settings
+from src.core.config import CN_TZ, format_delay_days_zh, get_settings
 from src.core.diagnosis_errors import public_diagnosis_error_message
 from src.runtime.graph_app import get_graph_app
 from src.runtime.graph_app import astream_events_with_retry
@@ -316,8 +316,6 @@ async def build_compat_solution_list(diagnosis_id: str) -> dict:
             "total": 0,
             "generated_at": None,
             "ai_recommendation": None,
-            "solution_generation_llm_usage": values.get("solution_generation_llm_usage"),
-            "llm_usage_summary": values.get("llm_usage_summary"),
         }
 
     adopted_set = set(adopted_ids)
@@ -349,8 +347,6 @@ async def build_compat_solution_list(diagnosis_id: str) -> dict:
         "total": len(solutions),
         "generated_at": values.get("diagnosis_report", {}).get("generated_at"),
         "ai_recommendation": ai_recommendation,
-        "solution_generation_llm_usage": values.get("solution_generation_llm_usage"),
-        "llm_usage_summary": values.get("llm_usage_summary"),
     }
 
 
@@ -450,8 +446,6 @@ async def get_solutions_payload(thread_id: str) -> dict:
         "plan_count": len(plans),
         "plans": [_build_plan_detail(p, indicator_names, adopted_ids) for p in plans],
         "recommendation": _build_recommendation(plans) if len(plans) >= 2 else {},
-        "solution_generation_llm_usage": values.get("solution_generation_llm_usage"),
-        "llm_usage_summary": values.get("llm_usage_summary"),
     }
 
 
@@ -793,8 +787,8 @@ async def resume_after_adoption(thread_id: str, config: dict | None = None) -> N
             )
 
             if node_name == "execute_plans":
-                delay = get_settings().effect_track_delay_minutes
-                hint = format_delay_minutes_zh(delay)
+                delay = float(get_settings().effect_track_delay_days)
+                hint = format_delay_days_zh(delay)
                 done_msg = (
                     f"方案执行任务已全部创建，效果追踪将在 {hint}后自动执行"
                     if delay > 0
@@ -823,8 +817,8 @@ async def resume_after_adoption(thread_id: str, config: dict | None = None) -> N
         app = await get_graph_app()
         state = await app.aget_state(config)
         if state.next and "track_effects" in state.next:
-            delay = get_settings().effect_track_delay_minutes
-            hint = format_delay_minutes_zh(delay)
+            delay = float(get_settings().effect_track_delay_days)
+            hint = format_delay_days_zh(delay)
             await _send_execution_progress(
                 thread_id,
                 {

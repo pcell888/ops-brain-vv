@@ -9,7 +9,7 @@ PORT_FRONTEND := 3000
 PORTS := $(PORT_API) $(PORT_FRONTEND)
 
 # 假目标
-.PHONY: dev setup-dev infra up down kill-port clean deploy deploy-frontend
+.PHONY: dev setup-dev infra up down log kill-port clean deploy deploy-frontend
 
 # 1. 创建虚拟环境
 venv:
@@ -56,7 +56,11 @@ up:
 down:
 	docker compose down
 
-# 8. 清理缓存
+# 8. Docker 主服务（API）实时日志
+log:
+	docker compose logs -f ops-brain-api
+
+# 9. 清理缓存
 clean:
 	rm -rf $(VENV) __pycache__ *.pyc .pytest_cache
 
@@ -71,7 +75,7 @@ USER=ubuntu
 REMOTE_DIR=/home/ubuntu/WZQ/opt-brain
 
 # 要上传的内容
-SRC=src frontend config docker-compose.yml Makefile Dockerfile pyproject.toml
+SRC=src frontend alembic config docker-compose.yml Makefile Dockerfile pyproject.toml compat_cli.py diagnosis_cli.py alembic.ini
 
 # 要排除的内容
 EXCLUDES= \

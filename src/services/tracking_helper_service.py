@@ -61,17 +61,6 @@ def _parse_dt(v) -> datetime | None:
         return None
 
 
-def _is_generic_solution_name(v: object, plan_id: str | None = None) -> bool:
-    name = str(v or "").strip()
-    if (not name) or name.startswith("效果追踪"):
-        return True
-    pid = str(plan_id or "").strip()
-    legacy = legacy_auto_solution_label(pid)
-    if legacy and name == legacy:
-        return True
-    return False
-
-
 def _safe_json_dict(text: str) -> dict | None:
     body = text.strip()
     if body.startswith("```"):

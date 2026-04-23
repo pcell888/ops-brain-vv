@@ -1,0 +1,6 @@
+{
+    "kiroAgent.configureMCP": "Disabled",
+    "python.venvPath": "${workspaceFolder}",
+    "python.venv": ".venv",
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"
+}

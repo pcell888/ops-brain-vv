@@ -18,7 +18,7 @@ from src.core.config import CN_TZ, get_settings
 from src.core.llm_caller import llm_call_json
 from src.core.tracing import merge_llm_usage
 from src.core.push_log_repo import save_push_log
-from src.core.effect_review_repo import save_effect_tracking, save_review_report
+from src.core.effect_review_repo import get_tracking, save_effect_tracking, save_review_report
 from src.core.snapshot_repo import list_snapshots
 from src.core.solution_knowledge_repo import save_effective_plan
 from src.core.tracking_names import resolve_solution_name
@@ -64,6 +64,7 @@ async def _llm_generate_review(
             label="LLM复盘分析",
             temperature=0.3,
             runnable_config=runnable_config,
+            model=get_settings().llm_model_review,
         )
     except Exception as e:
         logger.warning("LLM 复盘报告调用失败（如 403 请检查 API Key/工作区权限）: %s", e)
@@ -144,6 +145,18 @@ async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> d
     tracking_data = calculate_effect_changes(before, after, target_indicators)
 
     thread_id = state.get("thread_id", "")
+    # save_effect_tracking 为 jsonb || 合并：新 dict 若带占位 solution_name 会覆盖库内正确名称
+    try:
+        existing_row = await get_tracking(thread_id)
+        if existing_row:
+            ex = existing_row.get("tracking_data") or {}
+            if isinstance(ex, str):
+                ex = json.loads(ex)
+            if isinstance(ex, dict) and ex:
+                tracking_data = {**ex, **tracking_data}
+    except Exception as e:
+        logger.warning("合并已有效果追踪数据失败 thread=%s: %s", thread_id, e)
+
     snapshots = await list_snapshots(thread_id)
 
     emit_progress(state, "AI正在生成复盘分析报告...", for_adoption_ui=False)
@@ -160,41 +173,13 @@ async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> d
         fallback_plan_name=primary_plan_name,
     )
 
-    review_report, review_llm_usage = await _llm_generate_review(
+    review_report, _review_llm_usage = await _llm_generate_review(
         tracking_data=tracking_data,
         plans=adopted_plans,
         exec_tasks=state.get("exec_tasks", []),
         snapshots=snapshots if snapshots else None,
         runnable_config=config,
     )
-    if review_llm_usage:
-        logger.info(
-            "复盘汇总 tokens: prompt=%s completion=%s total=%s calls=%s",
-            review_llm_usage.get("prompt_tokens", 0),
-            review_llm_usage.get("completion_tokens", 0),
-            review_llm_usage.get("total_tokens", 0),
-            review_llm_usage.get("calls", 0),
-        )
-        review_report["review_llm_usage"] = review_llm_usage
-
-    prior_summary = state.get("llm_usage_summary") if isinstance(state.get("llm_usage_summary"), dict) else None
-    llm_usage_summary = merge_llm_usage(prior_summary, review_llm_usage)
-    stages = dict((prior_summary or {}).get("stages") or {})
-    stages["root_cause"] = state.get("root_cause_llm_usage")
-    stages["solution_generation"] = state.get("solution_generation_llm_usage")
-    stages["review"] = review_llm_usage
-    if llm_usage_summary is None:
-        llm_usage_summary = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "calls": 0,
-        }
-    llm_usage_summary["stages"] = stages
-    review_report["llm_usage_summary"] = llm_usage_summary
-
     try:
         await save_effect_tracking(thread_id, tenant_id, store_id, tracking_data)
         await save_review_report(thread_id, tenant_id, store_id, review_report)
@@ -284,6 +269,4 @@ async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> d
     return {
         "tracking_data": tracking_data,
         "review_report": review_report,
-        "review_llm_usage": review_llm_usage,
-        "llm_usage_summary": llm_usage_summary,
     }

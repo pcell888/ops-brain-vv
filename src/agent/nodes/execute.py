@@ -260,10 +260,10 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
     emit_progress(state, f"共创建 {len(all_tasks)} 个执行任务")
 
     settings = get_settings()
-    delay_minutes = settings.effect_track_delay_minutes
-    if delay_minutes > 0:
+    delay_days = float(settings.effect_track_delay_days)
+    if delay_days > 0:
         thread_id = state.get("thread_id", "")
-        due_at = resolve_review_due_at(all_tasks, delay_minutes)
+        due_at = resolve_review_due_at(all_tasks, delay_days)
         try:
             await save_pending_review(thread_id, tenant_id, store_id, due_at)
             emit_progress(

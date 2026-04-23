@@ -89,8 +89,8 @@ def resolve_deadline_fields(value: object) -> tuple[str | None, str | None]:
     return text, deadline_at
 
 
-def resolve_review_due_at(all_tasks: list[dict], delay_minutes: int) -> datetime:
-    """复盘到期时刻（上海时区）：优先取执行任务最晚 deadline 的当日 00:00；无则 now + delay_minutes。"""
+def resolve_review_due_at(all_tasks: list[dict], delay_days: float) -> datetime:
+    """复盘到期时刻（上海时区）：优先取执行任务最晚 deadline 的当日 00:00；无则 now + delay_days。"""
     latest: datetime | None = None
     for t in all_tasks:
         d = parse_deadline_date(t.get("deadline_at") or t.get("deadline"))
@@ -100,7 +100,7 @@ def resolve_review_due_at(all_tasks: list[dict], delay_minutes: int) -> datetime
             latest = d
     if latest is not None:
         return datetime.combine(latest.date(), datetime.min.time(), tzinfo=CN_TZ)
-    return datetime.now(CN_TZ) + timedelta(minutes=delay_minutes)
+    return datetime.now(CN_TZ) + timedelta(days=float(delay_days))
 
 
 def ensure_deadline_at(task: dict) -> None:

@@ -16,7 +16,7 @@ from src.agent.prompts.solution_generation import (
     SOLUTION_GENERATION_SYSTEM,
     SOLUTION_GENERATION_USER,
 )
-from src.agent.utils import get_admin_accounts as _get_admin_accounts, slim_anomalies as _slim_anomalies, slim_indicators as _slim_indicators, slim_benchmarks as _slim_benchmarks
+from src.agent.utils import get_admin_accounts as _get_admin_accounts, slim_anomalies as _slim_anomalies, slim_indicators as _slim_indicators, slim_benchmarks as _slim_benchmarks, slim_root_causes as _slim_root_causes
 from src.core.config import get_settings
 from src.core.dept_resolver import dept_keyword_match as _dept_keyword_match
 from src.core.llm_caller import llm_call_json
@@ -243,12 +243,11 @@ async def _llm_generate_solutions(
 
     cases_text = ""
     if historical_cases:
-        cases_text = json.dumps(historical_cases[:3], ensure_ascii=False, indent=2)
+        cases_text = json.dumps(historical_cases[:3], ensure_ascii=False)
 
     mr_block = mandatory_rule_tasks or json.dumps(
         collect_mandatory_task_specs(anomalies),
         ensure_ascii=False,
-        indent=2,
     )
     if mr_block.strip() in ("[]", ""):
         mr_block = "（本次涉及指标在规则表中无 tasks 条目；若有券/消息类要求见上文 5.2.3 规范 JSON。）"
@@ -260,11 +259,11 @@ async def _llm_generate_solutions(
         "monthly_gmv": store_profile.get("monthly_gmv"),
     }
     user_msg = SOLUTION_GENERATION_USER.format(
-        store_profile=json.dumps(slim_profile, ensure_ascii=False, indent=2),
-        anomalies=json.dumps(anomalies, ensure_ascii=False, indent=2),
-        root_causes=json.dumps(root_causes, ensure_ascii=False, indent=2),
-        benchmarks=json.dumps(benchmarks, ensure_ascii=False, indent=2),
-        all_indicators=json.dumps(indicators, ensure_ascii=False, indent=2),
+        store_profile=json.dumps(slim_profile, ensure_ascii=False),
+        anomalies=json.dumps(anomalies, ensure_ascii=False),
+        root_causes=json.dumps(root_causes, ensure_ascii=False),
+        benchmarks=json.dumps(benchmarks, ensure_ascii=False),
+        all_indicators=json.dumps(indicators, ensure_ascii=False),
         indicator_push_rules=indicator_push_rules or format_indicator_rules_for_prompt(anomalies),
         mandatory_rule_tasks=mr_block,
         historical_cases=cases_text,
@@ -282,7 +281,9 @@ async def _llm_generate_solutions(
             user_prompt=user_msg,
             label="LLM方案生成",
             temperature=0.5,
+            max_tokens=4096,
             runnable_config=runnable_config,
+            model=get_settings().llm_model_solution,
         )
     except Exception as e:
         logger.warning("LLM方案生成调用失败: %s", e)
@@ -345,7 +346,7 @@ async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig)
 
     rules_text = format_indicator_rules_for_prompt(anomalies)
     mandatory_specs = collect_mandatory_task_specs(anomalies)
-    mandatory_json = json.dumps(mandatory_specs, ensure_ascii=False, indent=2)
+    mandatory_json = json.dumps(mandatory_specs, ensure_ascii=False)
 
     all_indicators = {
         "crm": state.get("crm_indicators", {}),
@@ -356,10 +357,10 @@ async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig)
 
     heartbeat_task = asyncio.create_task(_solution_generation_heartbeat(state))
     try:
-        plans, solution_generation_llm_usage = await _llm_generate_solutions(
+        plans, _solution_generation_llm_usage = await _llm_generate_solutions(
             store_profile=store_profile,
             anomalies=_slim_anomalies(anomalies),
-            root_causes=state.get("root_causes", []),
+            root_causes=_slim_root_causes(state.get("root_causes", [])),
             benchmarks=_slim_benchmarks(benchmarks, anomalies),
             indicators=_slim_indicators(all_indicators, anomalies),
             historical_cases=historical_cases if historical_cases else None,
@@ -383,14 +384,6 @@ async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig)
         plan["priority_score"] = roi * 0.6 + (10 - diff) * 0.2 + urgency * 0.2
 
     plans.sort(key=lambda p: p.get("priority_score", 0), reverse=True)
-    if solution_generation_llm_usage:
-        logger.info(
-            "方案生成汇总 tokens: prompt=%s completion=%s total=%s calls=%s",
-            solution_generation_llm_usage.get("prompt_tokens", 0),
-            solution_generation_llm_usage.get("completion_tokens", 0),
-            solution_generation_llm_usage.get("total_tokens", 0),
-            solution_generation_llm_usage.get("calls", 0),
-        )
 
     emit_progress(state, f"已生成 {len(plans)} 个优化方案，等待采纳", percent=98)
 
@@ -421,24 +414,6 @@ async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig)
     except Exception as e:
         logger.warning("推送方案采纳通知失败: %s", e)
 
-    prior_summary = state.get("llm_usage_summary") if isinstance(state.get("llm_usage_summary"), dict) else None
-    llm_usage_summary = merge_llm_usage(prior_summary, solution_generation_llm_usage)
-    stages = dict((prior_summary or {}).get("stages") or {})
-    stages["root_cause"] = state.get("root_cause_llm_usage")
-    stages["solution_generation"] = solution_generation_llm_usage
-    if llm_usage_summary is None:
-        llm_usage_summary = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "calls": 0,
-        }
-    llm_usage_summary["stages"] = stages
-
     return {
         "solution_plans": plans,
-        "solution_generation_llm_usage": solution_generation_llm_usage,
-        "llm_usage_summary": llm_usage_summary,
     }

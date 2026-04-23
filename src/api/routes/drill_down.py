@@ -143,10 +143,12 @@ async def get_diagnosis_drill_down(
     start = now - timedelta(days=days)
     fields = DRILL_ITEM_FIELDS.get(metric_code, [])
     field_labels = {f: DRILL_FIELD_LABELS.get(f, f) for f in fields}
+    meta = INDICATOR_META.get(metric_code) or {}
 
     return {
         "metric_name": metric_name,
         "metric_code": metric_code,
+        "metric_display_name": str(meta.get("name") or "").strip(),
         "dimension": dimension,
         "time_range": {"start": start.isoformat(), "end": now.isoformat()},
         "data": rows,

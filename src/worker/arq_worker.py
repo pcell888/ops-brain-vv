@@ -55,7 +55,7 @@ async def _mark_job_on_async_cancel(thread_id: str, job_id: str) -> None:
 
 
 async def job_run_diagnosis(ctx: dict, payload: dict) -> None:
-    from src.api.routes.diagnosis import _run_diagnosis_with_stream
+    from src.runtime.diagnosis_stream_runner import run_diagnosis_with_stream
     from src.runtime.thread_enterprise import unregister_thread
 
     thread_id = str(payload["thread_id"])
@@ -63,7 +63,7 @@ async def job_run_diagnosis(ctx: dict, payload: dict) -> None:
     try:
         if job_id:
             await mark_running(job_id)
-        await _run_diagnosis_with_stream(
+        await run_diagnosis_with_stream(
             thread_id=thread_id,
             tenant_id=str(payload["tenant_id"]),
             store_id=str(payload["store_id"]),

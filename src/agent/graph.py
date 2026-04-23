@@ -83,7 +83,7 @@ async def compile_graph():
 
     graph = build_graph()
     interrupts = ["wait_adoption"]
-    if settings.effect_track_delay_minutes > 0:
+    if float(settings.effect_track_delay_days) > 0:
         interrupts.append("track_effects")
     return graph.compile(
         checkpointer=checkpointer,

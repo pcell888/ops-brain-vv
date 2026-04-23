@@ -59,9 +59,30 @@ def slim_store_profile(profile: dict) -> dict:
 
 
 def slim_benchmarks(benchmarks: dict, anomalies: list[dict]) -> dict:
-    """精简基准数据，仅保留异常指标对应的基准。"""
+    """精简基准数据，仅保留异常指标对应的基准，且只取 avg_value 以降低 token。"""
     anomaly_codes = {a["indicator_code"] for a in anomalies if a.get("indicator_code")}
-    return {code: bench for code, bench in benchmarks.items() if code in anomaly_codes}
+    slim: dict = {}
+    for code, bench in benchmarks.items():
+        if code not in anomaly_codes:
+            continue
+        if isinstance(bench, dict):
+            slim[code] = {"avg_value": bench.get("avg_value")}
+        elif bench is not None:
+            slim[code] = {"avg_value": bench}
+    return slim
+
+
+def slim_root_causes(root_causes: list[dict]) -> list[dict]:
+    """精简根因列表，仅保留方案生成所需字段以降低 token。"""
+    return [
+        {
+            "anomaly_indicator": rc.get("anomaly_indicator"),
+            "cause": rc.get("cause"),
+            "confidence": rc.get("confidence"),
+            "recommendations": rc.get("recommendations"),
+        }
+        for rc in root_causes
+    ]
 
 
 def message_text(resp) -> str:

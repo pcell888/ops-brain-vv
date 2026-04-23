@@ -1,7 +1,7 @@
 """效果追踪指标快照落库（定时由 weekly_diagnosis 注册）。
 
 目标 thread：待复盘 pending，以及「已建 ai_effect_tracking 且仍为 active 的 diag_*」（首次快照会 cancel 待复盘但仍需周期采集）。
-调度间隔见 Settings.effect_snapshot_interval_minutes（0=每日 3:00；>0=每 N 分钟）。
+调度：每日 effect_snapshot_hour 整点跑一轮；同 thread 按 effect_snapshot_interval_days（天，可小数）做时间间隔节流；0 表示不限制。
 复盘节点 track_effects 仍会实时拉指标。"""
 
 from __future__ import annotations
@@ -95,25 +95,22 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
     store_id = thread["store_id"]
 
     settings = get_settings()
-    sched_interval = settings.effect_snapshot_interval_minutes
+    interval_days = float(settings.effect_snapshot_interval_days or 0.0)
 
     now_cn = datetime.now(CN_TZ)
     last_raw = await get_last_snapshot_time(thread_id)
     if last_raw is not None and isinstance(last_raw, datetime):
         last_cn = _to_cn(last_raw)
-        if sched_interval > 0:
-            gap = timedelta(minutes=max(1, sched_interval))
-            if now_cn - last_cn < gap:
+        if interval_days > 0:
+            gap_required = timedelta(days=interval_days)
+            if now_cn - last_cn < gap_required:
                 logger.info(
-                    "快照跳过 diagnosis_id=%s: 距上次快照不足调度间隔 (last=%s 需间隔≥%s分钟)",
+                    "快照跳过 diagnosis_id=%s: 距上次快照不足 %s 天 (last=%s)",
                     diagnosis_id,
+                    interval_days,
                     last_cn.isoformat(),
-                    max(1, sched_interval),
                 )
                 return
-        elif last_cn.date() == now_cn.date():
-            logger.info("快照跳过 diagnosis_id=%s: 今日已采过（每日 3:00 模式）", diagnosis_id)
-            return
 
     # 不在此用 review_due_date 拦截：execute 写入的到期日常为「任务 deadline 当日 00:00」，
     # 当天午后会误判为已到期，导致整日无法自动快照。是否仍应采集由 status=pending 界定。
