@@ -7,38 +7,22 @@ from __future__ import annotations
 
 import logging
 
-from src.agent.tools import clear_progress_sender, set_progress_sender
+from src.agent.progress import clear_progress_sender, set_progress_sender
+from src.core.datetime_cn import serialize_instant_cn
+from src.core.diagnosis_errors import public_diagnosis_error_message
+from src.core.phases import calc_overall_progress, phase_name
+from src.core.progress_utils import is_thread_running_full
 from src.runtime.diagnosis_ws_manager import manager, send_thread_progress
 from src.runtime.graph_app import astream_events_with_retry, get_graph_app
 from src.runtime.progress_store import progress_cache, write_progress_cache
 from src.runtime.running_tasks import running_tasks
-from src.core.async_job_meta_repo import create_job
-from src.core.datetime_cn import serialize_instant_cn
-from src.core.diagnosis_errors import public_diagnosis_error_message
-from src.core.effect_review_repo import review_report_exists
-from src.core.pending_review_repo import cancel_pending_review, get_pending_review_by_thread
-from src.core.solution_knowledge_repo import list_knowledge
+from src.repositories.async_job_meta import create_job
+from src.repositories.effect_review import review_report_exists
+from src.repositories.pending_review import cancel_pending_review, get_pending_review_by_thread
+from src.repositories.solution_knowledge import list_knowledge
 from src.worker.arq_queue import enqueue_review_job
 
 logger = logging.getLogger(__name__)
-
-_PHASE_NAME = {
-    "tracking": "追踪",
-    "completed": "已完成",
-}
-
-_PHASE_OVERALL_RANGE = {
-    "tracking": (90, 99),
-    "completed": (100, 100),
-}
-
-
-def _calc_overall_progress(phase: str, phase_progress: int) -> int:
-    p = max(0, min(100, int(phase_progress)))
-    lo, hi = _PHASE_OVERALL_RANGE.get(phase, (0, 100))
-    if lo == hi:
-        return lo
-    return int(round(lo + (hi - lo) * (p / 100.0)))
 
 
 class ReviewServiceError(Exception):
@@ -101,12 +85,12 @@ def _progress_payload(
         "tracking_id": thread_id,
         "status": status,
         "phase": phase,
-        "phase_name": _PHASE_NAME.get(phase, phase),
+        "phase_name": phase_name(phase),
         "is_running": is_running,
         "stage": "effect_track",
-        "percent": p,  # 兼容旧字段
-        "progress": p,  # 阶段内进度
-        "overall_progress": _calc_overall_progress(phase, p),
+        "percent": p,
+        "progress": p,
+        "overall_progress": calc_overall_progress(phase, p),
         "message": message,
         "last_timestamp": last_ts,
         "event_type": event_type,
@@ -131,8 +115,7 @@ async def build_review_progress(thread_id: str) -> dict:
     stage = cached.get("stage")
     node = cached.get("node") if isinstance(cached.get("node"), str) else None
 
-    task = running_tasks.get(thread_id)
-    is_running = (task is not None and not task.done()) or await running_tasks.is_running(thread_id)
+    is_running = await is_thread_running_full(thread_id)
 
     msg_hint, last_ts, pct_hint = _last_effect_track_hint(values, cached)
     rp_state = values.get("review_report")
@@ -263,12 +246,12 @@ async def build_review_progress(thread_id: str) -> dict:
         "tracking_id": thread_id,
         "status": "idle",
         "phase": "tracking",
-        "phase_name": _PHASE_NAME["tracking"],
+        "phase_name": phase_name("tracking"),
         "is_running": False,
         "stage": None,
         "percent": 0,
         "progress": 0,
-        "overall_progress": _calc_overall_progress("tracking", 0),
+        "overall_progress": calc_overall_progress("tracking", 0),
         "message": msg_hint,
         "last_timestamp": last_ts,
         "event_type": event_type,

@@ -6,7 +6,7 @@ from arq.connections import RedisSettings
 from urllib.parse import urlparse
 
 from src.runtime.running_tasks import running_tasks
-from src.core.async_job_meta_repo import (
+from src.repositories.async_job_meta import (
     mark_cancelled,
     mark_failed,
     mark_running,
@@ -87,7 +87,7 @@ async def job_run_diagnosis(ctx: dict, payload: dict) -> None:
 
 
 async def job_resume_after_adoption(ctx: dict, payload: dict) -> None:
-    from src.api.routes.solutions import _resume_after_adoption
+    from src.services.solution_service import resume_after_adoption
     from src.runtime.thread_enterprise import unregister_thread
 
     thread_id = str(payload["thread_id"])
@@ -96,7 +96,7 @@ async def job_resume_after_adoption(ctx: dict, payload: dict) -> None:
     try:
         if job_id:
             await mark_running(job_id)
-        await _resume_after_adoption(thread_id, config)
+        await resume_after_adoption(thread_id, config)
         await _mark_job_after_run_or_cancel(thread_id, job_id)
     except asyncio.CancelledError:
         await _mark_job_on_async_cancel(thread_id, job_id)

@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 
 from src.agent.prompts.review_analysis import REVIEW_ANALYSIS_SYSTEM, REVIEW_ANALYSIS_USER
-from src.core.compat_tracking_repo import (
+from src.repositories.tracking import (
     get_exec_task_stats,
     get_exec_task_team_size,
     get_review_report,
@@ -24,7 +24,7 @@ from src.core.tracking_report_enrichment import needs_llm_enrichment
 from src.core.tracing import extract_or_estimate_llm_usage, llm_ainvoke_in_graph
 
 from src.services.tracking_error_service import LLMReviewReportError, TrackingServiceError
-from src.services.tracking_helper_service import (
+from src.services.tracking_helper import (
     _derive_adopted_plan_name,
     _is_tracking_completed,
     _parse_dt,

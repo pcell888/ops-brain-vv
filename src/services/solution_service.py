@@ -5,55 +5,25 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from src.agent.tools import clear_progress_sender, mcp_call, set_progress_sender
+from src.agent.progress import clear_progress_sender, set_progress_sender
+from src.agent.tools import mcp_call
 from src.core.config import CN_TZ, format_delay_days_zh, get_settings
 from src.core.diagnosis_errors import public_diagnosis_error_message
+from src.core.phases import calc_overall_progress, phase_name, WORKFLOW_NODES
+from src.core.progress_utils import is_thread_running_full
 from src.runtime.graph_app import get_graph_app
 from src.runtime.graph_app import astream_events_with_retry
 from src.runtime.diagnosis_ws_manager import manager
 from src.runtime.progress_store import progress_cache
 from src.runtime.progress_store import write_progress_cache
 from src.runtime.running_tasks import running_tasks
-from src.core.diagnosis_report_repo import find_thread_id_by_plan_id, list_reports, update_plan_ids
+from src.repositories.diagnosis_report import find_thread_id_by_plan_id, list_reports, update_plan_ids
 from src.agent.nodes.rule_task_builder import task_db_row_to_push_payload
-from src.core.exec_task_repo import get_tasks_by_plan_id, list_distinct_plan_ids_for_thread, patch_related_resources, update_task_status
+from src.repositories.exec_task import get_tasks_by_plan_id, list_distinct_plan_ids_for_thread, patch_related_resources, update_task_status
 from src.worker.arq_queue import enqueue_adoption_job
 from src.services import async_job_service
 
 logger = logging.getLogger(__name__)
-
-_WORKFLOW_NODES = frozenset(
-    {
-        "collect_data",
-        "diagnose",
-        "generate_solutions",
-        "wait_adoption",
-        "execute_plans",
-        "track_effects",
-    }
-)
-
-_PHASE_NAME = {
-    "adoption": "采纳",
-    "execution": "执行",
-    "tracking": "追踪",
-    "completed": "已完成",
-}
-
-_PHASE_OVERALL_RANGE = {
-    "adoption": (60, 75),
-    "execution": (75, 90),
-    "tracking": (90, 99),
-    "completed": (100, 100),
-}
-
-
-def _calc_overall_progress(phase: str, phase_progress: int) -> int:
-    p = max(0, min(100, int(phase_progress)))
-    lo, hi = _PHASE_OVERALL_RANGE.get(phase, (0, 100))
-    if lo == hi:
-        return lo
-    return int(round(lo + (hi - lo) * (p / 100.0)))
 
 
 async def _seed_adoption_progress_after_submit(thread_id: str, plan_id: str) -> None:
@@ -92,11 +62,11 @@ def _adopt_progress_payload(
         "thread_id": thread_id,
         "status": status,
         "phase": phase,
-        "phase_name": _PHASE_NAME.get(phase, phase),
+        "phase_name": phase_name(phase),
         "is_running": is_running,
-        "percent": p,  # 兼容旧字段
-        "progress": p,  # 阶段内进度
-        "overall_progress": _calc_overall_progress(phase, p),
+        "percent": p,
+        "progress": p,
+        "overall_progress": calc_overall_progress(phase, p),
         "message": message,
         "last_timestamp": last_ts,
         "event_type": event_type,
@@ -299,9 +269,7 @@ async def build_compat_solution_list(diagnosis_id: str) -> dict:
     anomalies = values.get("anomalies") or []
 
     if not plans:
-        task = running_tasks.get(diagnosis_id)
-        is_running = (task is not None and not task.done()) or await running_tasks.is_running(diagnosis_id)
-        if is_running:
+        if await is_thread_running_full(diagnosis_id):
             return {
                 "diagnosis_id": diagnosis_id,
                 "solutions": [],
@@ -478,7 +446,11 @@ async def adopt_plan_and_enqueue(thread_id: str, plan_id: str) -> dict:
         raise SolutionServiceError(400, "该诊断已绑定其他方案的执行任务，不可采纳当前方案")
 
     await app.aupdate_state(config, {"pending_adopt_plan_id": plan_id})
-    tenant_id = str((state.values or {}).get("tenant_id") or "")
+    # 刷新状态，确保 checkpoint 已持久化
+    refreshed_state = await app.aget_state(config)
+    if refreshed_state.values.get("pending_adopt_plan_id") != plan_id:
+        raise SolutionServiceError(500, "状态更新失败，请重试")
+    tenant_id = str((refreshed_state.values or {}).get("tenant_id") or "")
     if not tenant_id:
         raise SolutionServiceError(400, "缺少 tenant_id，无法派发执行任务")
 
@@ -514,8 +486,7 @@ async def get_adopt_execution_progress_payload(thread_id: str) -> dict:
     except (TypeError, ValueError):
         percent = None
 
-    task = running_tasks.get(thread_id)
-    is_running = (task is not None and not task.done()) or await running_tasks.is_running(thread_id)
+    is_running = await is_thread_running_full(thread_id)
     pending = values.get("pending_adopt_plan_id")
     adopted = (values.get("adopted_plan_ids") or [])[:1]
     node = cached.get("node") if isinstance(cached.get("node"), str) else None
@@ -766,7 +737,7 @@ async def resume_after_adoption(thread_id: str, config: dict | None = None) -> N
             node_name = event.get("name", "")
             output = event.get("data", {}).get("output", {})
 
-            if node_name not in _WORKFLOW_NODES:
+            if node_name not in WORKFLOW_NODES:
                 continue
             if node_name == "track_effects":
                 continue

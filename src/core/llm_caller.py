@@ -9,6 +9,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 
 from src.core.config import get_settings
+from src.core.json_utils import strip_json_fence
 from src.core.llm import build_chat_llm
 from src.core.tracing import (
     extract_or_estimate_llm_usage,
@@ -17,18 +18,6 @@ from src.core.tracing import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _strip_json_fence(s: str) -> str:
-    s = s.strip()
-    if not s.startswith("```"):
-        return s
-    lines = s.split("\n")
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
 
 
 def _extract_text(resp: Any) -> str:
@@ -113,7 +102,7 @@ async def llm_call_json(
         )
 
     text = _extract_text(resp)
-    clean = _strip_json_fence(text)
+    clean = strip_json_fence(text)
     if not clean:
         return None, text, usage
 

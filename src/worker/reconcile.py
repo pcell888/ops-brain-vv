@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from src.core.async_job_meta_repo import (
+from src.repositories.async_job_meta import (
     claim_failed_job_startup_retry,
     list_recoverable_jobs,
 )

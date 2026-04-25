@@ -8,6 +8,7 @@ from fastapi import Request
 
 from src.core.config import get_settings
 from src.core.db_pool import get_conn
+from src.core.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +93,9 @@ async def sync_runtime_tokens(tenant_id: str, biz_token: str | None, platform_to
 
         settings = get_settings()
         if settings.tenant_cache_ttl > 0:
-            import redis.asyncio as aioredis
-
-            rd = aioredis.from_url(settings.redis_url, decode_responses=True)
+            rd = await get_redis()
             keys = [f"tenant:{tenant_id}"]
             await rd.delete(*keys)
-            await rd.aclose()
     except Exception as e:
         logger.warning("同步请求 token 到租户表失败 tenant_id=%s: %s", tenant_id, e)
 

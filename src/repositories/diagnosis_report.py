@@ -7,8 +7,8 @@ import logging
 
 from psycopg.rows import dict_row
 
-from src.core.db_init import ensure_ai_diagnosis_report
 from src.core.db_pool import get_conn
+from src.core.exceptions import AppError
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,6 @@ async def save_report(
     report: dict,
 ) -> None:
     """写入或覆盖该 thread_id 的诊断报告。落库前确保表存在。"""
-    await ensure_ai_diagnosis_report()
     report_json = json.dumps(report, ensure_ascii=False)
     try:
         async with get_conn() as conn:
@@ -41,12 +40,11 @@ async def save_report(
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("诊断报告落库失败: %s", e)
-        raise
+        raise AppError("保存诊断报告失败", thread_id=thread_id, tenant_id=tenant_id, store_id=store_id) from e
 
 
 async def get_report(thread_id: str) -> dict | None:
-    """按 thread_id 查询报告。同时返回 DB 列中的 tenant_id / store_id，兜底填充缺失字段。"""
+    """按 thread_id 查询报告。"""
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -57,15 +55,10 @@ async def get_report(thread_id: str) -> dict | None:
                 row = await cur.fetchone()
                 if row and row.get("report"):
                     report = row["report"] if isinstance(row["report"], dict) else dict(row["report"])
-                    if not report.get("tenant_id") and row.get("tenant_id"):
-                        report["tenant_id"] = row["tenant_id"]
-                    if not report.get("store_id") and row.get("store_id"):
-                        report["store_id"] = row["store_id"]
                     return report
                 return None
     except Exception as e:
-        logger.warning("查询诊断报告失败: %s", e)
-        return None
+        raise AppError("查询诊断报告失败", thread_id=thread_id) from e
 
 
 async def list_reports(
@@ -106,13 +99,11 @@ async def list_reports(
                 items = [dict(r) for r in rows]
                 return items, total
     except Exception as e:
-        logger.warning("列表诊断报告失败: %s", e)
-        return [], 0
+        raise AppError("列表诊断报告失败", tenant_id=tenant_id, store_id=store_id, page=page) from e
 
 
 async def update_plan_ids(thread_id: str, plan_ids: list[str]) -> None:
     """更新指定诊断报告的 plan_ids 列表。"""
-    await ensure_ai_diagnosis_report()
     plan_ids_json = json.dumps(plan_ids, ensure_ascii=False)
     try:
         async with get_conn() as conn:
@@ -127,12 +118,11 @@ async def update_plan_ids(thread_id: str, plan_ids: list[str]) -> None:
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("更新 plan_ids 失败: thread_id=%s, error=%s", thread_id, e)
+        raise AppError("更新 plan_ids 失败", thread_id=thread_id) from e
 
 
 async def find_thread_id_by_plan_id(plan_id: str) -> str | None:
     """通过 plan_id 查找对应的 thread_id。"""
-    await ensure_ai_diagnosis_report()
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -149,5 +139,4 @@ async def find_thread_id_by_plan_id(plan_id: str) -> str | None:
                 row = await cur.fetchone()
                 return row.get("thread_id") if row else None
     except Exception as e:
-        logger.warning("通过 plan_id 查找 thread_id 失败: plan_id=%s, error=%s", plan_id, e)
-        return None
+        raise AppError("通过 plan_id 查找 thread_id 失败", plan_id=plan_id) from e

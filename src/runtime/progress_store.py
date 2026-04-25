@@ -8,7 +8,7 @@ import logging
 
 import redis.asyncio as aioredis
 
-from src.core.config import get_settings
+from src.core.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +22,6 @@ class ProgressStore:
     def __init__(self):
         self._local: dict[str, dict] = {}
         self._local_history: dict[str, list[dict]] = {}
-        self._redis: aioredis.Redis | None = None
-        self._redis_lock = asyncio.Lock()
         self._thread_write_locks: dict[str, asyncio.Lock] = {}
         self._thread_write_locks_mutex = asyncio.Lock()
 
@@ -48,20 +46,11 @@ class ProgressStore:
             del history[:-_PROGRESS_HISTORY_LIMIT]
 
     async def _get_redis(self) -> aioredis.Redis | None:
-        if self._redis is not None:
-            return self._redis
-        async with self._redis_lock:
-            if self._redis is not None:
-                return self._redis
-            try:
-                self._redis = aioredis.from_url(
-                    get_settings().redis_url,
-                    decode_responses=True,
-                )
-            except Exception as e:
-                logger.warning("初始化 Redis ProgressStore 失败: %s", e)
-                self._redis = None
-        return self._redis
+        try:
+            return await get_redis()
+        except Exception as e:
+            logger.warning("获取 Redis 连接失败: %s", e)
+            return None
 
     async def aget(self, thread_id: str) -> dict | None:
         rd = await self._get_redis()

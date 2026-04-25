@@ -6,28 +6,16 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
+from src.agent.constants import DIMENSION_TOOL_MAP, DIMENSION_STATE_KEY
 from src.agent.state import DiagnosisState
-from src.agent.tools import mcp_call, emit_progress, unwrap_mcp_json_value
+from src.agent.progress import emit_progress
+from src.agent.tools import mcp_call, unwrap_mcp_json_value
 from src.core.calculator import extract_indicator_codes, resolve_active_indicators, NOT_APPLICABLE_MAP
 from src.core.config import CN_TZ, get_settings
 from src.core.tenant_config import get_tenant_config
 from src.mcp_servers.biz_scope import effective_store_id_for_biz
 
 logger = logging.getLogger(__name__)
-
-DIMENSION_TOOL_MAP: dict[str, str] = {
-    "crm": "get_crm_indicators",
-    "marketing": "get_marketing_indicators",
-    "retention": "get_retention_indicators",
-    "efficiency": "get_efficiency_indicators",
-}
-
-DIMENSION_STATE_KEY: dict[str, str] = {
-    "crm": "crm_indicators",
-    "marketing": "marketing_indicators",
-    "retention": "retention_indicators",
-    "efficiency": "efficiency_indicators",
-}
 
 
 async def collect_data_node(state: DiagnosisState) -> dict:
@@ -100,7 +88,15 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         all_results = await asyncio.gather(profile_task, *dim_tasks.values())
     except Exception as e:
         logger.error("collect_data failed: %s", e, exc_info=True)
-        # 不向用户推送 error 级进度：详情只打日志，失败说明由诊断顶层统一返回，避免进度条与长错误文案并存
+        # 发送失败进度消息，保留当前进度，让用户知道失败原因
+        current_percent = base_percent + int(percent_step * _done_calls[0]) if total_calls > 0 else 10
+        error_msg = str(e)
+        # 简化错误消息，避免暴露内部细节
+        if "connection" in error_msg.lower() or "timeout" in error_msg.lower():
+            user_msg = "分析过程中获取数据失败，请稍后重试。"
+        else:
+            user_msg = "数据采集失败，请检查网络连接后重试。"
+        emit_progress(state, user_msg, percent=current_percent, level="error")
         raise
 
     profile = all_results[0]

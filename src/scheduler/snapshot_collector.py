@@ -12,11 +12,11 @@ import logging
 from datetime import datetime, timedelta
 
 from src.runtime.graph_app import get_graph_app
-from src.core.compat_tracking_repo import get_tracking
+from src.repositories.tracking import get_tracking
 from src.core.config import CN_TZ, get_settings
 from src.core.calculator import resolve_active_indicators
-from src.core.snapshot_repo import save_snapshot, get_last_snapshot_time
-from src.services.tracking_snapshot_service import _build_effect_tracking_snapshot
+from src.repositories.snapshot import save_snapshot, get_last_snapshot_time
+from src.services.tracking_snapshot import _build_effect_tracking_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +27,9 @@ _snapshot_collect_busy = False
 
 async def _get_pending_threads() -> list[dict]:
     """获取所有处于追踪等待状态的 pending review 记录（含到期日）。"""
-    from src.core.db_init import ensure_ai_pending_review
     from src.core.db_pool import get_conn
     import psycopg.rows
 
-    await ensure_ai_pending_review()
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
@@ -49,11 +47,9 @@ async def _get_active_diag_tracking_threads(exclude_thread_ids: set[str]) -> lis
 
     此类诊断仍应用 LangGraph checkpoint 做周期快照，故在此补全目标列表（仅 diag_ 前缀，与 checkpoint thread_id 一致）。
     """
-    from src.core.db_init import ensure_ai_effect_tracking
     from src.core.db_pool import get_conn
     import psycopg.rows
 
-    await ensure_ai_effect_tracking()
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:

@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from src.agent.tools import MCP_SERVER_MODULES, mcp_call, mcp_stdio_env
+from src.agent.mcp_client import MCP_SERVER_MODULES, mcp_stdio_env
+from src.agent.tools import mcp_call
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/mcp", tags=["mcp"])

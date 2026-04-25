@@ -470,18 +470,7 @@ export default function TrackingPage() {
               <HeaderAsyncProgress
                 line={completeProgress}
                 completedFallback="复盘已完成"
-                completedLinkLabel="查看复盘报告"
-                onCompletedLink={() => {
-                  setIsCompleting(false);
-                  void queryClient.invalidateQueries({ queryKey: ['tracking'] });
-                  const tid = completingTrackingIdRef.current;
-                  if (tid) navigate(`/tracking/${encodeURIComponent(tid)}/report`);
-                  else navigate('/tracking');
-                  setCompleteProgress({ message: '', type: '' });
-                }}
-                onDismissError={handleCancelCompleting}
-                onRetryError={handleRetryComplete}
-                retryLoading={completeTracking.isPending}
+                showErrorActions={false}
               />
             ) : undefined
           }

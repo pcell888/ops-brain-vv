@@ -9,7 +9,8 @@ from datetime import datetime
 
 import redis.asyncio as aioredis
 
-from src.core.config import CN_TZ, get_settings
+from src.core.config import CN_TZ
+from src.core.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,6 @@ class RunningTaskStore:
         self._local_tasks: dict[str, asyncio.Task] = {}
         self._local_thread_tenant: dict[str, str] = {}
         self._local_cancel_requested_until: dict[str, float] = {}
-        self._redis: aioredis.Redis | None = None
-        self._redis_lock = asyncio.Lock()
 
     def _task_key(self, thread_id: str) -> str:
         return f"opsbrain:task:running:{thread_id}"
@@ -45,20 +44,11 @@ class RunningTaskStore:
         return f"opsbrain:task:cancel-requested:{thread_id}"
 
     async def _get_redis(self) -> aioredis.Redis | None:
-        if self._redis is not None:
-            return self._redis
-        async with self._redis_lock:
-            if self._redis is not None:
-                return self._redis
-            try:
-                self._redis = aioredis.from_url(
-                    get_settings().redis_url,
-                    decode_responses=True,
-                )
-            except Exception as e:
-                logger.warning("初始化 Redis RunningTaskStore 失败: %s", e)
-                self._redis = None
-        return self._redis
+        try:
+            return await get_redis()
+        except Exception as e:
+            logger.warning("获取 Redis 连接失败: %s", e)
+            return None
 
     def get(self, thread_id: str):
         return self._local_tasks.get(thread_id)

@@ -8,13 +8,13 @@ import re
 from datetime import date, datetime
 
 from src.core.datetime_cn import serialize_instant_cn
-from src.core.compat_tracking_repo import (
+from src.repositories.tracking import (
     get_diagnosis_health_score,
     get_earliest_exec_task_created_at,
     get_first_exec_task,
     get_latest_adopted_plan_name,
 )
-from src.core.tracking_names import legacy_auto_solution_label, resolve_solution_name
+from src.core.tracking_names import resolve_solution_name
 
 logger = logging.getLogger(__name__)
 

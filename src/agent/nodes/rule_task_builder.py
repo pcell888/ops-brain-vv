@@ -170,6 +170,8 @@ def task_db_row_to_push_payload(row: dict) -> dict:
 
 def build_tasks_from_rule_specs(specs: list[dict], dept_info: dict, indicator_code: str | None = None) -> list[dict]:
     """从 5.2.3 规则任务规格列表构建 create_execution_tasks 所需的 tasks。"""
+    from src.core.exceptions import AppError
+
     tasks: list[dict] = []
     default_uid, default_dept_id = resolve_default_assignee(dept_info)
 
@@ -183,6 +185,15 @@ def build_tasks_from_rule_specs(specs: list[dict], dept_info: dict, indicator_co
         deadline_text, deadline_at = resolve_deadline_fields(s.get("timeline"))
 
         task_name = s.get("task_name", "优化任务")
+        if uid is None:
+            raise AppError(
+                f"无法获取执行人：规则任务「{task_name}」未找到可分配的负责人（owner_dept={s.get('owner_dept', '')}），"
+                "请检查部门信息是否包含有效用户。",
+                indicator_code=indicator_code,
+                task_name=task_name,
+                owner_dept=s.get("owner_dept", ""),
+            )
+
         description_parts = []
         if indicator_code:
             description_parts.append(f"[{indicator_code}异常]")
@@ -219,6 +230,8 @@ def build_tasks_from_rule_specs(specs: list[dict], dept_info: dict, indicator_co
 
 def build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
     """根据方案步骤和部门信息构建执行任务列表。"""
+    from src.core.exceptions import AppError
+
     tasks: list[dict] = []
     default_uid, default_dept_id = resolve_default_assignee(dept_info)
 
@@ -230,6 +243,15 @@ def build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
             assignee_dept_id = default_dept_id
 
         action = step.get("action", plan.get("plan_name", ""))
+        if assignee_user_id is None:
+            raise AppError(
+                f"无法获取执行人：任务「{action}」未找到可分配的负责人（owner_dept={owner_dept}），"
+                "请检查部门信息是否包含有效用户。",
+                plan_id=plan.get("plan_id"),
+                step_action=action,
+                owner_dept=owner_dept,
+            )
+
         data_ctx = step.get("data_context", "")
         desc_parts = [f"[{plan.get('plan_name', '')}]"]
         if data_ctx:
@@ -256,11 +278,19 @@ def build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
         tasks.append(tdict)
 
     if not tasks:
+        assignee_user_id = default_uid
+        assignee_dept_id = default_dept_id
+        if assignee_user_id is None:
+            raise AppError(
+                f"无法获取执行人：方案「{plan.get('plan_name', '')}」无可分配的负责人，请检查部门信息是否包含有效用户。",
+                plan_id=plan.get("plan_id"),
+                plan_name=plan.get("plan_name"),
+            )
         tdict = {
             "task_name": plan.get("plan_name", "优化任务"),
             "description": plan.get("description", ""),
-            "assignee_user_id": None,
-            "assignee_dept_id": None,
+            "assignee_user_id": assignee_user_id,
+            "assignee_dept_id": assignee_dept_id,
             "deadline": None,
             "deadline_at": None,
             "priority": plan.get("priority_level", "medium"),

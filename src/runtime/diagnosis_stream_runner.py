@@ -6,9 +6,10 @@ import asyncio
 import logging
 from datetime import datetime
 
-from src.agent.tools import clear_progress_sender, set_progress_sender
+from src.agent.progress import clear_progress_sender, set_progress_sender
 from src.core.config import CN_TZ, log_diagnosis_run_context
 from src.core.diagnosis_errors import public_diagnosis_error_message
+from src.core.phases import WORKFLOW_NODES
 from src.core.tracing import get_tracer
 
 from .diagnosis_ws_manager import manager
@@ -18,18 +19,6 @@ from .running_tasks import running_tasks
 
 logger = logging.getLogger(__name__)
 tracer = get_tracer("diagnosis")
-
-# 仅处理图内节点事件，避免顶层 LangGraph 的 on_chain_end 重复推送整图 progress_messages
-_WORKFLOW_NODES = frozenset(
-    {
-        "collect_data",
-        "diagnose",
-        "generate_solutions",
-        "wait_adoption",
-        "execute_plans",
-        "track_effects",
-    }
-)
 
 _NODE_START_PERCENT = {
     "collect_data": 5,
@@ -125,7 +114,7 @@ async def run_diagnosis_with_stream(
 
                 if kind == "on_chain_start":
                     node_name = event.get("name", "")
-                    if node_name in _WORKFLOW_NODES:
+                    if node_name in WORKFLOW_NODES:
                         payload = {
                             "type": "node_start",
                             "node": node_name,
@@ -152,7 +141,7 @@ async def run_diagnosis_with_stream(
                     node_name = event.get("name", "")
                     output = event.get("data", {}).get("output", {})
 
-                    if node_name not in _WORKFLOW_NODES:
+                    if node_name not in WORKFLOW_NODES:
                         continue
 
                     if isinstance(output, dict) and "progress_messages" in output:

@@ -8,8 +8,8 @@ import logging
 import psycopg.rows
 
 from src.core.datetime_cn import serialize_instant_cn
-from src.core.db_init import ensure_ai_effect_snapshot
 from src.core.db_pool import get_conn
+from src.core.exceptions import AppError
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,6 @@ async def save_snapshot(
     store_id: str,
     snapshot_data: dict,
 ) -> None:
-    await ensure_ai_effect_snapshot()
     data_json = json.dumps(snapshot_data, ensure_ascii=False)
     try:
         async with get_conn() as conn:
@@ -34,12 +33,11 @@ async def save_snapshot(
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("快照保存失败 [%s]: %s", thread_id, e)
+        raise AppError("快照保存失败", thread_id=thread_id) from e
 
 
 async def list_snapshots(thread_id: str) -> list[dict]:
     """按时间正序返回该 thread 的所有快照。"""
-    await ensure_ai_effect_snapshot()
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
@@ -58,8 +56,7 @@ async def list_snapshots(thread_id: str) -> list[dict]:
                         r["snapshot_at"] = serialize_instant_cn(r["snapshot_at"])
                 return rows
     except Exception as e:
-        logger.warning("查询快照失败 [%s]: %s", thread_id, e)
-        return []
+        raise AppError("查询快照失败", thread_id=thread_id) from e
 
 
 async def get_last_snapshot_time(thread_id: str):
@@ -74,8 +71,7 @@ async def get_last_snapshot_time(thread_id: str):
                 row = await cur.fetchone()
                 return row[0] if row else None
     except Exception as e:
-        logger.warning("查询最后快照时间失败 [%s]: %s", thread_id, e)
-        return None
+        raise AppError("查询最后快照时间失败", thread_id=thread_id) from e
 
 
 async def get_snapshot_by_id(snapshot_id: int) -> dict | None:
@@ -89,8 +85,7 @@ async def get_snapshot_by_id(snapshot_id: int) -> dict | None:
                 )
                 return await cur.fetchone()
     except Exception as e:
-        logger.warning("查询快照失败 [id=%s]: %s", snapshot_id, e)
-        return None
+        raise AppError("查询快照失败", snapshot_id=snapshot_id) from e
 
 
 async def list_snapshots_with_id(thread_id: str) -> list[dict]:
@@ -104,8 +99,7 @@ async def list_snapshots_with_id(thread_id: str) -> list[dict]:
                 )
                 return await cur.fetchall()
     except Exception as e:
-        logger.warning("查询快照列表失败 [%s]: %s", thread_id, e)
-        return []
+        raise AppError("查询快照列表失败", thread_id=thread_id) from e
 
 
 async def get_latest_snapshot(thread_id: str) -> dict | None:
@@ -119,5 +113,4 @@ async def get_latest_snapshot(thread_id: str) -> dict | None:
                 )
                 return await cur.fetchone()
     except Exception as e:
-        logger.warning("查询最新快照失败 [%s]: %s", thread_id, e)
-        return None
+        raise AppError("查询最新快照失败", thread_id=thread_id) from e

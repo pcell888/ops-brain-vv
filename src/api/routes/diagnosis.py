@@ -15,6 +15,7 @@ from src.core.models import DiagnosisRequest, DiagnosisStartResponse
 from src.core.config import CN_TZ
 from src.core.calculator import INDICATOR_META, DRILL_ITEM_FIELDS, DRILL_FIELD_LABELS
 from src.core.datetime_cn import serialize_instant_cn
+from src.core.progress_utils import is_thread_running_full
 from src.services import async_job_service, diagnosis_service
 from src.api.deps import (
     get_graph_app,
@@ -341,8 +342,7 @@ async def get_diagnosis_progress(thread_id: str):
     next_nodes = list(state.next) if state and state.next else []
     messages = values.get("progress_messages") or []
 
-    task = running_tasks.get(thread_id)
-    is_running = (task is not None and not task.done()) or await running_tasks.is_running(thread_id)
+    is_running = await is_thread_running_full(thread_id)
     if is_running and not messages:
         cached = await progress_cache.aget(thread_id)
         if cached:
@@ -401,8 +401,7 @@ async def get_diagnosis_progress(thread_id: str):
         else:
             status = "idle"
 
-    task = running_tasks.get(thread_id)
-    is_running = (task is not None and not task.done()) or await running_tasks.is_running(thread_id)
+    is_running = await is_thread_running_full(thread_id)
 
     current_step = None
     for s in steps:

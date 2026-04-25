@@ -8,8 +8,8 @@ import logging
 import psycopg.rows
 
 from src.core.datetime_cn import serialize_instant_cn
-from src.core.db_init import ensure_ai_solution_knowledge
 from src.core.db_pool import get_conn
+from src.core.exceptions import AppError
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,6 @@ async def save_effective_plan(
     industry_code: str | None = None,
 ) -> None:
     """将复盘验证有效的方案沉淀到知识库。"""
-    await ensure_ai_solution_knowledge()
     target_indicators = plan.get("target_indicators", [])
     try:
         async with get_conn() as conn:
@@ -52,7 +51,7 @@ async def save_effective_plan(
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("方案沉淀失败 [%s]: %s", plan.get("plan_id"), e)
+        raise AppError("方案沉淀失败", plan_id=plan.get("plan_id"), thread_id=thread_id) from e
 
 
 async def search_similar_plans(
@@ -62,7 +61,6 @@ async def search_similar_plans(
     limit: int = 5,
 ) -> list[dict]:
     """检索与目标指标相关且达成率高于阈值的历史有效方案。"""
-    await ensure_ai_solution_knowledge()
     if not target_indicators:
         return []
     try:
@@ -87,8 +85,7 @@ async def search_similar_plans(
                         r["created_at"] = serialize_instant_cn(r["created_at"])
                 return rows
     except Exception as e:
-        logger.warning("检索方案知识库失败: %s", e)
-        return []
+        raise AppError("检索方案知识库失败") from e
 
 
 async def list_knowledge(
@@ -98,7 +95,6 @@ async def list_knowledge(
     page_size: int = 20,
 ) -> tuple[list[dict], int]:
     """分页查询知识库。"""
-    await ensure_ai_solution_knowledge()
     conditions = []
     params: list = []
     if tenant_id:
@@ -138,5 +134,4 @@ async def list_knowledge(
                         r["created_at"] = serialize_instant_cn(r["created_at"])
                 return rows, total
     except Exception as e:
-        logger.warning("查询方案知识库失败: %s", e)
-        return [], 0
+        raise AppError("查询方案知识库失败", tenant_id=tenant_id, industry_code=industry_code, page=page) from e

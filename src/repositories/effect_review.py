@@ -7,8 +7,8 @@ import logging
 
 from psycopg.rows import dict_row
 
-from src.core.db_init import ensure_ai_effect_tracking, ensure_ai_review_report
 from src.core.db_pool import get_conn
+from src.core.exceptions import AppError
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,6 @@ async def save_effect_tracking(
     tracking_data: dict,
 ) -> None:
     """写入或覆盖该 thread_id 的效果追踪数据。"""
-    await ensure_ai_effect_tracking()
     data_json = json.dumps(tracking_data, ensure_ascii=False)
     try:
         async with get_conn() as conn:
@@ -39,7 +38,7 @@ async def save_effect_tracking(
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("效果追踪落库失败: %s", e)
+        raise AppError("效果追踪落库失败", thread_id=thread_id) from e
 
 
 async def save_review_report(
@@ -49,7 +48,6 @@ async def save_review_report(
     report: dict,
 ) -> None:
     """写入或覆盖该 thread_id 的复盘报告。"""
-    await ensure_ai_review_report()
     report_json = json.dumps(report, ensure_ascii=False)
     try:
         async with get_conn() as conn:
@@ -68,12 +66,11 @@ async def save_review_report(
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("复盘报告落库失败: %s", e)
+        raise AppError("复盘报告落库失败", thread_id=thread_id) from e
 
 
 async def review_report_exists(thread_id: str) -> bool:
     """是否已有复盘报告行（含兼容层「完成追踪」写入）。"""
-    await ensure_ai_review_report()
     try:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
@@ -83,12 +80,7 @@ async def review_report_exists(thread_id: str) -> bool:
                 )
                 return await cur.fetchone() is not None
     except Exception as e:
-        logger.warning("查询复盘报告是否存在失败: %s", e)
-        return False
-
-
-# ── effect_tracking 读写 ─────────────────────────────────────────
-
+        raise AppError("查询复盘报告是否存在失败", thread_id=thread_id) from e
 
 async def get_tracking(thread_id: str) -> dict | None:
     """按 thread_id 返回效果追踪行（dict_row），无则 None。"""
@@ -102,8 +94,7 @@ async def get_tracking(thread_id: str) -> dict | None:
                 )
                 return await cur.fetchone()
     except Exception as e:
-        logger.warning("查询效果追踪失败 [%s]: %s", thread_id, e)
-        return None
+        raise AppError("查询效果追踪失败", thread_id=thread_id) from e
 
 
 async def update_tracking_data(thread_id: str, tracking_data: dict) -> None:
@@ -117,7 +108,7 @@ async def update_tracking_data(thread_id: str, tracking_data: dict) -> None:
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("更新效果追踪失败 [%s]: %s", thread_id, e)
+        raise AppError("更新效果追踪失败", thread_id=thread_id) from e
 
 
 async def tracking_exists(thread_id: str) -> bool:
@@ -130,11 +121,7 @@ async def tracking_exists(thread_id: str) -> bool:
                 )
                 return await cur.fetchone() is not None
     except Exception as e:
-        logger.warning("查询效果追踪是否存在失败: %s", e)
-        return False
-
-
-# ── review_report 读写 ───────────────────────────────────────────
+        raise AppError("查询效果追踪是否存在失败", thread_id=thread_id) from e
 
 
 async def get_review_report(thread_id: str) -> dict | None:
@@ -149,8 +136,7 @@ async def get_review_report(thread_id: str) -> dict | None:
                 )
                 return await cur.fetchone()
     except Exception as e:
-        logger.warning("查询复盘报告失败 [%s]: %s", thread_id, e)
-        return None
+        raise AppError("查询复盘报告失败", thread_id=thread_id) from e
 
 
 async def update_review_report(thread_id: str, report: dict) -> None:
@@ -164,4 +150,4 @@ async def update_review_report(thread_id: str, report: dict) -> None:
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("更新复盘报告失败 [%s]: %s", thread_id, e)
+        raise AppError("更新复盘报告失败", thread_id=thread_id) from e

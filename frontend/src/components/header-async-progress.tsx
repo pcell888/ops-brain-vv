@@ -9,8 +9,9 @@ type Props = {
   progressPlaceholder?: string;
   /** type 为 completed 且无 message 时的默认主文案 */
   completedFallback?: string;
-  completedLinkLabel: string;
-  onCompletedLink: () => void;
+  /** 完成后显示的链接文案，不传则不显示链接 */
+  completedLinkLabel?: string;
+  onCompletedLink?: () => void;
   /** 为 false 时错误态仅一行文案，不展示关闭/重试（采纳场景） */
   showErrorActions?: boolean;
   onDismissError?: () => void;
@@ -49,7 +50,7 @@ export function HeaderAsyncProgress({
       >
         {mainText}
       </p>
-      {type === 'completed' && (
+      {type === 'completed' && completedLinkLabel && onCompletedLink && (
         <Button type="link" size="small" className="mt-1 h-auto p-0" onClick={onCompletedLink}>
           {completedLinkLabel}
         </Button>

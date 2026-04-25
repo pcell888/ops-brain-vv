@@ -12,10 +12,10 @@ from fastapi import APIRouter, HTTPException, Query
 from src.services import execution_service
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/execution", tags=["执行(兼容层)"])
+router = APIRouter(prefix="/execution", tags=["执行"])
 
 
-@router.get("/plans", summary="执行计划列表(兼容)")
+@router.get("/plans", summary="执行计划列表")
 async def list_execution_plans(
     enterprise_id: str | None = Query(default=None),
     status: str | None = Query(default=None),
@@ -39,7 +39,7 @@ async def list_execution_plans(
     return {"items": items, "total": total}
 
 
-@router.get("/tasks", summary="执行任务列表(兼容)")
+@router.get("/tasks", summary="执行任务列表")
 async def list_tasks(
     enterprise_id: str | None = Query(default=None),
     thread_id: str | None = Query(default=None, description="诊断 thread_id，筛选该次诊断下的任务"),
@@ -59,7 +59,7 @@ async def list_tasks(
     return {"items": items, "total": total, "stats": stats}
 
 
-@router.get("/tasks/{task_id}", summary="执行任务详情(兼容)")
+@router.get("/tasks/{task_id}", summary="执行任务详情")
 async def get_task_detail(task_id: str):
     task = await execution_service.get_task_detail(task_id)
     
@@ -69,7 +69,7 @@ async def get_task_detail(task_id: str):
     return task
 
 
-@router.get("/plans/{plan_id}", summary="执行计划摘要(兼容)")
+@router.get("/plans/{plan_id}", summary="执行计划摘要")
 async def get_plan_summary(plan_id: str):
     plan = await execution_service.get_plan_summary(plan_id)
     
@@ -87,7 +87,7 @@ async def list_plan_tasks(plan_id: str, status: str | None = Query(default=None)
     return {"items": items, "total": total}
 
 
-@router.post("/tasks/{task_id}/complete", summary="完成任务(兼容)")
+@router.post("/tasks/{task_id}/complete", summary="完成任务")
 async def complete_task(task_id: str):
     success = await execution_service.update_task_status(task_id, "completed")
     
@@ -97,7 +97,7 @@ async def complete_task(task_id: str):
     return {"status": "ok"}
 
 
-@router.post("/tasks/{task_id}/fail", summary="任务失败(兼容)")
+@router.post("/tasks/{task_id}/fail", summary="任务失败")
 async def fail_task(task_id: str):
     success = await execution_service.update_task_status(task_id, "failed")
     
@@ -107,7 +107,7 @@ async def fail_task(task_id: str):
     return {"status": "ok"}
 
 
-@router.post("/tasks/{task_id}/retry", summary="重试任务(兼容)")
+@router.post("/tasks/{task_id}/retry", summary="重试任务")
 async def retry_task(task_id: str):
     success = await execution_service.update_task_status(task_id, "running")
     

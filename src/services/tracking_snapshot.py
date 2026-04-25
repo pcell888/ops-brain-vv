@@ -7,7 +7,8 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from src.agent.tools import MCPToolInvocationError, mcp_call, unwrap_mcp_json_value
+from src.agent.mcp_client import MCPToolInvocationError
+from src.agent.tools import mcp_call, unwrap_mcp_json_value
 from src.core.calculator import (
     INDICATOR_META,
     NOT_APPLICABLE_MAP,
@@ -16,7 +17,7 @@ from src.core.calculator import (
     rebalance_weights,
     resolve_active_indicators,
 )
-from src.core.compat_tracking_repo import (
+from src.repositories.tracking import (
     create_tracking,
     get_first_exec_task_plan_store,
     get_snapshot_by_id,
@@ -27,14 +28,13 @@ from src.core.compat_tracking_repo import (
     update_tracking_data,
 )
 from src.core.config import CN_TZ, get_settings
-from src.core.db_init import ensure_ai_effect_tracking
-from src.core.pending_review_repo import cancel_pending_review
-from src.core.snapshot_repo import list_snapshots as list_effect_snapshots_for_thread
+from src.repositories.pending_review import cancel_pending_review
+from src.repositories.snapshot import list_snapshots as list_effect_snapshots_for_thread
 from src.core.tenant_config import get_tenant_config
 from src.mcp_servers.biz_scope import effective_store_id_for_biz
 
 from src.services.tracking_error_service import TrackingServiceError
-from src.services.tracking_helper_service import _ser
+from src.services.tracking_helper import _ser
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +209,6 @@ async def _ensure_effect_tracking_row(thread_id: str, tenant_id: str) -> tuple[s
 async def take_tracking_snapshot(tracking_id: str, enterprise_id: str | None, auth_token: str | None) -> dict:
     now = datetime.now(CN_TZ)
     try:
-        await ensure_ai_effect_tracking()
         tenant_id = ""
         store_id = ""
         td: dict = {}

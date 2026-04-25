@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.core.async_job_meta_repo import create_job, mark_cancelled_by_thread
+from src.repositories.async_job_meta import create_job, mark_cancelled_by_thread
 
 
 async def register_enqueued_job(

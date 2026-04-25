@@ -9,18 +9,19 @@ from datetime import datetime, timedelta
 
 from langchain_core.runnables import RunnableConfig
 
+from src.agent.constants import DIMENSION_TOOL_MAP, DIMENSION_STATE_KEY
 from src.agent.state import DiagnosisState
-from src.agent.tools import mcp_call, emit_progress
+from src.agent.progress import emit_progress
+from src.agent.tools import mcp_call
 from src.agent.prompts.review_analysis import REVIEW_ANALYSIS_SYSTEM, REVIEW_ANALYSIS_USER
 from src.core.calculator import calculate_effect_changes, resolve_active_indicators
 from src.agent.utils import get_admin_accounts as _get_admin_accounts
 from src.core.config import CN_TZ, get_settings
 from src.core.llm_caller import llm_call_json
-from src.core.tracing import merge_llm_usage
-from src.core.push_log_repo import save_push_log
-from src.core.effect_review_repo import get_tracking, save_effect_tracking, save_review_report
-from src.core.snapshot_repo import list_snapshots
-from src.core.solution_knowledge_repo import save_effective_plan
+from src.repositories.push_log import save_push_log
+from src.repositories.effect_review import get_tracking, save_effect_tracking, save_review_report
+from src.repositories.snapshot import list_snapshots
+from src.repositories.solution_knowledge import save_effective_plan
 from src.core.tracking_names import resolve_solution_name
 from src.core.tenant_config import get_tenant_config
 
@@ -87,21 +88,6 @@ async def _llm_generate_review(
         "summary": raw_text,
         "lessons_learned": [],
     }, usage
-
-
-DIMENSION_TOOL_MAP: dict[str, str] = {
-    "crm": "get_crm_indicators",
-    "marketing": "get_marketing_indicators",
-    "retention": "get_retention_indicators",
-    "efficiency": "get_efficiency_indicators",
-}
-
-DIMENSION_STATE_KEY: dict[str, str] = {
-    "crm": "crm_indicators",
-    "marketing": "marketing_indicators",
-    "retention": "retention_indicators",
-    "efficiency": "efficiency_indicators",
-}
 
 
 async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> dict:

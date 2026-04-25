@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from src.runtime.diagnosis_ws_manager import send_thread_progress
-from src.core.compat_tracking_repo import (
+from src.repositories.tracking import (
     count_trackings,
     create_tracking,
     get_diagnosis_thread_id_for_plan,
@@ -26,17 +26,16 @@ from src.core.compat_tracking_repo import (
     upsert_review_report,
 )
 from src.core.config import CN_TZ, get_settings
-from src.core.db_init import ensure_ai_pending_review
-from src.core.pending_review_repo import (
+from src.repositories.pending_review import (
     cancel_pending_review,
     get_pending_review,
     get_pending_review_by_thread,
 )
-from src.core.solution_knowledge_repo import save_effective_plan
+from src.repositories.solution_knowledge import save_effective_plan
 from src.core.tracking_names import resolve_solution_name
 
 from src.services.tracking_error_service import LLMReviewReportError, TrackingServiceError
-from src.services.tracking_helper_service import (
+from src.services.tracking_helper import (
     _derive_adopted_plan_name,
     _derive_tracking_status,
     _get_diagnosis_health_score,
@@ -46,7 +45,7 @@ from src.services.tracking_helper_service import (
     _ser,
     _to_float,
 )
-from src.services.tracking_report_service import (
+from src.services.tracking_report import (
     _build_base_report,
     _llm_review_report,
     _merge_llm_report,
@@ -148,7 +147,6 @@ async def list_tracking_items(
     limit: int,
 ) -> dict:
     try:
-        await ensure_ai_pending_review()
         pending_row = None
         pending_bonus = 0
         if enterprise_id and diagnosis_id:
@@ -223,7 +221,6 @@ async def list_tracking_items(
 
 async def get_tracking_summary_payload(tracking_id: str) -> dict:
     try:
-        await ensure_ai_pending_review()
         row = await get_tracking(tracking_id)
         adopted_plan_name = (
             await _derive_adopted_plan_name(tracking_id=tracking_id, tracking_data=(row or {}).get("tracking_data") or {})

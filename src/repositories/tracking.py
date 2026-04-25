@@ -9,9 +9,9 @@ from datetime import datetime
 from psycopg.rows import dict_row
 
 from src.core.db_pool import get_conn
+from src.core.exceptions import AppError
 
 logger = logging.getLogger(__name__)
-
 
 async def create_tracking(
     thread_id: str,
@@ -20,16 +20,19 @@ async def create_tracking(
     tracking_data: dict,
     created_at: datetime,
 ) -> None:
-    async with get_conn() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                INSERT INTO ai_effect_tracking (thread_id, tenant_id, store_id, tracking_data, created_at)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (thread_id, tenant_id, store_id, json.dumps(tracking_data, ensure_ascii=False), created_at),
-            )
-        await conn.commit()
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO ai_effect_tracking (thread_id, tenant_id, store_id, tracking_data, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (thread_id, tenant_id, store_id, json.dumps(tracking_data, ensure_ascii=False), created_at),
+                )
+            await conn.commit()
+    except Exception as e:
+        raise AppError("创建效果追踪失败", thread_id=thread_id, tenant_id=tenant_id, store_id=store_id) from e
 
 
 async def get_tracking(thread_id: str) -> dict | None:
@@ -70,13 +73,16 @@ async def list_tracking_thread_ids_for_tenant_plan(tenant_id: str, plan_id: str)
 
 
 async def update_tracking_data(thread_id: str, tracking_data: dict) -> None:
-    async with get_conn() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE ai_effect_tracking SET tracking_data = %s WHERE thread_id = %s",
-                (json.dumps(tracking_data, ensure_ascii=False), thread_id),
-            )
-        await conn.commit()
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE ai_effect_tracking SET tracking_data = %s WHERE thread_id = %s",
+                    (json.dumps(tracking_data, ensure_ascii=False), thread_id),
+                )
+            await conn.commit()
+    except Exception as e:
+        raise AppError("更新效果追踪数据失败", thread_id=thread_id) from e
 
 
 async def count_trackings(enterprise_id: str | None, diagnosis_id: str | None) -> int:
@@ -354,13 +360,16 @@ async def insert_snapshot(
     snapshot_data: dict,
     snapshot_at: datetime,
 ) -> None:
-    async with get_conn() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "INSERT INTO ai_effect_snapshot (thread_id, tenant_id, store_id, snapshot_data, snapshot_at) VALUES (%s, %s, %s, %s, %s)",
-                (thread_id, tenant_id, store_id, json.dumps(snapshot_data, ensure_ascii=False), snapshot_at),
-            )
-        await conn.commit()
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO ai_effect_snapshot (thread_id, tenant_id, store_id, snapshot_data, snapshot_at) VALUES (%s, %s, %s, %s, %s)",
+                    (thread_id, tenant_id, store_id, json.dumps(snapshot_data, ensure_ascii=False), snapshot_at),
+                )
+            await conn.commit()
+    except Exception as e:
+        raise AppError("插入快照失败", thread_id=thread_id, tenant_id=tenant_id, store_id=store_id) from e
 
 
 async def get_review_report(thread_id: str) -> dict | None:
@@ -371,13 +380,16 @@ async def get_review_report(thread_id: str) -> dict | None:
 
 
 async def update_review_report(thread_id: str, report: dict) -> None:
-    async with get_conn() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE ai_review_report SET report = %s WHERE thread_id = %s",
-                (json.dumps(report, ensure_ascii=False), thread_id),
-            )
-        await conn.commit()
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE ai_review_report SET report = %s WHERE thread_id = %s",
+                    (json.dumps(report, ensure_ascii=False), thread_id),
+                )
+            await conn.commit()
+    except Exception as e:
+        raise AppError("更新复盘报告失败", thread_id=thread_id) from e
 
 
 async def upsert_review_report(
@@ -387,17 +399,20 @@ async def upsert_review_report(
     report: dict,
     created_at: datetime,
 ) -> None:
-    async with get_conn() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                INSERT INTO ai_review_report (thread_id, tenant_id, store_id, report, created_at)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (thread_id) DO UPDATE SET report = EXCLUDED.report
-                """,
-                (thread_id, tenant_id, store_id, json.dumps(report, ensure_ascii=False), created_at),
-            )
-        await conn.commit()
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO ai_review_report (thread_id, tenant_id, store_id, report, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (thread_id) DO UPDATE SET report = EXCLUDED.report
+                    """,
+                    (thread_id, tenant_id, store_id, json.dumps(report, ensure_ascii=False), created_at),
+                )
+            await conn.commit()
+    except Exception as e:
+        raise AppError("upsert 复盘报告失败", thread_id=thread_id, tenant_id=tenant_id, store_id=store_id) from e
 
 
 async def search_solution_cases(

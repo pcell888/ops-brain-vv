@@ -9,7 +9,7 @@ import hashlib
 import logging
 from datetime import datetime, timezone
 
-from src.core.diagnosis_report_repo import list_reports, get_report as get_report_from_db
+from src.repositories.diagnosis_report import list_reports, get_report as get_report_from_db
 from src.core.calculator import (
     INDICATOR_META,
     DEFAULT_BENCHMARKS,
@@ -17,13 +17,15 @@ from src.core.calculator import (
     ALL_DIMENSIONS,
     calculate_dimension_benchmarks_scores,
 )
+from src.core.phases import calc_overall_progress, phase_name, infer_next_phase
+from src.core.progress_utils import is_thread_running_full, safe_percent
 from src.runtime.graph_app import get_graph_app
 from src.runtime.progress_store import progress_cache
 from src.runtime.running_tasks import running_tasks
 from src.runtime.thread_enterprise import get_running_threads_for_enterprise
 from src.core.config import CN_TZ
 from src.core.datetime_cn import serialize_instant_cn
-from src.core.async_job_meta_repo import (
+from src.repositories.async_job_meta import (
     JOB_STATUS_CANCELLED,
     JOB_STATUS_FAILED,
     JOB_STATUS_QUEUED,
@@ -141,48 +143,6 @@ def _empty_health_trend() -> dict:
     return {"previous_score": None, "change": None, "direction": None}
 
 
-_PHASE_NAME = {
-    "diagnosis": "诊断",
-    "adoption": "采纳",
-    "execution": "执行",
-    "tracking": "追踪",
-    "completed": "已完成",
-}
-
-_PHASE_OVERALL_RANGE = {
-    "diagnosis": (0, 60),
-    "adoption": (60, 75),
-    "execution": (75, 90),
-    "tracking": (90, 99),
-    "completed": (100, 100),
-}
-
-
-def _calc_overall_progress(phase: str, phase_progress: int) -> int:
-    p = max(0, min(100, int(phase_progress)))
-    lo, hi = _PHASE_OVERALL_RANGE.get(phase, (0, 100))
-    if lo == hi:
-        return lo
-    return int(round(lo + (hi - lo) * (p / 100.0)))
-
-
-def _infer_next_phase(phase: str, status: str) -> str | None:
-    """业务流程下一里程碑阶段（与 phase 同枚举）；失败/不存在/已全流程结束为 None。"""
-    if status in ("failed", "not_found"):
-        return None
-    if phase == "completed":
-        return None
-    if phase == "diagnosis":
-        return "adoption"
-    if phase == "adoption":
-        return "execution"
-    if phase == "execution":
-        return "tracking"
-    if phase == "tracking":
-        return "completed"
-    return None
-
-
 def _status_payload(
     diagnosis_id: str,
     *,
@@ -193,15 +153,15 @@ def _status_payload(
     health_score: float | None,
 ) -> dict:
     phase_progress = max(0, min(100, int(progress)))
-    overall = _calc_overall_progress(phase, phase_progress)
+    overall = calc_overall_progress(phase, phase_progress)
     return {
         "diagnosis_id": diagnosis_id,
         "status": status,
         "phase": phase,
-        "phase_name": _PHASE_NAME.get(phase, phase),
-        "progress": phase_progress,  # 阶段内进度（兼容字段）
-        "overall_progress": overall,  # 全流程总进度
-        "next_phase": _infer_next_phase(phase, status),
+        "phase_name": phase_name(phase),
+        "progress": phase_progress,
+        "overall_progress": overall,
+        "next_phase": infer_next_phase(phase, status),
         "message": message,
         "health_score": health_score,
     }
@@ -243,9 +203,7 @@ async def get_diagnosis_list_items(
     if include_running and tenant_id and skip == 0:
         running_thread_ids = await get_running_threads_for_enterprise(tenant_id)
         for tid in running_thread_ids:
-            task = running_tasks.get(tid)
-            is_running = (task is not None and not task.done()) or await running_tasks.is_running(tid)
-            if is_running and tid not in db_thread_ids:
+            if await is_thread_running_full(tid) and tid not in db_thread_ids:
                 item = await _build_running_item(tid)
                 if item:
                     running_not_in_db.append(item)
@@ -328,10 +286,7 @@ async def _build_list_item_from_row(thread_id: str, row: dict) -> dict:
             anomalies = report.get("anomalies") or []
             anomaly_count = len(anomalies)
             report_ready = True
-        # 报告在 diagnose 节点已落库，但 LangGraph 任务可能仍在执行
-        task = running_tasks.get(thread_id)
-        is_running = (task is not None and not task.done()) or await running_tasks.is_running(thread_id)
-        if is_running:
+        if await is_thread_running_full(thread_id):
             status = "running"
             progress = 0
             message = "诊断执行中..."
@@ -351,8 +306,7 @@ async def _build_list_item_from_row(thread_id: str, row: dict) -> dict:
             except Exception:
                 pass
     else:
-        task = running_tasks.get(thread_id)
-        is_task_running = (task is not None and not task.done()) or await running_tasks.is_running(thread_id)
+        is_task_running = await is_thread_running_full(thread_id)
 
         app = await get_graph_app()
         config = {"configurable": {"thread_id": thread_id}}
@@ -660,7 +614,7 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
         )
 
     task = running_tasks.get(diagnosis_id)
-    is_running = (task is not None and not task.done()) or await running_tasks.is_running(diagnosis_id)
+    is_running = await is_thread_running_full(diagnosis_id)
     latest_job = await get_latest_job_by_thread(diagnosis_id)
     if is_running:
         # 图已停在 wait_adoption 时，诊断 Worker 可能尚未 unregister，避免一直显示 running
@@ -707,11 +661,16 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
             if job_status == JOB_STATUS_RUNNING:
                 pass
             if job_status in {JOB_STATUS_FAILED, JOB_STATUS_CANCELLED}:
+                # 尝试从缓存获取失败前的进度
+                progress = 0
+                cached = await progress_cache.aget(diagnosis_id)
+                if cached:
+                    progress = safe_percent(cached.get("percent"))
                 return _status_payload(
                     diagnosis_id,
                     status="failed",
                     phase="diagnosis",
-                    progress=0,
+                    progress=progress,
                     message=job_error or ("诊断已取消" if job_status == JOB_STATUS_CANCELLED else "诊断执行失败"),
                     health_score=None,
                 )
@@ -721,16 +680,15 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
         if cached:
             cached_type = str(cached.get("type") or "").strip().lower()
             msg = cached.get("message", msg)
-            try:
-                progress = int(float(cached.get("percent", 0) or 0))
-            except (TypeError, ValueError):
-                pass
+            progress = safe_percent(cached.get("percent", 0))
             if cached_type == "error":
+                # 使用缓存中的进度，而不是强制设为0
+                error_progress = progress
                 return _status_payload(
                     diagnosis_id,
                     status="failed",
                     phase="diagnosis",
-                    progress=0,
+                    progress=error_progress,
                     message=str(msg or "诊断执行失败"),
                     health_score=None,
                 )
@@ -765,11 +723,16 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
         job_status = str(latest_job.get("status") or "").strip().lower()
         job_error = str(latest_job.get("error") or "").strip()
         if job_status == JOB_STATUS_FAILED:
+            # 尝试从缓存获取失败前的进度
+            progress = 0
+            cached = await progress_cache.aget(diagnosis_id)
+            if cached:
+                progress = safe_percent(cached.get("percent"))
             return _status_payload(
                 diagnosis_id,
                 status="failed",
                 phase="diagnosis",
-                progress=0,
+                progress=progress,
                 message=job_error or "诊断执行失败",
                 health_score=None,
             )
@@ -827,11 +790,20 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
                 return w_fb
         if not is_running:
             err = await _extract_error_message(values if isinstance(values, dict) else {}, diagnosis_id)
+            # 尝试从 state 中的进度消息获取失败前的进度
+            progress = 0
+            msgs = values.get("progress_messages") or [] if isinstance(values, dict) else []
+            if msgs:
+                last = msgs[-1] if isinstance(msgs[-1], dict) else {}
+                try:
+                    progress = int(float(last.get("percent", 0)))
+                except (TypeError, ValueError):
+                    pass
             return _status_payload(
                 diagnosis_id,
                 status="failed",
                 phase="diagnosis",
-                progress=0,
+                progress=progress,
                 message=err,
                 health_score=None,
             )
@@ -864,11 +836,20 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
 
     if task is not None and task.done():
         err = await _extract_error_message(values if isinstance(values, dict) else {}, diagnosis_id)
+        # 尝试从 state 中的进度消息获取失败前的进度
+        progress = 0
+        msgs = values.get("progress_messages") or [] if isinstance(values, dict) else []
+        if msgs:
+            last = msgs[-1] if isinstance(msgs[-1], dict) else {}
+            try:
+                progress = int(float(last.get("percent", 0)))
+            except (TypeError, ValueError):
+                pass
         return _status_payload(
             diagnosis_id,
             status="failed",
             phase="diagnosis",
-            progress=0,
+            progress=progress,
             message=err,
             health_score=None,
         )
@@ -885,7 +866,7 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
                 diagnosis_id,
                 status="failed",
                 phase="diagnosis",
-                progress=0,
+                progress=99,  # 任务已完成但未落库，显示99%更合理
                 message="诊断任务已结束但未生成报告，请稍后重试或联系管理员检查服务日志",
                 health_score=None,
             )
@@ -910,10 +891,7 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
 
 
 async def _status_while_graph_running(diagnosis_id: str, report: dict | None) -> dict | None:
-    """报告已落库或仅在 state 中，但 LangGraph 任务仍在跑时，返回 running + 实时进度。"""
-    task = running_tasks.get(diagnosis_id)
-    is_running = (task is not None and not task.done()) or await running_tasks.is_running(diagnosis_id)
-    if not is_running:
+    if not await is_thread_running_full(diagnosis_id):
         return None
     progress = 0
     msg = "诊断执行中..."
@@ -923,10 +901,7 @@ async def _status_while_graph_running(diagnosis_id: str, report: dict | None) ->
         msg = cached.get("message", msg)
         cached_type = str(cached.get("type") or "").strip().lower()
         stage = str(cached.get("stage") or "").strip().lower()
-        try:
-            progress = int(float(cached.get("percent", 0) or 0))
-        except (TypeError, ValueError):
-            pass
+        progress = safe_percent(cached.get("percent", 0))
         if cached_type == "error":
             return _status_payload(
                 diagnosis_id,

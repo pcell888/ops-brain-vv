@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import logging
 
-from src.core.db_init import ensure_ai_push_log
 from src.core.db_pool import get_conn
+from src.core.exceptions import AppError
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,6 @@ async def save_push_log(
     extra: dict | None = None,
 ) -> None:
     """写入一条推送记录。kind: message | task。"""
-    await ensure_ai_push_log()
     extra_json = json.dumps(extra or {}, ensure_ascii=False)
     try:
         async with get_conn() as conn:
@@ -36,4 +35,4 @@ async def save_push_log(
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("推送记录落库失败: %s", e)
+        raise AppError("推送记录落库失败", thread_id=thread_id, tenant_id=tenant_id, store_id=store_id) from e

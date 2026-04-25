@@ -7,8 +7,8 @@ from datetime import datetime
 
 import psycopg.rows
 
-from src.core.db_init import ensure_ai_pending_review
 from src.core.db_pool import get_conn
+from src.core.exceptions import AppError
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,6 @@ async def save_pending_review(
     store_id: str,
     review_due_date: datetime,
 ) -> None:
-    await ensure_ai_pending_review()
     try:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
@@ -35,12 +34,11 @@ async def save_pending_review(
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("待复盘记录保存失败: %s", e)
+        raise AppError("待复盘记录保存失败", thread_id=thread_id, tenant_id=tenant_id) from e
 
 
 async def get_due_reviews() -> list[dict]:
     """返回复盘已到期（review_due_date <= 当前时刻）且 status='pending' 的记录。"""
-    await ensure_ai_pending_review()
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
@@ -54,8 +52,7 @@ async def get_due_reviews() -> list[dict]:
                 )
                 return await cur.fetchall()
     except Exception as e:
-        logger.warning("查询到期复盘记录失败: %s", e)
-        return []
+        raise AppError("查询到期复盘记录失败") from e
 
 
 async def mark_review_done(thread_id: str) -> None:
@@ -68,12 +65,11 @@ async def mark_review_done(thread_id: str) -> None:
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("更新复盘状态失败 [%s]: %s", thread_id, e)
+        raise AppError("更新复盘状态失败", thread_id=thread_id) from e
 
 
 async def get_pending_review(tenant_id: str, thread_id: str) -> dict | None:
     """返回 status=pending 的待复盘记录（用于效果追踪列表展示「待到期」行）。"""
-    await ensure_ai_pending_review()
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
@@ -88,13 +84,11 @@ async def get_pending_review(tenant_id: str, thread_id: str) -> dict | None:
                 row = await cur.fetchone()
             return dict(row) if row else None
     except Exception as e:
-        logger.warning("查询待复盘记录失败: %s", e)
-        return None
+        raise AppError("查询待复盘记录失败", tenant_id=tenant_id, thread_id=thread_id) from e
 
 
 async def get_pending_review_by_thread(thread_id: str) -> dict | None:
     """按 thread_id 查 pending（摘要接口无 tenant 上下文）。"""
-    await ensure_ai_pending_review()
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
@@ -109,8 +103,7 @@ async def get_pending_review_by_thread(thread_id: str) -> dict | None:
                 row = await cur.fetchone()
             return dict(row) if row else None
     except Exception as e:
-        logger.warning("查询待复盘记录失败: %s", e)
-        return None
+        raise AppError("查询待复盘记录失败", thread_id=thread_id) from e
 
 
 async def cancel_pending_review(thread_id: str) -> bool:
@@ -127,5 +120,4 @@ async def cancel_pending_review(thread_id: str) -> bool:
             await conn.commit()
             return row is not None
     except Exception as e:
-        logger.warning("取消复盘失败 [%s]: %s", thread_id, e)
-        return False
+        raise AppError("取消复盘失败", thread_id=thread_id) from e

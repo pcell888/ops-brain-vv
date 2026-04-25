@@ -1,4 +1,4 @@
-"""企业/租户注册表与中台同步业务逻辑（兼容层）。"""
+"""企业/租户注册表与中台同步业务逻辑。"""
 
 from __future__ import annotations
 
@@ -7,11 +7,10 @@ import json
 import logging
 
 from pydantic import BaseModel, Field
-from psycopg.rows import dict_row
 
 from src.core.config import get_settings
 from src.core.datetime_cn import serialize_instant_cn
-from src.core.db_pool import get_conn
+from src.core.redis_client import get_redis
 from src.mcp_servers.biz_api_client import BizAPIClient, BizAPIError
 from src.mcp_servers.tenant_router import TenantNotFoundError, TenantRouter
 from src.core.tenant_config import (
@@ -19,6 +18,12 @@ from src.core.tenant_config import (
     normalize_diagnosis_trigger_mode,
     normalize_tenant_config,
     update_tenant_config,
+)
+from src.repositories.tenant_registry import (
+    get_tenant_row,
+    list_active_tenants,
+    get_tenant_config_row,
+    upsert_tenant,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,21 +47,6 @@ class SyncEnterpriseBody(BaseModel):
     industry: str | None = Field(default=None, max_length=64)
     scale: str | None = Field(default=None, pattern=r"^(small|medium|large|enterprise)$")
     team_size: int | None = Field(default=None, ge=1, le=100000)
-
-
-async def _get_tenant_row(tenant_id: str) -> dict | None:
-    try:
-        async with get_conn() as conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    "SELECT tenant_id, tenant_name, industry_code, industry_name, config, created_at, updated_at "
-                    "FROM tenant_registry WHERE tenant_id = %s AND status = 1",
-                    (tenant_id,),
-                )
-                return await cur.fetchone()
-    except Exception as e:
-        logger.warning("查询租户 %s 失败: %s", tenant_id, e)
-        return None
 
 
 def _row_to_enterprise(tnt: dict) -> dict:
@@ -187,25 +177,15 @@ async def _invalidate_tenant_cache(tenant_id: str) -> None:
     if settings.tenant_cache_ttl <= 0:
         return
     try:
-        import redis.asyncio as aioredis
-
-        rd = aioredis.from_url(settings.redis_url, decode_responses=True)
+        rd = await get_redis()
         await rd.delete(f"tenant:{tenant_id}")
-        await rd.aclose()
     except Exception as e:
         logger.debug("清理租户 Redis 缓存失败 tenant=%s: %s", tenant_id, e)
 
 
-async def list_enterprises_compat() -> dict:
+async def list_enterprises() -> dict:
     try:
-        async with get_conn() as conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    "SELECT tenant_id, tenant_name, industry_code, industry_name, config, created_at, updated_at "
-                    "FROM tenant_registry WHERE status = 1 "
-                    "ORDER BY created_at DESC"
-                )
-                rows = await cur.fetchall()
+        rows = await list_active_tenants()
         enterprises = [_row_to_enterprise(r) for r in rows]
         return {"enterprises": enterprises, "total": len(enterprises)}
     except Exception as e:
@@ -213,14 +193,14 @@ async def list_enterprises_compat() -> dict:
         raise EnterpriseServiceError(500, "查询企业列表失败，请稍后重试") from e
 
 
-async def get_enterprise_compat(enterprise_id: str) -> dict:
-    row = await _get_tenant_row(enterprise_id)
+async def get_enterprise(enterprise_id: str) -> dict:
+    row = await get_tenant_row(enterprise_id)
     if not row:
         raise EnterpriseServiceError(404, "企业不存在")
     return _row_to_enterprise(row)
 
 
-async def sync_enterprise_compat(enterprise_id: str, body: SyncEnterpriseBody, auth_override: str | None) -> dict:
+async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody, auth_override: str | None) -> dict:
     created = False
     try:
         raw_info = await _fetch_project_info_for_sync(enterprise_id, auth_override)
@@ -243,52 +223,31 @@ async def sync_enterprise_compat(enterprise_id: str, body: SyncEnterpriseBody, a
     industry_name = pf["industry_name"]
 
     try:
-        async with get_conn() as conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    "SELECT tenant_id, config FROM tenant_registry WHERE tenant_id = %s",
-                    (enterprise_id,),
-                )
-                row = await cur.fetchone()
-                config = _merge_sync_config(row.get("config") if row else None, body)
-                created = not row
-                await cur.execute(
-                    "INSERT INTO tenant_registry "
-                    "(tenant_id, tenant_name, api_base_url, auth_type, auth_credential, "
-                    "industry_code, industry_name, status, config) "
-                    "VALUES (%s, %s, %s, 'token', 'pending', %s, %s, 1, %s::jsonb) "
-                    "ON CONFLICT (tenant_id) DO UPDATE SET "
-                    "tenant_name = EXCLUDED.tenant_name, "
-                    "api_base_url = EXCLUDED.api_base_url, "
-                    "industry_code = COALESCE(EXCLUDED.industry_code, tenant_registry.industry_code), "
-                    "industry_name = COALESCE(EXCLUDED.industry_name, tenant_registry.industry_name), "
-                    "status = 1, "
-                    "config = EXCLUDED.config, "
-                    "updated_at = NOW()",
-                    (
-                        enterprise_id,
-                        tenant_name,
-                        api_base_url + "/web/ai",
-                        industry_code,
-                        industry_name,
-                        json.dumps(config, ensure_ascii=False),
-                    ),
-                )
-            await conn.commit()
+        config_row = await get_tenant_config_row(enterprise_id)
+        config = _merge_sync_config(config_row.get("config") if config_row else None, body)
+        created = not config_row
+        await upsert_tenant(
+            enterprise_id,
+            tenant_name,
+            api_base_url + "/web/ai",
+            industry_code,
+            industry_name,
+            config,
+        )
     except Exception as e:
         logger.exception("同步企业失败 enterprise_id=%s", enterprise_id)
         raise EnterpriseServiceError(500, "同步企业失败，请稍后重试") from e
 
     await _invalidate_tenant_cache(enterprise_id)
 
-    updated_row = await _get_tenant_row(enterprise_id)
+    updated_row = await get_tenant_row(enterprise_id)
     if not updated_row:
         raise EnterpriseServiceError(500, "同步企业后读取结果失败")
     return {"enterprise": _row_to_enterprise(updated_row), "created": created}
 
 
-async def patch_enterprise_config_compat(enterprise_id: str, config: dict) -> dict:
-    row = await _get_tenant_row(enterprise_id)
+async def patch_enterprise_config(enterprise_id: str, config: dict) -> dict:
+    row = await get_tenant_row(enterprise_id)
     if not row:
         raise EnterpriseServiceError(404, "企业不存在")
 
@@ -303,5 +262,5 @@ async def patch_enterprise_config_compat(enterprise_id: str, config: dict) -> di
     if patch:
         await update_tenant_config(enterprise_id, patch)
 
-    updated_row = await _get_tenant_row(enterprise_id)
+    updated_row = await get_tenant_row(enterprise_id)
     return _row_to_enterprise(updated_row) if updated_row else {}

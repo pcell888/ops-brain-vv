@@ -62,10 +62,10 @@ class Settings(BaseSettings):
 
     def llm_httpx_timeout(self) -> httpx.Timeout:
         return httpx.Timeout(
-            connect=10.0,
+            connect=30.0,
             read=self.llm_http_read_timeout,
-            write=10.0,
-            pool=10.0,
+            write=30.0,
+            pool=30.0,
         )
 
     model_config = SettingsConfigDict(

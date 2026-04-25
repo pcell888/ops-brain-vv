@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-from src.core.compat_tracking_repo import (
+from src.repositories.tracking import (
     get_diagnosis_health_score,
     get_solution_case,
     list_similar_solution_cases,
@@ -14,7 +14,7 @@ from src.core.compat_tracking_repo import (
 )
 
 from src.services.tracking_error_service import TrackingServiceError
-from src.services.tracking_helper_service import _ser
+from src.services.tracking_helper import _ser
 
 logger = logging.getLogger(__name__)
 

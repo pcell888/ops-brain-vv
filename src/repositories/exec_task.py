@@ -9,8 +9,8 @@ from datetime import datetime
 
 from psycopg.rows import dict_row
 
-from src.core.db_init import ensure_ai_exec_task
 from src.core.db_pool import get_conn
+from src.core.exceptions import AppError
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,6 @@ async def save_exec_tasks(
     """批量写入执行任务到本地库。返回生成的 task_id 列表。"""
     if not tasks:
         return []
-    await ensure_ai_exec_task()
     task_ids = []
     try:
         async with get_conn() as conn:
@@ -89,15 +88,13 @@ async def save_exec_tasks(
                     )
             await conn.commit()
     except Exception as e:
-        logger.warning("执行任务落库失败: %s", e)
+        raise AppError("执行任务落库失败", thread_id=thread_id, plan_id=plan_id) from e
     return task_ids
-
 
 async def update_task_status(task_ids: list[str], status: str) -> None:
     """批量更新任务状态。"""
     if not task_ids:
         return
-    await ensure_ai_exec_task()
     try:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
@@ -111,14 +108,13 @@ async def update_task_status(task_ids: list[str], status: str) -> None:
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("更新任务状态失败: %s", e)
+        raise AppError("更新任务状态失败", status=status) from e
 
 
 async def patch_related_resources(task_id: str, patch: dict) -> None:
     """合并写入 related_resources（jsonb ||），用于派发状态与错误信息。"""
     if not task_id or not patch:
         return
-    await ensure_ai_exec_task()
     try:
         patch_json = json.dumps(patch, ensure_ascii=False)
         async with get_conn() as conn:
@@ -133,12 +129,11 @@ async def patch_related_resources(task_id: str, patch: dict) -> None:
                 )
             await conn.commit()
     except Exception as e:
-        logger.warning("patch_related_resources 失败 task_id=%s: %s", task_id, e)
+        raise AppError("patch_related_resources 失败", task_id=task_id) from e
 
 
 async def get_tasks_by_plan_id(tenant_id: str, store_id: str, plan_id: str, status: str | None = None) -> list[dict]:
     """获取指定方案的任务列表。"""
-    await ensure_ai_exec_task()
     try:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
@@ -170,15 +165,13 @@ async def get_tasks_by_plan_id(tenant_id: str, store_id: str, plan_id: str, stat
                 columns = [desc[0] for desc in cur.description]
                 return [dict(zip(columns, row)) for row in rows]
     except Exception as e:
-        logger.warning("获取任务列表失败: %s", e)
-        return []
+        raise AppError("获取任务列表失败", tenant_id=tenant_id, store_id=store_id, plan_id=plan_id) from e
 
 
 async def list_distinct_plan_ids_for_thread(thread_id: str) -> list[str]:
     """同一诊断下已落库的执行任务涉及的去重 plan_id（用于采纳互斥校验）。"""
     if not (thread_id or "").strip():
         return []
-    await ensure_ai_exec_task()
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -191,8 +184,7 @@ async def list_distinct_plan_ids_for_thread(thread_id: str) -> list[str]:
                 )
                 rows = await cur.fetchall()
     except Exception as e:
-        logger.warning("查询诊断下 plan_id 列表失败 [%s]: %s", thread_id, e)
-        return []
+        raise AppError("查询诊断下 plan_id 列表失败", thread_id=thread_id) from e
     out: list[str] = []
     for row in rows or []:
         pid = str((row or {}).get("plan_id") or "").strip()
@@ -221,7 +213,7 @@ async def get_task_stats_by_thread(thread_id: str) -> dict[str, int]:
                     if key in stats:
                         stats[key] = int(row[1])
     except Exception as e:
-        logger.warning("获取任务统计失败 [%s]: %s", thread_id, e)
+        raise AppError("获取任务统计失败", thread_id=thread_id) from e
     return stats
 
 
@@ -238,8 +230,7 @@ async def get_team_size_by_thread(thread_id: str) -> int:
                 row = await cur.fetchone()
                 return int(row[0]) if row else 0
     except Exception as e:
-        logger.warning("获取团队人数失败 [%s]: %s", thread_id, e)
-        return 0
+        raise AppError("获取团队人数失败", thread_id=thread_id) from e
 
 
 async def list_tasks_by_thread(
@@ -258,5 +249,216 @@ async def list_tasks_by_thread(
                 col_names = [desc[0] for desc in cur.description]
                 return [dict(zip(col_names, row)) for row in rows]
     except Exception as e:
-        logger.warning("获取任务列表失败 [%s]: %s", thread_id, e)
-        return []
+        raise AppError("获取任务列表失败", thread_id=thread_id) from e
+
+
+async def query_plan_groups(
+    tenant_id: str | None = None,
+    thread_id: str | None = None,
+    skip: int = 0,
+    limit: int = 20,
+) -> list[dict]:
+    where_clauses = []
+    params: list = []
+    if tenant_id:
+        where_clauses.append("tenant_id = %s")
+        params.append(tenant_id)
+    if thread_id:
+        where_clauses.append("thread_id = %s")
+        params.append(thread_id)
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT plan_id, thread_id, tenant_id,
+                           MIN(task_name) AS first_task_name,
+                           COUNT(*) AS total_tasks,
+                           COUNT(*) FILTER (WHERE status = 'completed') AS completed_tasks,
+                           COUNT(*) FILTER (WHERE status = 'running') AS running_tasks,
+                           COUNT(*) FILTER (WHERE status = 'failed') AS failed_tasks,
+                           COUNT(*) FILTER (WHERE status = 'pending') AS pending_tasks,
+                           MIN(created_at) AS created_at
+                    FROM ai_exec_task
+                    {where_sql}
+                    GROUP BY plan_id, thread_id, tenant_id
+                    ORDER BY MIN(created_at) DESC
+                    OFFSET %s LIMIT %s
+                    """,
+                    params + [skip, limit],
+                )
+                return await cur.fetchall()
+    except Exception as e:
+        raise AppError("查询执行计划分组失败", tenant_id=tenant_id, thread_id=thread_id) from e
+
+
+async def count_distinct_plans(
+    tenant_id: str | None = None,
+    thread_id: str | None = None,
+) -> int:
+    where_clauses = []
+    params: list = []
+    if tenant_id:
+        where_clauses.append("tenant_id = %s")
+        params.append(tenant_id)
+    if thread_id:
+        where_clauses.append("thread_id = %s")
+        params.append(thread_id)
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    f"SELECT COUNT(DISTINCT plan_id) AS cnt FROM ai_exec_task {where_sql}",
+                    params,
+                )
+                row = await cur.fetchone()
+                return int(row["cnt"]) if row else 0
+    except Exception as e:
+        raise AppError("统计计划总数失败", tenant_id=tenant_id, thread_id=thread_id) from e
+
+
+async def query_filtered_tasks(
+    tenant_id: str | None = None,
+    thread_id: str | None = None,
+    status: str | None = None,
+    skip: int = 0,
+    limit: int = 100,
+) -> tuple[list[dict], int, dict[str, int]]:
+    where_clauses = []
+    params: list = []
+    if tenant_id:
+        where_clauses.append("tenant_id = %s")
+        params.append(tenant_id)
+    if thread_id:
+        where_clauses.append("thread_id = %s")
+        params.append(thread_id)
+    if status:
+        where_clauses.append("status = %s")
+        params.append(status)
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    stats: dict[str, int] = {
+        "pending": 0, "ready": 0, "running": 0, "paused": 0,
+        "completed": 0, "failed": 0, "cancelled": 0,
+    }
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    f"SELECT COUNT(*) AS cnt FROM ai_exec_task {where_sql}",
+                    params,
+                )
+                total_row = await cur.fetchone()
+                total = int(total_row["cnt"]) if total_row else 0
+
+                await cur.execute(
+                    f"""
+                    SELECT COALESCE(status, 'pending') AS st, COUNT(*)::int AS cnt
+                    FROM ai_exec_task
+                    {where_sql}
+                    GROUP BY COALESCE(status, 'pending')
+                    """,
+                    params,
+                )
+                for sr in await cur.fetchall():
+                    k = str(sr["st"]).lower()
+                    if k in stats:
+                        stats[k] = int(sr["cnt"])
+
+                await cur.execute(
+                    f"""
+                    SELECT task_id, plan_id, thread_id, task_name, description, priority, status,
+                           assignee_user_id, assignee_dept_id, deadline, created_at, related_resources
+                    FROM ai_exec_task
+                    {where_sql}
+                    ORDER BY created_at DESC
+                    OFFSET %s LIMIT %s
+                    """,
+                    params + [skip, limit],
+                )
+                rows = await cur.fetchall()
+        return rows, total, stats
+    except Exception as e:
+        raise AppError("查询任务列表失败", tenant_id=tenant_id, thread_id=thread_id, status=status) from e
+
+
+async def get_task_by_id(task_id: str) -> dict | None:
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT task_id, plan_id, thread_id, tenant_id, store_id, task_name, description,
+                           priority, status, assignee_user_id, assignee_dept_id, deadline, created_at,
+                           related_resources
+                    FROM ai_exec_task
+                    WHERE task_id = %s
+                    """,
+                    (task_id,),
+                )
+                return await cur.fetchone()
+    except Exception as e:
+        raise AppError("查询任务详情失败", task_id=task_id) from e
+
+
+async def get_plan_group_by_id(plan_id: str) -> dict | None:
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT plan_id, thread_id, tenant_id,
+                           COUNT(*) AS total_tasks,
+                           COUNT(*) FILTER (WHERE status = 'completed') AS completed_tasks,
+                           COUNT(*) FILTER (WHERE status = 'running') AS running_tasks,
+                           COUNT(*) FILTER (WHERE status = 'failed') AS failed_tasks,
+                           COUNT(*) FILTER (WHERE status = 'pending') AS pending_tasks,
+                           MIN(created_at) AS created_at
+                    FROM ai_exec_task
+                    WHERE plan_id = %s
+                    GROUP BY plan_id, thread_id, tenant_id
+                    """,
+                    (plan_id,),
+                )
+                return await cur.fetchone()
+    except Exception as e:
+        raise AppError("查询执行计划分组失败", plan_id=plan_id) from e
+
+
+async def query_plan_tasks(plan_id: str, status: str | None = None) -> list[dict]:
+    where = "WHERE plan_id = %s"
+    params: list = [plan_id]
+    if status:
+        where += " AND status = %s"
+        params.append(status)
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT task_id, plan_id, thread_id, task_name, description, priority, status,
+                           assignee_user_id, assignee_dept_id, deadline, created_at, related_resources
+                    FROM ai_exec_task
+                    {where}
+                    ORDER BY created_at
+                    """,
+                    params,
+                )
+                return await cur.fetchall()
+    except Exception as e:
+        raise AppError("查询计划任务列表失败", plan_id=plan_id, status=status) from e
+
+
+async def update_single_task_status(task_id: str, new_status: str) -> bool:
+    try:
+        async with get_conn() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE ai_exec_task SET status = %s WHERE task_id = %s",
+                    (new_status, task_id),
+                )
+            await conn.commit()
+        return True
+    except Exception as e:
+        raise AppError("更新任务状态失败", task_id=task_id, new_status=new_status) from e
