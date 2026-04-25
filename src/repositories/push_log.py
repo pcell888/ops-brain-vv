@@ -28,7 +28,7 @@ async def save_push_log(
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO ai_push_log (thread_id, tenant_id, store_id, kind, message_type, title, content, extra)
+                    INSERT INTO push_logs (thread_id, tenant_id, store_id, kind, message_type, title, content, extra)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                     """,
                     (thread_id, tenant_id, store_id, kind, message_type or "", (title or "")[:500], (content or "")[:10000], extra_json),

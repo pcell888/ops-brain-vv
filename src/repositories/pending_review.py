@@ -24,7 +24,7 @@ async def save_pending_review(
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO ai_pending_review (thread_id, tenant_id, store_id, review_due_date)
+                    INSERT INTO pending_reviews (thread_id, tenant_id, store_id, review_due_date)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (thread_id) DO UPDATE SET
                         review_due_date = EXCLUDED.review_due_date,
@@ -45,7 +45,7 @@ async def get_due_reviews() -> list[dict]:
                 await cur.execute(
                     """
                     SELECT thread_id, tenant_id, store_id, review_due_date
-                    FROM ai_pending_review
+                    FROM pending_reviews
                     WHERE status = 'pending'
                       AND review_due_date <= NOW()
                     """
@@ -60,7 +60,7 @@ async def mark_review_done(thread_id: str) -> None:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "UPDATE ai_pending_review SET status = 'completed' WHERE thread_id = %s",
+                    "UPDATE pending_reviews SET status = 'completed' WHERE thread_id = %s",
                     (thread_id,),
                 )
             await conn.commit()
@@ -76,7 +76,7 @@ async def get_pending_review(tenant_id: str, thread_id: str) -> dict | None:
                 await cur.execute(
                     """
                     SELECT thread_id, tenant_id, review_due_date, status, created_at
-                    FROM ai_pending_review
+                    FROM pending_reviews
                     WHERE tenant_id = %s AND thread_id = %s AND status = 'pending'
                     """,
                     (tenant_id[:32], thread_id[:128]),
@@ -95,7 +95,7 @@ async def get_pending_review_by_thread(thread_id: str) -> dict | None:
                 await cur.execute(
                     """
                     SELECT thread_id, tenant_id, review_due_date, status, created_at
-                    FROM ai_pending_review
+                    FROM pending_reviews
                     WHERE thread_id = %s AND status = 'pending'
                     """,
                     (thread_id[:128],),
@@ -112,7 +112,7 @@ async def cancel_pending_review(thread_id: str) -> bool:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "UPDATE ai_pending_review SET status = 'cancelled' "
+                    "UPDATE pending_reviews SET status = 'cancelled' "
                     "WHERE thread_id = %s AND status = 'pending' RETURNING thread_id",
                     (thread_id,),
                 )

@@ -8,11 +8,11 @@ import json
 import logging
 import uuid
 
-from langchain_core.runnables import RunnableConfig
+from typing import Any
 
 from src.agent.state import DiagnosisState
 from src.agent.progress import emit_progress
-from src.agent.tools import mcp_call
+from src.biz_tools.notify import send_plan_adoption_request
 from src.agent.prompts.solution_generation import (
     SOLUTION_GENERATION_SYSTEM,
     SOLUTION_GENERATION_USER,
@@ -233,7 +233,7 @@ async def _llm_generate_solutions(
     indicator_push_rules: str = "",
     mandatory_rule_tasks: str = "",
     *,
-    runnable_config: RunnableConfig | None = None,
+    runnable_config: Any | None = None,
 ) -> tuple[list[dict], dict | None]:
     settings = get_settings()
     mandatory_specs = collect_mandatory_task_specs(anomalies)
@@ -320,7 +320,7 @@ async def _llm_generate_solutions(
     ], usage
 
 
-async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig) -> dict:
+async def generate_solutions_node(state: DiagnosisState, config: Any = None) -> dict:
     anomalies = state.get("anomalies", [])
     if not anomalies:
         return {"solution_plans": []}
@@ -389,16 +389,12 @@ async def generate_solutions_node(state: DiagnosisState, config: RunnableConfig)
 
     try:
         plans_summary = [{"name": p.get("plan_name", ""), "priority": p.get("priority_level", "medium")} for p in plans]
-        await mcp_call(
-            "notify-server",
-            "send_plan_adoption_request",
-            {
-                "tenant_id": state["tenant_id"],
-                "store_id": state["store_id"],
-                "admin_account_ids": _get_admin_accounts(store_profile),
-                "thread_id": state.get("thread_id", ""),
-                "plans_summary": plans_summary,
-            },
+        await send_plan_adoption_request(
+            tenant_id=state["tenant_id"],
+            store_id=state["store_id"],
+            admin_account_ids=_get_admin_accounts(store_profile),
+            thread_id=state.get("thread_id", ""),
+            plans_summary=plans_summary,
         )
         plan_names = "、".join(p.get("name", "") for p in plans_summary[:3])
         await save_push_log(

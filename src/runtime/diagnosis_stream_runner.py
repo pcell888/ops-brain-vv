@@ -1,4 +1,4 @@
-"""流式执行诊断 LangGraph 并推送进度（编排 graph / 进度 / WS，供 Worker 等调用）。"""
+"""流式执行诊断管道并推送进度。"""
 
 from __future__ import annotations
 
@@ -9,39 +9,38 @@ from datetime import datetime
 from src.agent.progress import clear_progress_sender, set_progress_sender
 from src.core.config import CN_TZ, log_diagnosis_run_context
 from src.core.diagnosis_errors import public_diagnosis_error_message
-from src.core.phases import WORKFLOW_NODES
+from src.core.diagnosis_engine import Phase, run_diagnosis_pipeline
 from src.core.tracing import get_tracer
 
 from .diagnosis_ws_manager import manager
-from .graph_app import astream_events_with_retry, get_graph_app
 from .progress_store import progress_cache, write_progress_cache
 from .running_tasks import running_tasks
 
 logger = logging.getLogger(__name__)
 tracer = get_tracer("diagnosis")
 
-_NODE_START_PERCENT = {
-    "collect_data": 5,
-    "diagnose": 35,
-    "generate_solutions": 70,
+_PHASE_START_PERCENT = {
+    Phase.COLLECTING: 5,
+    Phase.DIAGNOSING: 35,
+    Phase.GENERATING: 70,
 }
 
-_NODE_COMPLETE_PERCENT = {
-    "collect_data": 35,
-    "diagnose": 70,
-    "generate_solutions": 100,
+_PHASE_COMPLETE_PERCENT = {
+    Phase.COLLECTING: 35,
+    Phase.DIAGNOSING: 70,
+    Phase.GENERATING: 100,
 }
 
-_NODE_START_MESSAGE = {
-    "collect_data": "开始采集运营数据",
-    "diagnose": "开始诊断分析",
-    "generate_solutions": "正在生成优化方案",
+_PHASE_START_MESSAGE = {
+    Phase.COLLECTING: "开始采集运营数据",
+    Phase.DIAGNOSING: "开始诊断分析",
+    Phase.GENERATING: "正在生成优化方案",
 }
 
-_NODE_COMPLETE_MESSAGE = {
-    "collect_data": "数据采集完成",
-    "diagnose": "根因分析完成",
-    "generate_solutions": "方案生成完成",
+_PHASE_COMPLETE_MESSAGE = {
+    Phase.COLLECTING: "数据采集完成",
+    Phase.DIAGNOSING: "根因分析完成",
+    Phase.GENERATING: "方案生成完成",
 }
 
 
@@ -55,7 +54,6 @@ async def run_diagnosis_with_stream(
     selected_indicators: list[str] | None = None,
     auth_token: str | None = None,
 ) -> None:
-    """流式运行 LangGraph 并推送进度。"""
     log_diagnosis_run_context(
         logger,
         thread_id=thread_id,
@@ -63,18 +61,6 @@ async def run_diagnosis_with_stream(
         store_id=store_id,
         trigger_type=trigger_type,
     )
-    config = {"configurable": {"thread_id": thread_id}}
-    initial_state = {
-        "thread_id": thread_id,
-        "tenant_id": tenant_id,
-        "store_id": store_id,
-        "trigger_type": trigger_type,
-        "triggered_by": triggered_by,
-        "selected_dimensions": selected_dimensions,
-        "selected_indicators": selected_indicators,
-        "auth_token": auth_token,
-        "progress_messages": [],
-    }
 
     try:
         with tracer.start_as_current_span(
@@ -107,96 +93,17 @@ async def run_diagnosis_with_stream(
                     "timestamp": started_ts,
                 },
             )
-            async for event in astream_events_with_retry(initial_state, config):
-                if await running_tasks.is_cancel_requested(thread_id):
-                    raise asyncio.CancelledError()
-                kind = event["event"]
 
-                if kind == "on_chain_start":
-                    node_name = event.get("name", "")
-                    if node_name in WORKFLOW_NODES:
-                        payload = {
-                            "type": "node_start",
-                            "node": node_name,
-                            "timestamp": datetime.now(CN_TZ).isoformat(),
-                        }
-                        if node_name in _NODE_START_PERCENT:
-                            payload["percent"] = _NODE_START_PERCENT[node_name]
-                        if node_name in _NODE_START_MESSAGE:
-                            payload["message"] = _NODE_START_MESSAGE[node_name]
-                            # 上述节点的首条/边界进度由节点内 emit，避免 on_chain_* 晚于节点内 emit
-                            if node_name not in ("generate_solutions", "diagnose"):
-                                write_progress_cache(
-                                    thread_id,
-                                    {
-                                        "type": "progress",
-                                        "message": _NODE_START_MESSAGE[node_name],
-                                        "percent": payload.get("percent"),
-                                        "timestamp": payload["timestamp"],
-                                    },
-                                )
-                        await manager.send_progress(thread_id, payload)
-
-                elif kind == "on_chain_end":
-                    node_name = event.get("name", "")
-                    output = event.get("data", {}).get("output", {})
-
-                    if node_name not in WORKFLOW_NODES:
-                        continue
-
-                    if isinstance(output, dict) and "progress_messages" in output:
-                        for msg in output["progress_messages"]:
-                            content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-                            payload = {
-                                "type": "progress",
-                                "message": content,
-                                "timestamp": datetime.now(CN_TZ).isoformat(),
-                            }
-                            if isinstance(msg, dict) and msg.get("percent") is not None:
-                                payload["percent"] = msg.get("percent")
-                            await manager.send_progress(thread_id, payload)
-
-                    payload = {
-                        "type": "node_complete",
-                        "node": node_name,
-                        "timestamp": datetime.now(CN_TZ).isoformat(),
-                    }
-                    if node_name in _NODE_COMPLETE_PERCENT:
-                        payload["percent"] = _NODE_COMPLETE_PERCENT[node_name]
-                    if node_name in _NODE_COMPLETE_MESSAGE:
-                        payload["message"] = _NODE_COMPLETE_MESSAGE[node_name]
-                        # collect_data 完成 / diagnose 完成由节点返回前 emit，避免 on_chain_end 晚于下一节点
-                        if node_name not in ("diagnose", "collect_data"):
-                            write_progress_cache(
-                                thread_id,
-                                {
-                                    "type": "progress",
-                                    "message": _NODE_COMPLETE_MESSAGE[node_name],
-                                    "percent": payload.get("percent"),
-                                    "timestamp": payload["timestamp"],
-                                },
-                            )
-                    await manager.send_progress(thread_id, payload)
-
-                    if node_name == "diagnose" and isinstance(output, dict) and "health_score" in output:
-                        await manager.send_progress(
-                            thread_id,
-                            {
-                                "type": "diagnosis_result",
-                                "health_score": output["health_score"],
-                                "anomaly_count": len(output.get("anomalies", [])),
-                                "dimension_scores": output.get("dimension_scores"),
-                            },
-                        )
-
-                    if node_name == "generate_solutions" and isinstance(output, dict) and "solution_plans" in output:
-                        await manager.send_progress(
-                            thread_id,
-                            {
-                                "type": "solutions_ready",
-                                "plans": output["solution_plans"],
-                            },
-                        )
+            await _run_pipeline_with_progress(
+                thread_id=thread_id,
+                tenant_id=tenant_id,
+                store_id=store_id,
+                trigger_type=trigger_type,
+                triggered_by=triggered_by,
+                selected_dimensions=selected_dimensions,
+                selected_indicators=selected_indicators,
+                auth_token=auth_token,
+            )
 
     except asyncio.CancelledError:
         logger.info("诊断流程已取消: thread=%s", thread_id)
@@ -225,9 +132,133 @@ async def run_diagnosis_with_stream(
     finally:
         clear_progress_sender()
 
-    app = await get_graph_app()
-    state = await app.aget_state(config)
-    if state.next and "wait_adoption" in state.next:
+
+async def _run_pipeline_with_progress(
+    thread_id: str,
+    tenant_id: str,
+    store_id: str,
+    trigger_type: str,
+    triggered_by: str | None = None,
+    selected_dimensions: list[str] | None = None,
+    selected_indicators: list[str] | None = None,
+    auth_token: str | None = None,
+) -> None:
+    from src.core.diagnosis_engine import Phase, run_phase
+    from src.repositories.diagnosis_session import (
+        create_session,
+        get_session,
+        update_session_phase,
+        update_session_state,
+    )
+
+    initial_state = {
+        "thread_id": thread_id,
+        "tenant_id": tenant_id,
+        "store_id": store_id,
+        "trigger_type": trigger_type,
+        "triggered_by": triggered_by,
+        "selected_dimensions": selected_dimensions,
+        "selected_indicators": selected_indicators,
+        "auth_token": auth_token,
+        "progress_messages": [],
+    }
+
+    await create_session(
+        thread_id=thread_id,
+        tenant_id=tenant_id,
+        store_id=store_id,
+        trigger_type=trigger_type,
+        triggered_by=triggered_by,
+        selected_dimensions=selected_dimensions,
+        selected_indicators=selected_indicators,
+        auth_token=auth_token,
+        phase=Phase.COLLECTING,
+        state_json=initial_state,
+    )
+
+    state = dict(initial_state)
+    phases = [Phase.COLLECTING, Phase.DIAGNOSING, Phase.GENERATING]
+
+    for phase in phases:
+        if await running_tasks.is_cancel_requested(thread_id):
+            raise asyncio.CancelledError()
+
+        await update_session_phase(thread_id, phase, state)
+
+        if phase in _PHASE_START_MESSAGE:
+            start_payload = {
+                "type": "node_start",
+                "node": phase.value,
+                "timestamp": datetime.now(CN_TZ).isoformat(),
+            }
+            if phase in _PHASE_START_PERCENT:
+                start_payload["percent"] = _PHASE_START_PERCENT[phase]
+            if phase in _PHASE_START_MESSAGE:
+                start_payload["message"] = _PHASE_START_MESSAGE[phase]
+                if phase not in (Phase.GENERATING, Phase.DIAGNOSING):
+                    write_progress_cache(
+                        thread_id,
+                        {
+                            "type": "progress",
+                            "message": _PHASE_START_MESSAGE[phase],
+                            "percent": start_payload.get("percent"),
+                            "timestamp": start_payload["timestamp"],
+                        },
+                    )
+            await manager.send_progress(thread_id, start_payload)
+
+        result = await run_phase(thread_id, phase, state)
+        if not isinstance(result, dict):
+            result = {}
+        state.update(result)
+        await update_session_state(thread_id, result)
+
+        if phase in _PHASE_COMPLETE_MESSAGE:
+            complete_payload = {
+                "type": "node_complete",
+                "node": phase.value,
+                "timestamp": datetime.now(CN_TZ).isoformat(),
+            }
+            if phase in _PHASE_COMPLETE_PERCENT:
+                complete_payload["percent"] = _PHASE_COMPLETE_PERCENT[phase]
+            if phase in _PHASE_COMPLETE_MESSAGE:
+                complete_payload["message"] = _PHASE_COMPLETE_MESSAGE[phase]
+                if phase not in (Phase.DIAGNOSING, Phase.COLLECTING):
+                    write_progress_cache(
+                        thread_id,
+                        {
+                            "type": "progress",
+                            "message": _PHASE_COMPLETE_MESSAGE[phase],
+                            "percent": complete_payload.get("percent"),
+                            "timestamp": complete_payload["timestamp"],
+                        },
+                    )
+            await manager.send_progress(thread_id, complete_payload)
+
+        if phase == Phase.DIAGNOSING and isinstance(result, dict) and "health_score" in result:
+            await manager.send_progress(
+                thread_id,
+                {
+                    "type": "diagnosis_result",
+                    "health_score": result["health_score"],
+                    "anomaly_count": len(result.get("anomalies", [])),
+                    "dimension_scores": result.get("dimension_scores"),
+                },
+            )
+
+        if phase == Phase.GENERATING and isinstance(result, dict) and "solution_plans" in result:
+            await manager.send_progress(
+                thread_id,
+                {
+                    "type": "solutions_ready",
+                    "plans": result["solution_plans"],
+                },
+            )
+
+    anomalies = state.get("anomalies")
+    plans = state.get("solution_plans")
+    if anomalies and plans:
+        await update_session_phase(thread_id, Phase.WAITING_ADOPTION, state)
         await manager.send_progress(
             thread_id,
             {
@@ -236,16 +267,8 @@ async def run_diagnosis_with_stream(
                 "percent": 100,
             },
         )
-    elif state.next and "track_effects" in state.next:
-        await manager.send_progress(
-            thread_id,
-            {
-                "type": "completed",
-                "message": "方案执行任务已全部创建，效果追踪已调度",
-                "percent": 100,
-            },
-        )
     else:
+        await update_session_phase(thread_id, Phase.COMPLETED, state)
         await manager.send_progress(
             thread_id,
             {

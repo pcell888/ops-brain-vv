@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from mcp.server import FastMCP
 
-from src.mcp_servers.biz_mock import task_message_coupon
-from src.mcp_servers.biz_scope import effective_store_id_for_biz
+
+from src.biz_tools.mock import task_message_coupon
+from src.biz_tools.biz_scope import effective_store_id_for_biz
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ async def send_diagnosis_report_notification(
     health_score = report_summary.get("health_score", 0)
     anomaly_count = report_summary.get("anomaly_count", 0)
     top_anomaly = report_summary.get("top_anomaly", "")
-    notify_type = report_summary.get("notification_type", "ai_diagnosis_report")
+    notify_type = report_summary.get("notification_type", "diag_reports")
     diagnosis_time = report_summary.get("diagnosis_time", "")
     analysis_period = report_summary.get("analysis_period_days", 30)
     is_weekly = notify_type == "ai_weekly_digest"
@@ -154,7 +154,7 @@ async def send_review_report_notification(
             "accountId": aid,
             "title": title,
             "content": content,
-            "type": "ai_review_report",
+            "type": "review_reports",
             "jumpUrl": thread_id,
         }
         for aid in admin_account_ids
@@ -234,16 +234,3 @@ def try_raw_request(method: str, path: str, q: dict, body: dict) -> dict | None:
         return task_message_coupon.message_targeted(body)
     _ = q
     return None
-
-
-def register(server: FastMCP) -> None:
-    """与 biz/notify.register 相同。"""
-    for fn in (
-        send_diagnosis_report_notification,
-        send_task_reminder,
-        send_plan_adoption_request,
-        send_review_report_notification,
-        send_task_assignment_notification,
-        send_customer_targeted_message,
-    ):
-        server.add_tool(fn)

@@ -1,4 +1,4 @@
-"""更新 ai_async_job_meta 的 job_id（仅依赖 db_pool，供 arq_queue 使用以避免循环导入）。"""
+"""更新 async_job_metas 的 job_id（仅依赖 db_pool，供 arq_queue 使用以避免循环导入）。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ async def rotate_async_job_id_in_meta(*, old_job_id: str, new_job_id: str, threa
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE ai_async_job_meta
+                UPDATE async_job_metas
                    SET job_id = %s,
                        payload = payload || %s::jsonb,
                        updated_at = NOW()

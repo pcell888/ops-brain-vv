@@ -1,6 +1,5 @@
 """
-租户路由器 — 所有MCP Server共享。
-根据 tenant_id 解析出目标企业的 API 地址和鉴权信息。
+租户路由器 — 根据 tenant_id 解析出目标企业的 API 地址和鉴权信息。
 """
 
 from __future__ import annotations
@@ -15,8 +14,7 @@ import redis.asyncio as aioredis
 
 from src.core.config import get_settings
 from src.core.db_pool import get_conn
-from src.core.uri_utils import pg_uri_to_conninfo as _pg_uri_to_conninfo  # noqa: F401  re-export for test compat
-from src.mcp_servers.biz_constants import BIZ_MOCK_TENANT_ID, is_biz_mock_tenant
+from src.biz_tools.biz_constants import BIZ_MOCK_TENANT_ID, is_biz_mock_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +37,6 @@ class TenantContext:
 
 
 class TenantRouter:
-    """
-    租户路由器 — 所有MCP Server共享。
-    根据 tenant_id 解析出目标企业的 API 地址和鉴权信息。
-    """
-
     def __init__(self, pg_uri: str | None = None, redis_url: str | None = None):
         settings = get_settings()
         self._redis_url = redis_url or settings.redis_url
@@ -56,12 +49,11 @@ class TenantRouter:
         return self._redis
 
     def _resolve_platform_tenant_from_config(self) -> TenantContext:
-        """中台租户仅存于配置（PLATFORM_CENTER_API_*），不查库、不写 Redis 缓存。"""
         settings = get_settings()
         base = (settings.platform_center_api_base or "").strip().rstrip("/")
         if not base:
             raise TenantNotFoundError(
-                "未配置 PLATFORM_CENTER_API_BASE：中台已不从 tenant_registry 读取，请在 .env 中设置该地址"
+                "未配置 PLATFORM_CENTER_API_BASE：中台已不从 tenant_registries 读取，请在 .env 中设置该地址"
             )
         auth_type = (settings.platform_center_auth_type or "token").strip() or "token"
         auth_headers = self._build_auth_headers(auth_type, settings.platform_center_auth_credential or "")
@@ -75,7 +67,6 @@ class TenantRouter:
         )
 
     async def resolve(self, tenant_id: str) -> TenantContext:
-        """解析租户上下文。tenant_cache_ttl>0 时优先 Redis，否则每次查 PostgreSQL。"""
         if tenant_id == PLATFORM_TENANT_ID:
             return self._resolve_platform_tenant_from_config()
         if is_biz_mock_tenant(tenant_id):
@@ -115,7 +106,7 @@ class TenantRouter:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
-                    "SELECT * FROM tenant_registry WHERE tenant_id=%s AND status=1",
+                    "SELECT * FROM tenant_registries WHERE tenant_id=%s AND status=1",
                     (tenant_id,),
                 )
                 row = await cur.fetchone()
@@ -162,12 +153,11 @@ class TenantRouter:
         return ctx
 
     async def get_platform_api_auth_headers(self, enterprise_tenant_id: str) -> dict[str, str]:
-        """访问平台中台 API 时的请求头：优先该企业 platform_auth_credential，否则 auth_credential（auth_type 不变）。"""
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
                     "SELECT auth_type, auth_credential, platform_auth_credential "
-                    "FROM tenant_registry WHERE tenant_id=%s AND status=1",
+                    "FROM tenant_registries WHERE tenant_id=%s AND status=1",
                     (enterprise_tenant_id,),
                 )
                 row = await cur.fetchone()
@@ -180,7 +170,6 @@ class TenantRouter:
         return self._build_auth_headers(row["auth_type"], cred)
 
     async def get_client(self, tenant_id: str, ctx: TenantContext | None = None) -> httpx.AsyncClient:
-        """获取面向指定租户的 HTTP Client（连接池复用）。默认不在 client 上绑鉴权头，由 BizAPIClient 每请求注入。"""
         if ctx is None:
             ctx = await self.resolve(tenant_id)
         base = ctx.api_base_url.rstrip("/")
@@ -193,8 +182,6 @@ class TenantRouter:
                 del self._http_clients[tenant_id]
         if tenant_id not in self._http_clients:
             logger.debug("创建新的HTTP客户端: tenant_id=%s base_url=%s", tenant_id, base)
-            # trust_env=False：与 stdlib http.client 一致，不因 HTTP_PROXY 等环境变量把内网请求送去代理导致挂死。
-            # Accept-Encoding: identity：避免 httpx 默认带上 gzip/deflate/zstd，少数网关/旧服务对协商异常时会长时间无响应。
             self._http_clients[tenant_id] = httpx.AsyncClient(
                 base_url=base,
                 headers={"Accept-Encoding": "identity"},
@@ -206,11 +193,9 @@ class TenantRouter:
         return self._http_clients[tenant_id]
 
     async def get_platform_client(self) -> httpx.AsyncClient:
-        """获取平台中台的 HTTP Client（行业基准等公共数据）。"""
         return await self.get_client(PLATFORM_TENANT_ID)
 
     async def get_tenant_basic_info(self, tenant_id: str) -> tuple[str, str]:
-        """返回租户基础信息 (tenant_name, industry_code)。"""
         ctx = await self.resolve(tenant_id)
         return ctx.tenant_name, (ctx.industry_code or "")
 

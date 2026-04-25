@@ -1,4 +1,4 @@
-"""租户诊断配置读写 — tenant_registry.config JSONB 字段。"""
+"""租户诊断配置读写 — tenant_registries.config JSONB 字段。"""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ async def get_tenant_config(tenant_id: str) -> dict:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT config FROM tenant_registry WHERE tenant_id = %s AND status = 1",
+                    "SELECT config FROM tenant_registries WHERE tenant_id = %s AND status = 1",
                     (tenant_id,),
                 )
                 row = await cur.fetchone()
@@ -70,7 +70,7 @@ async def sync_tenant(
     async with get_conn() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT tenant_id, config FROM tenant_registry WHERE tenant_id = %s",
+                "SELECT tenant_id, config FROM tenant_registries WHERE tenant_id = %s",
                 (tenant_id,),
             )
             row = await cur.fetchone()
@@ -92,7 +92,7 @@ async def sync_tenant(
                     config["stores"] = stores
 
                 await cur.execute(
-                    "UPDATE tenant_registry "
+                    "UPDATE tenant_registries "
                     "SET tenant_name = %s, industry_code = %s, config = %s::jsonb, updated_at = NOW() "
                     "WHERE tenant_id = %s",
                     (tenant_name, industry_code, json.dumps(config, ensure_ascii=False), tenant_id),
@@ -105,7 +105,7 @@ async def sync_tenant(
                     }
                 )
                 await cur.execute(
-                    "INSERT INTO tenant_registry "
+                    "INSERT INTO tenant_registries "
                     "(tenant_id, tenant_name, api_base_url, auth_type, auth_credential, industry_code, status, config) "
                     "VALUES (%s, %s, %s, 'token', 'pending', %s, 1, %s::jsonb)",
                     (tenant_id, tenant_name, api_base_url, industry_code, json.dumps(config, ensure_ascii=False)),
@@ -131,7 +131,7 @@ async def update_tenant_config(tenant_id: str, patch: dict) -> dict:
     async with get_conn() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "UPDATE tenant_registry SET config = %s::jsonb, updated_at = NOW() WHERE tenant_id = %s AND status = 1",
+                "UPDATE tenant_registries SET config = %s::jsonb, updated_at = NOW() WHERE tenant_id = %s AND status = 1",
                 (json.dumps(current, ensure_ascii=False), tenant_id),
             )
         await conn.commit()

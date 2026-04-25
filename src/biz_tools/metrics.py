@@ -1,27 +1,23 @@
-"""运营指标 — 原 metrics-server 工具实现。"""
+"""运营指标 — 业务工具函数。"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 
-from mcp.server import FastMCP
-
-from src.mcp_servers.biz.shared import biz
-from src.mcp_servers.biz_scope import effective_store_id_for_biz
+from src.biz_tools.shared import biz
+from src.biz_tools.biz_scope import effective_store_id_for_biz
 from src.core.calculator import DRILL_FIELD_LABELS, DRILL_ITEM_FIELDS, filter_drill_row_by_allowed_fields
 
 logger = logging.getLogger(__name__)
 
 
 def _store_aware_params(tenant_id: str, store_id: str, start_date: str, end_date: str) -> dict:
-    """业务 API：始终带 `storeId`；全企业时为 `""`（禁止将 tenant_id 误作店铺 ID）。"""
     sid = effective_store_id_for_biz(tenant_id, store_id)
     return {"storeId": sid, "startDate": start_date, "endDate": end_date}
 
 
 def _num(v, default: float | int = 0):
-    """业务 JSON 中显式 null 时 .get(k, default) 仍为 None，避免 round(None) 报错。"""
     return default if v is None else v
 
 
@@ -32,10 +28,6 @@ async def get_crm_indicators(
     end_date: str,
     auth_token: str | None = None,
 ) -> dict:
-    """
-    采集CRM共享维度指标。
-    返回: lead_conversion_rate, response_time_avg, follow_up_count
-    """
     logger.info(
         "Tool called: get_crm_indicators tenant=%s store=%s period=%s~%s", tenant_id, store_id, start_date, end_date
     )
@@ -88,11 +80,6 @@ async def get_marketing_indicators(
     end_date: str,
     auth_token: str | None = None,
 ) -> dict:
-    """
-    采集营销效果维度指标。
-    返回: coupon_redemption_rate, browse_to_order_rate, order_conversion_rate,
-          seckill_conversion_rate
-    """
     logger.info(
         "Tool called: get_marketing_indicators tenant=%s store=%s period=%s~%s",
         tenant_id,
@@ -165,11 +152,6 @@ async def get_retention_indicators(
     end_date: str,
     auth_token: str | None = None,
 ) -> dict:
-    """
-    采集客户留存维度指标。
-    返回: repurchase_rate, refund_rate, churn_rate, positive_review_rate,
-          avg_customer_lifetime_value
-    """
     logger.info(
         "Tool called: get_retention_indicators tenant=%s store=%s period=%s~%s",
         tenant_id,
@@ -249,10 +231,6 @@ async def get_efficiency_indicators(
     end_date: str,
     auth_token: str | None = None,
 ) -> dict:
-    """
-    采集运营效率维度指标。
-    返回: service_completion_rate, avg_shipping_hours
-    """
     logger.info(
         "Tool called: get_efficiency_indicators tenant=%s store=%s period=%s~%s",
         tenant_id,
@@ -304,10 +282,6 @@ async def drill_down_indicator(
     page_size: int = 20,
     auth_token: str | None = None,
 ) -> dict:
-    """
-    指标数据钻取 — 返回指标对应的明细数据列表，支持分页。
-    支持全部指标 (indicator_code 见 INDICATOR_META)。
-    """
     logger.info(
         "Tool called: drill_down_indicator tenant=%s store=%s indicator=%s page=%s",
         tenant_id,
@@ -358,14 +332,3 @@ async def drill_down_indicator(
         "field_labels": field_labels,
         "summary": data.get("summary", f"{indicator_code} 钻取数据"),
     }
-
-
-def register(server: FastMCP) -> None:
-    for fn in (
-        get_crm_indicators,
-        get_marketing_indicators,
-        get_retention_indicators,
-        get_efficiency_indicators,
-        drill_down_indicator,
-    ):
-        server.add_tool(fn)

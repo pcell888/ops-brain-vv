@@ -1,14 +1,11 @@
-"""任务与审批 — 与 biz/task.py 同名、同签名、同 register；进程内模拟。"""
+"""任务与审批 — 业务工具函数。"""
 
 from __future__ import annotations
 
 import logging
 
-from mcp.server import FastMCP
-
-from src.mcp_servers.biz_api_client import BizAPIError
-from src.mcp_servers.biz_mock import client_sales_examine, task_message_coupon
-from src.mcp_servers.biz_scope import effective_store_id_for_biz
+from src.biz_tools.shared import biz
+from src.biz_tools.biz_scope import effective_store_id_for_biz
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +25,8 @@ async def create_execution_tasks(
     )
     sid = effective_store_id_for_biz(tenant_id, store_id)
     payload = {"storeId": sid, "planId": plan_id, "tasks": tasks}
-    data = task_message_coupon.exec_task_batch_create(payload)
+    data = await biz.post(tenant_id, "/ai-diagnosis/exec-task/batch-create", payload)
+
     return {
         "plan_id": plan_id,
         "created_tasks": data.get("tasks", data.get("list", [])),
@@ -60,7 +58,7 @@ async def create_approval_flow(
         "bizType": "ai_diagnosis",
         "bizId": plan_id,
     }
-    data = client_sales_examine.examine_create(body)
+    data = await biz.post(tenant_id, "/examine-initiate/create", body)
     return {"approval_id": data.get("id", ""), "status": "pending"}
 
 
@@ -71,14 +69,15 @@ async def update_task_status(
     progress: float | None = None,
     remark: str | None = None,
 ) -> dict:
-    _ = tenant_id
     logger.info("Tool called: update_task_status tenant=%s task_id=%s status=%s", tenant_id, task_id, status)
     payload: dict = {"status": status}
     if progress is not None:
         payload["progress"] = progress
     if remark:
         payload["remark"] = remark
-    return task_message_coupon.exec_task_update_status(task_id, payload)
+
+    data = await biz.put(tenant_id, f"/ai-diagnosis/exec-task/{task_id}/status", payload)
+    return {"task_id": task_id, "status": status, "updated": True, **data}
 
 
 async def create_coupon_campaign(
@@ -102,14 +101,16 @@ async def create_coupon_campaign(
         "startTime": campaign_config.get("start_time"),
         "endTime": campaign_config.get("end_time"),
     }
-    coupon_data = task_message_coupon.coupon_create(create_body)
-    coupon_id = coupon_data.get("couponId", "")
+    coupon_data = await biz.post(tenant_id, "/coupon/create", create_body)
+    coupon_id = coupon_data.get("id", coupon_data.get("couponId", ""))
+
     dist_body = {
         "storeId": sid,
         "couponId": coupon_id,
         "targetCustomers": campaign_config.get("target_customers", "all"),
     }
-    distribute_data = task_message_coupon.coupon_distribute(dist_body)
+    distribute_data = await biz.post(tenant_id, "/coupon/distribute", dist_body)
+
     return {
         "coupon_id": coupon_id,
         "distributed_count": distribute_data.get("count", 0),
@@ -126,39 +127,5 @@ async def create_seckill_activity(
     sid = effective_store_id_for_biz(tenant_id, store_id)
     body = dict(activity_config)
     body["storeId"] = sid
-    data = task_message_coupon.seckill_create(body)
+    data = await biz.post(tenant_id, "/seckill-apply/create", body)
     return {"activity_id": data.get("id", ""), "status": "created"}
-
-
-def try_raw_request(method: str, path: str, q: dict, body: dict) -> dict | None:
-    """供 dispatch：exec-task / examine / coupon / seckill。"""
-    m = method.upper()
-    if m == "POST" and path == "examine-initiate/create":
-        return client_sales_examine.examine_create(body)
-    if m == "POST" and path == "ai-diagnosis/exec-task/batch-create":
-        return task_message_coupon.exec_task_batch_create(body)
-    if m == "PUT" and path.startswith("ai-diagnosis/exec-task/") and path.endswith("/status"):
-        inner = path[len("ai-diagnosis/exec-task/") : -len("/status")]
-        if not inner:
-            raise BizAPIError(404, "缺少 task_id", path)
-        return task_message_coupon.exec_task_update_status(inner, body)
-    if m == "POST" and path == "coupon/create":
-        return task_message_coupon.coupon_create(body)
-    if m == "POST" and path == "coupon/distribute":
-        return task_message_coupon.coupon_distribute(body)
-    if m == "POST" and path == "seckill-apply/create":
-        return task_message_coupon.seckill_create(body)
-    _ = q
-    return None
-
-
-def register(server: FastMCP) -> None:
-    """与 biz/task.register 相同。"""
-    for fn in (
-        create_execution_tasks,
-        create_approval_flow,
-        update_task_status,
-        create_coupon_campaign,
-        create_seckill_activity,
-    ):
-        server.add_tool(fn)

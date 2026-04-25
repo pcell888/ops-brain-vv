@@ -18,7 +18,7 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 
 class Settings(BaseSettings):
     postgres_uri: str = "postgresql://postgres:password@localhost:5432/ops_brain"
-    # 平台中台（全局唯一，不写入 tenant_registry）。MCP 连接池仍用 tenant_id=__platform__ 作键，仅表示「中台」这一逻辑目标。
+    # 平台中台（全局唯一，不写入 tenant_registries）。MCP 连接池仍用 tenant_id=__platform__ 作键，仅表示「中台」这一逻辑目标。
     platform_center_api_base: str | None = None
     platform_center_auth_type: str = "token"  # token | hmac，与中台网关约定一致
     platform_center_auth_credential: str = ""  # 明文；无企业上下文的中台请求兜底

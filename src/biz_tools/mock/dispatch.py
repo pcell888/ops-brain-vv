@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from src.mcp_servers.biz_api_client import BizAPIError
-from src.mcp_servers.biz_mock import client_sales_examine, crm, metrics, notify, task
-from src.mcp_servers.biz_mock.stats import store_order_analytics
+from src.biz_tools.biz_api_client import BizAPIError
+from src.biz_tools.mock import client_sales_examine, crm, metrics, notify, task
+from src.biz_tools.mock.stats import store_order_analytics
 
 _Handler = Callable[[str, str, dict[str, Any], dict[str, Any]], dict[str, Any] | None]
 

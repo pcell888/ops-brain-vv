@@ -7,12 +7,13 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from langchain_core.runnables import RunnableConfig
+from typing import Any
 
-from src.agent.constants import DIMENSION_TOOL_MAP, DIMENSION_STATE_KEY
+from src.agent.constants import DIMENSION_STATE_KEY
 from src.agent.state import DiagnosisState
 from src.agent.progress import emit_progress
-from src.agent.tools import mcp_call
+from src.biz_tools.metrics import get_crm_indicators, get_marketing_indicators, get_retention_indicators, get_efficiency_indicators
+from src.biz_tools.notify import send_review_report_notification
 from src.agent.prompts.review_analysis import REVIEW_ANALYSIS_SYSTEM, REVIEW_ANALYSIS_USER
 from src.core.calculator import calculate_effect_changes, resolve_active_indicators
 from src.agent.utils import get_admin_accounts as _get_admin_accounts
@@ -34,7 +35,7 @@ async def _llm_generate_review(
     exec_tasks: list[dict],
     snapshots: list[dict] | None = None,
     *,
-    runnable_config: RunnableConfig | None = None,
+    runnable_config: Any | None = None,
 ) -> tuple[dict, dict | None]:
     settings = get_settings()
     if not settings.llm_enabled:
@@ -90,7 +91,7 @@ async def _llm_generate_review(
     }, usage
 
 
-async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> dict:
+async def track_effects_node(state: DiagnosisState, config: Any = None) -> dict:
     emit_progress(state, "正在采集最新指标数据进行效果对比...", for_adoption_ui=False)
 
     active_dims, _active_inds = resolve_active_indicators(
@@ -114,11 +115,18 @@ async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> d
         "end_date": now,
     }
 
+    _TRACKING_DIM_FN = {
+        "crm": get_crm_indicators,
+        "marketing": get_marketing_indicators,
+        "retention": get_retention_indicators,
+        "efficiency": get_efficiency_indicators,
+    }
+
     ordered_dims: list[str] = []
     tasks: list = []
     for dim in ("crm", "marketing", "retention", "efficiency"):
         if dim in active_dims:
-            tasks.append(mcp_call("metrics-server", DIMENSION_TOOL_MAP[dim], common_args))
+            tasks.append(_TRACKING_DIM_FN[dim](**common_args))
             ordered_dims.append(dim)
 
     results = await asyncio.gather(*tasks)
@@ -188,16 +196,12 @@ async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> d
             "report_time": report_time,
             "tracking_period": tracking_period,
         }
-        await mcp_call(
-            "notify-server",
-            "send_review_report_notification",
-            {
-                "tenant_id": tenant_id,
-                "store_id": store_id,
-                "admin_account_ids": _get_admin_accounts(state.get("store_profile", {})),
-                "thread_id": thread_id,
-                "review_summary": review_summary,
-            },
+        await send_review_report_notification(
+            tenant_id=tenant_id,
+            store_id=store_id,
+            admin_account_ids=_get_admin_accounts(state.get("store_profile", {})),
+            thread_id=thread_id,
+            review_summary=review_summary,
         )
 
         push_title = f"方案复盘完成 — 达成率 {achievement:.0f}%"
@@ -214,7 +218,7 @@ async def track_effects_node(state: DiagnosisState, config: RunnableConfig) -> d
             tenant_id,
             store_id,
             "message",
-            "ai_review_report",
+            "review_reports",
             push_title,
             push_content,
             review_summary,

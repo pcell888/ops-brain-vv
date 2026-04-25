@@ -6,10 +6,10 @@ import asyncio
 import logging
 from collections.abc import Callable
 
-from mcp.server import FastMCP
 
-from src.mcp_servers.biz_mock import client_sales_examine, stats
-from src.mcp_servers.biz_scope import effective_store_id_for_biz
+
+from src.biz_tools.mock import client_sales_examine, stats
+from src.biz_tools.biz_scope import effective_store_id_for_biz
 from src.core.calculator import DRILL_FIELD_LABELS, DRILL_ITEM_FIELDS, filter_drill_row_by_allowed_fields
 
 logger = logging.getLogger(__name__)
@@ -367,15 +367,3 @@ def try_raw_request(method: str, path: str, q: dict, body: dict) -> dict | None:
             return fn(q)
     _ = body
     return None
-
-
-def register(server: FastMCP) -> None:
-    """与 biz/metrics.register 相同。"""
-    for fn in (
-        get_crm_indicators,
-        get_marketing_indicators,
-        get_retention_indicators,
-        get_efficiency_indicators,
-        drill_down_indicator,
-    ):
-        server.add_tool(fn)

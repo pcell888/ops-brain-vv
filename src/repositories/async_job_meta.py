@@ -38,7 +38,7 @@ async def create_job(
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO ai_async_job_meta (job_id, thread_id, tenant_id, job_kind, status, payload)
+                    INSERT INTO async_job_metas (job_id, thread_id, tenant_id, job_kind, status, payload)
                     VALUES (%s, %s, %s, %s, %s, %s::jsonb)
                     ON CONFLICT (job_id) DO UPDATE SET
                         thread_id = EXCLUDED.thread_id,
@@ -78,7 +78,7 @@ async def mark_cancelled_by_thread(thread_id: str, reason: str = "cancel_request
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    UPDATE ai_async_job_meta
+                    UPDATE async_job_metas
                        SET status = %s, error = %s, updated_at = NOW()
                      WHERE thread_id = %s AND status IN ('queued', 'running')
                     """,
@@ -97,7 +97,7 @@ async def list_recoverable_jobs(limit: int = 200) -> list[dict]:
                 await cur.execute(
                     """
                     SELECT job_id, thread_id, tenant_id, job_kind, status, payload, created_at, updated_at
-                      FROM ai_async_job_meta
+                      FROM async_job_metas
                      WHERE status IN ('queued', 'running')
                         OR (
                             status = 'failed'
@@ -135,7 +135,7 @@ async def claim_failed_job_startup_retry(job_id: str) -> bool:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    UPDATE ai_async_job_meta
+                    UPDATE async_job_metas
                        SET status = %s,
                            error = NULL,
                            payload = payload || %s::jsonb,
@@ -167,7 +167,7 @@ async def get_latest_job_by_thread(thread_id: str) -> dict | None:
                 await cur.execute(
                     """
                     SELECT job_id, thread_id, tenant_id, job_kind, status, error, payload, created_at, updated_at
-                      FROM ai_async_job_meta
+                      FROM async_job_metas
                      WHERE thread_id = %s
                      ORDER BY updated_at DESC
                      LIMIT 1
@@ -198,7 +198,7 @@ async def _mark(job_id: str, status: str, error: str | None) -> None:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    UPDATE ai_async_job_meta
+                    UPDATE async_job_metas
                        SET status = %s, error = %s, updated_at = NOW()
                      WHERE job_id = %s
                     """,

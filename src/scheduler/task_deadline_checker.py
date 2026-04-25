@@ -7,7 +7,7 @@ import logging
 
 import psycopg.rows
 
-from src.agent.tools import mcp_call
+from src.biz_tools.notify import send_task_reminder
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +63,14 @@ async def _send_reminders(tasks: list[dict], reminder_type: str):
         if not account_id:
             continue
         try:
-            await mcp_call("notify-server", "send_task_reminder", {
-                "tenant_id": tenant_id,
-                "user_id": t.get("assignee_user_id", 0),
-                "account_id": account_id,
-                "task_id": t.get("task_id", ""),
-                "reminder_type": reminder_type,
-                "message": f"任务「{t.get('task_name', '')}」{'已超过截止日期' if reminder_type == 'overdue' else '即将到期'}，请及时处理。",
-            })
+            await send_task_reminder(
+                tenant_id=tenant_id,
+                user_id=t.get("assignee_user_id", 0),
+                account_id=account_id,
+                task_id=t.get("task_id", ""),
+                reminder_type=reminder_type,
+                message=f"任务「{t.get('task_name', '')}」{'已超过截止日期' if reminder_type == 'overdue' else '即将到期'}，请及时处理。",
+            )
         except Exception as e:
             logger.warning("发送%s提醒失败 [%s]: %s", reminder_type, t.get("task_id"), e)
 

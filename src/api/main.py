@@ -12,8 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.constants import API_PREFIX
 from src.api.middleware.access_log import AccessLogMiddleware
 from src.api.routes import diagnosis, review, ws, solutions, enterprise, dimensions, execution, tracking
-from src.agent.mcp_client import close_all_sessions as close_mcp_sessions
-from src.runtime.graph_app import get_graph_app, reset_graph_app
 from src.api.token_sync import sync_request_tokens_dependency
 from src.core.db_pool import open_pool, close_pool
 from src.core.db_init import run_alembic_upgrade
@@ -32,7 +30,6 @@ log_diagnosis_service_config(logger, prefix="ops-brain 启动")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await open_pool()
     await run_alembic_upgrade()
-    await get_graph_app()
     app.state.scheduler = start_scheduler()
 
     from src.runtime.diagnosis_ws_manager import manager as diag_manager
@@ -48,8 +45,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 scheduler.shutdown(wait=False)
             except Exception as e:
                 logger.warning("关闭定时任务调度器失败: %s", e)
-        await close_mcp_sessions()
-        await reset_graph_app()
         await close_pool()
 
 

@@ -53,7 +53,7 @@ async def save_exec_tasks(
                     task_status = (t.get("status") or "pending")[:20]
                     await cur.execute(
                         """
-                        INSERT INTO ai_exec_task
+                        INSERT INTO exec_tasks
                         (task_id, thread_id, tenant_id, store_id, plan_id, task_name, description,
                          assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at, priority, status, related_resources)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
@@ -100,7 +100,7 @@ async def update_task_status(task_ids: list[str], status: str) -> None:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    UPDATE ai_exec_task
+                    UPDATE exec_tasks
                     SET status = %s
                     WHERE task_id = ANY(%s)
                     """,
@@ -121,7 +121,7 @@ async def patch_related_resources(task_id: str, patch: dict) -> None:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    UPDATE ai_exec_task
+                    UPDATE exec_tasks
                     SET related_resources = COALESCE(related_resources, '{}'::jsonb) || %s::jsonb
                     WHERE task_id = %s
                     """,
@@ -143,7 +143,7 @@ async def get_tasks_by_plan_id(tenant_id: str, store_id: str, plan_id: str, stat
                         SELECT task_id, thread_id, tenant_id, store_id, plan_id, task_name, description,
                                assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at,
                                priority, status, related_resources, created_at
-                        FROM ai_exec_task
+                        FROM exec_tasks
                         WHERE tenant_id = %s AND store_id = %s AND plan_id = %s AND status = %s
                         ORDER BY created_at
                         """,
@@ -155,7 +155,7 @@ async def get_tasks_by_plan_id(tenant_id: str, store_id: str, plan_id: str, stat
                         SELECT task_id, thread_id, tenant_id, store_id, plan_id, task_name, description,
                                assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at,
                                priority, status, related_resources, created_at
-                        FROM ai_exec_task
+                        FROM exec_tasks
                         WHERE tenant_id = %s AND store_id = %s AND plan_id = %s
                         ORDER BY created_at
                         """,
@@ -177,7 +177,7 @@ async def list_distinct_plan_ids_for_thread(thread_id: str) -> list[str]:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     """
-                    SELECT DISTINCT plan_id FROM ai_exec_task
+                    SELECT DISTINCT plan_id FROM exec_tasks
                     WHERE thread_id = %s AND COALESCE(TRIM(plan_id), '') <> ''
                     """,
                     (thread_id[:128],),
@@ -204,7 +204,7 @@ async def get_task_stats_by_thread(thread_id: str) -> dict[str, int]:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT COALESCE(status, 'pending') AS st, COUNT(*)::int AS cnt "
-                    "FROM ai_exec_task WHERE thread_id = %s "
+                    "FROM exec_tasks WHERE thread_id = %s "
                     "GROUP BY COALESCE(status, 'pending')",
                     (thread_id,),
                 )
@@ -223,7 +223,7 @@ async def get_team_size_by_thread(thread_id: str) -> int:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT COUNT(DISTINCT assignee_user_id)::int FROM ai_exec_task "
+                    "SELECT COUNT(DISTINCT assignee_user_id)::int FROM exec_tasks "
                     "WHERE thread_id = %s AND assignee_user_id IS NOT NULL",
                     (thread_id,),
                 )
@@ -242,7 +242,7 @@ async def list_tasks_by_thread(
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    f"SELECT {columns} FROM ai_exec_task WHERE thread_id = %s ORDER BY created_at ASC",
+                    f"SELECT {columns} FROM exec_tasks WHERE thread_id = %s ORDER BY created_at ASC",
                     (thread_id,),
                 )
                 rows = await cur.fetchall()
@@ -280,7 +280,7 @@ async def query_plan_groups(
                            COUNT(*) FILTER (WHERE status = 'failed') AS failed_tasks,
                            COUNT(*) FILTER (WHERE status = 'pending') AS pending_tasks,
                            MIN(created_at) AS created_at
-                    FROM ai_exec_task
+                    FROM exec_tasks
                     {where_sql}
                     GROUP BY plan_id, thread_id, tenant_id
                     ORDER BY MIN(created_at) DESC
@@ -310,7 +310,7 @@ async def count_distinct_plans(
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    f"SELECT COUNT(DISTINCT plan_id) AS cnt FROM ai_exec_task {where_sql}",
+                    f"SELECT COUNT(DISTINCT plan_id) AS cnt FROM exec_tasks {where_sql}",
                     params,
                 )
                 row = await cur.fetchone()
@@ -346,7 +346,7 @@ async def query_filtered_tasks(
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    f"SELECT COUNT(*) AS cnt FROM ai_exec_task {where_sql}",
+                    f"SELECT COUNT(*) AS cnt FROM exec_tasks {where_sql}",
                     params,
                 )
                 total_row = await cur.fetchone()
@@ -355,7 +355,7 @@ async def query_filtered_tasks(
                 await cur.execute(
                     f"""
                     SELECT COALESCE(status, 'pending') AS st, COUNT(*)::int AS cnt
-                    FROM ai_exec_task
+                    FROM exec_tasks
                     {where_sql}
                     GROUP BY COALESCE(status, 'pending')
                     """,
@@ -370,7 +370,7 @@ async def query_filtered_tasks(
                     f"""
                     SELECT task_id, plan_id, thread_id, task_name, description, priority, status,
                            assignee_user_id, assignee_dept_id, deadline, created_at, related_resources
-                    FROM ai_exec_task
+                    FROM exec_tasks
                     {where_sql}
                     ORDER BY created_at DESC
                     OFFSET %s LIMIT %s
@@ -392,7 +392,7 @@ async def get_task_by_id(task_id: str) -> dict | None:
                     SELECT task_id, plan_id, thread_id, tenant_id, store_id, task_name, description,
                            priority, status, assignee_user_id, assignee_dept_id, deadline, created_at,
                            related_resources
-                    FROM ai_exec_task
+                    FROM exec_tasks
                     WHERE task_id = %s
                     """,
                     (task_id,),
@@ -415,7 +415,7 @@ async def get_plan_group_by_id(plan_id: str) -> dict | None:
                            COUNT(*) FILTER (WHERE status = 'failed') AS failed_tasks,
                            COUNT(*) FILTER (WHERE status = 'pending') AS pending_tasks,
                            MIN(created_at) AS created_at
-                    FROM ai_exec_task
+                    FROM exec_tasks
                     WHERE plan_id = %s
                     GROUP BY plan_id, thread_id, tenant_id
                     """,
@@ -439,7 +439,7 @@ async def query_plan_tasks(plan_id: str, status: str | None = None) -> list[dict
                     f"""
                     SELECT task_id, plan_id, thread_id, task_name, description, priority, status,
                            assignee_user_id, assignee_dept_id, deadline, created_at, related_resources
-                    FROM ai_exec_task
+                    FROM exec_tasks
                     {where}
                     ORDER BY created_at
                     """,
@@ -455,7 +455,7 @@ async def update_single_task_status(task_id: str, new_status: str) -> bool:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "UPDATE ai_exec_task SET status = %s WHERE task_id = %s",
+                    "UPDATE exec_tasks SET status = %s WHERE task_id = %s",
                     (new_status, task_id),
                 )
             await conn.commit()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import random as _r
 import uuid
 
-from src.mcp_servers.biz_mock.random_util import (
+from src.biz_tools.mock.random_util import (
     query_param_bool,
     random_enabled,
     random_float,

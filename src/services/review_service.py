@@ -13,7 +13,7 @@ from src.core.diagnosis_errors import public_diagnosis_error_message
 from src.core.phases import calc_overall_progress, phase_name
 from src.core.progress_utils import is_thread_running_full
 from src.runtime.diagnosis_ws_manager import manager, send_thread_progress
-from src.runtime.graph_app import astream_events_with_retry, get_graph_app
+from src.runtime.task_runner import get_graph_state_values
 from src.runtime.progress_store import progress_cache, write_progress_cache
 from src.runtime.running_tasks import running_tasks
 from src.repositories.async_job_meta import create_job
@@ -103,11 +103,7 @@ def _progress_payload(
 
 async def build_review_progress(thread_id: str) -> dict:
     """供 HTTP 轮询：效果追踪 / 复盘进度（与 WS `stage=effect_track`、progress_cache 一致）。"""
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
-    state = await app.aget_state(config)
-    values = state.values if state and state.values else {}
-    next_nodes = list(state.next) if state and state.next else []
+    values, next_nodes = await get_graph_state_values(thread_id)
     wait_track = "track_effects" in next_nodes
 
     cached = (await progress_cache.aget(thread_id)) or {}
@@ -260,16 +256,13 @@ async def build_review_progress(thread_id: str) -> dict:
 
 
 async def start_immediate_review(thread_id: str) -> dict:
-    """立即开始复盘：校验 graph 状态、入队 ARQ、登记 running_tasks。"""
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
-
-    state = await app.aget_state(config)
-    if not (state.next and "track_effects" in state.next):
+    """立即开始复盘：校验状态、入队 ARQ、登记 running_tasks。"""
+    values, next_nodes = await get_graph_state_values(thread_id)
+    if "track_effects" not in next_nodes:
         raise ReviewServiceError(400, "该诊断不在效果追踪等待状态")
 
     await cancel_pending_review(thread_id)
-    tenant_id = str((state.values or {}).get("tenant_id") or "")
+    tenant_id = str(values.get("tenant_id") or "")
     if not tenant_id:
         raise ReviewServiceError(400, "缺少 tenant_id，无法触发复盘任务")
     job_id = await enqueue_review_job(thread_id=thread_id)
@@ -285,13 +278,13 @@ async def start_immediate_review(thread_id: str) -> dict:
     return {"status": "reviewing", "thread_id": thread_id, "message": "已触发立即复盘"}
 
 
-async def resume_track_effects(thread_id: str, config: dict) -> None:
-    """恢复 graph 执行 track_effects 节点，并打通 emit_progress → WS / progress_cache（供 ARQ worker）。"""
+async def resume_track_effects(thread_id: str, config: dict | None = None) -> None:
+    """恢复效果追踪节点执行，并打通 emit_progress → WS / progress_cache（供 ARQ worker）。"""
+    from src.core.diagnosis_engine import resume_track_effects as engine_resume
+
     try:
         set_progress_sender(thread_id, manager, write_progress_cache)
-        async for _ in astream_events_with_retry(None, config):
-            if await running_tasks.is_cancel_requested(thread_id):
-                return
+        await engine_resume(thread_id)
         logger.info("手动触发复盘完成: thread=%s", thread_id)
     except Exception as e:
         logger.exception("手动触发复盘失败 thread=%s", thread_id)

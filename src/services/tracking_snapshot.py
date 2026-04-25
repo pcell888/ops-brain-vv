@@ -6,9 +6,12 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
+from typing import Any, Callable
 
-from src.agent.mcp_client import MCPToolInvocationError
-from src.agent.tools import mcp_call, unwrap_mcp_json_value
+from src.biz_tools.biz_api_client import BizAPIError
+from src.biz_tools.crm import get_store_profile
+from src.biz_tools.metrics import get_crm_indicators, get_marketing_indicators, get_retention_indicators, get_efficiency_indicators
+from src.biz_tools.benchmark import get_industry_benchmark
 from src.core.calculator import (
     INDICATOR_META,
     NOT_APPLICABLE_MAP,
@@ -31,18 +34,18 @@ from src.core.config import CN_TZ, get_settings
 from src.repositories.pending_review import cancel_pending_review
 from src.repositories.snapshot import list_snapshots as list_effect_snapshots_for_thread
 from src.core.tenant_config import get_tenant_config
-from src.mcp_servers.biz_scope import effective_store_id_for_biz
+from src.biz_tools.biz_scope import effective_store_id_for_biz
 
 from src.services.tracking_error_service import TrackingServiceError
 from src.services.tracking_helper import _ser
 
 logger = logging.getLogger(__name__)
 
-_TRACKING_METRIC_TOOLS: dict[str, str] = {
-    "crm": "get_crm_indicators",
-    "marketing": "get_marketing_indicators",
-    "retention": "get_retention_indicators",
-    "efficiency": "get_efficiency_indicators",
+_TRACKING_METRIC_TOOLS: dict[str, Any] = {
+    "crm": get_crm_indicators,
+    "marketing": get_marketing_indicators,
+    "retention": get_retention_indicators,
+    "efficiency": get_efficiency_indicators,
 }
 
 
@@ -69,24 +72,19 @@ async def _build_effect_tracking_snapshot(
         common_args["auth_token"] = auth_token
 
     ordered_dims = [d for d in ("crm", "marketing", "retention", "efficiency") if d in active_dims]
-    profile_task = mcp_call(
-        "crm-server",
-        "get_store_profile",
-        {"tenant_id": tenant_id, "store_id": store_id, **({"auth_token": auth_token} if auth_token else {})},
+    profile_task = get_store_profile(
+        tenant_id=tenant_id, store_id=store_id, **({"auth_token": auth_token} if auth_token else {}),
     )
-    dim_tasks = [mcp_call("metrics-server", _TRACKING_METRIC_TOOLS[d], common_args) for d in ordered_dims]
+    dim_tasks = [_TRACKING_METRIC_TOOLS[d](**common_args) for d in ordered_dims]
     all_results = await asyncio.gather(profile_task, *dim_tasks)
 
     profile = all_results[0]
-    if not isinstance(profile, dict):
-        profile = unwrap_mcp_json_value(profile)
     if not isinstance(profile, dict):
         profile = {}
 
     dim_results: dict[str, dict] = {}
     for dim, raw in zip(ordered_dims, all_results[1:]):
-        v = raw if isinstance(raw, dict) else unwrap_mcp_json_value(raw)
-        dim_results[dim] = v if isinstance(v, dict) else {}
+        dim_results[dim] = raw if isinstance(raw, dict) else {}
 
     business_mode = profile.get("business_mode", "hybrid")
     na_codes = NOT_APPLICABLE_MAP.get(business_mode, set())
@@ -100,13 +98,9 @@ async def _build_effect_tracking_snapshot(
 
     indicator_dicts = [dim_results[d] for d in ordered_dims]
     codes_for_benchmark = [c for c in extract_indicator_codes(*indicator_dicts) if c in active_inds]
-    benchmarks = await mcp_call(
-        "benchmark-server",
-        "get_industry_benchmark",
-        {"tenant_id": tenant_id, "industry_code": profile.get("industry_code", ""), "indicator_codes": codes_for_benchmark},
+    benchmarks = await get_industry_benchmark(
+        tenant_id=tenant_id, industry_code=profile.get("industry_code", ""), indicator_codes=codes_for_benchmark,
     )
-    if not isinstance(benchmarks, dict):
-        benchmarks = unwrap_mcp_json_value(benchmarks)
     if not isinstance(benchmarks, dict):
         benchmarks = {}
     benchmark_payload = benchmarks.get("benchmarks", benchmarks)
@@ -226,7 +220,7 @@ async def take_tracking_snapshot(tracking_id: str, enterprise_id: str | None, au
         snapshot_count_before = int(td.get("snapshot_count") or 0)
         try:
             snapshot_data = await _build_effect_tracking_snapshot(tenant_id, store_id, td, snapshot_at=now, auth_token=auth_token)
-        except MCPToolInvocationError as e:
+        except BizAPIError as e:
             logger.exception("采集快照 MCP 业务错误 tracking_id=%s", tracking_id)
             msg = str(e).strip() or "指标采集失败，请稍后重试"
             raise TrackingServiceError(502, msg) from e

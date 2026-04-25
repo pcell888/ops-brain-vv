@@ -9,7 +9,9 @@ import hashlib
 import logging
 from datetime import datetime, timezone
 
+from src.repositories.diagnosis_session import get_session
 from src.repositories.diagnosis_report import list_reports, get_report as get_report_from_db
+from src.runtime.task_runner import get_graph_state_values
 from src.core.calculator import (
     INDICATOR_META,
     DEFAULT_BENCHMARKS,
@@ -17,9 +19,9 @@ from src.core.calculator import (
     ALL_DIMENSIONS,
     calculate_dimension_benchmarks_scores,
 )
+from src.core.diagnosis_engine import Phase, phase_to_next_nodes
 from src.core.phases import calc_overall_progress, phase_name, infer_next_phase
 from src.core.progress_utils import is_thread_running_full, safe_percent
-from src.runtime.graph_app import get_graph_app
 from src.runtime.progress_store import progress_cache
 from src.runtime.running_tasks import running_tasks
 from src.runtime.thread_enterprise import get_running_threads_for_enterprise
@@ -37,11 +39,7 @@ from src.repositories.async_job_meta import (
 logger = logging.getLogger(__name__)
 
 
-# ── 辅助函数 ──────────────────────────────────────────────────
-
-
 def _score_to_status(score: float) -> str:
-    """将分数转换为状态标签。"""
     if score >= 80:
         return "excellent"
     if score >= 60:
@@ -52,12 +50,10 @@ def _score_to_status(score: float) -> str:
 
 
 def _map_severity(sev: str) -> str:
-    """映射严重程度。"""
     return {"high": "critical", "medium": "high", "low": "medium"}.get(sev, sev)
 
 
 def _normalize_recommendations(val: object) -> list[str]:
-    """规范化建议列表。"""
     if val is None:
         return []
     if isinstance(val, str):
@@ -69,7 +65,6 @@ def _normalize_recommendations(val: object) -> list[str]:
 
 
 def _list_item_cn_time(raw: object) -> tuple[str, str | None]:
-    """列表项创建时间统一为中国时区。"""
     if raw is None:
         return "诊断", None
     dt: datetime | None = None
@@ -114,7 +109,6 @@ def _item_created_at_sort_key(item: dict) -> tuple[float, str]:
 
 
 async def _extract_error_message(values: dict, diagnosis_id: str) -> str:
-    """从状态值/缓存中提取失败消息。"""
     cached = (await progress_cache.aget(diagnosis_id)) or {}
     cached_message = str(cached.get("message") or "").strip()
     if cached_message:
@@ -127,19 +121,16 @@ async def _extract_error_message(values: dict, diagnosis_id: str) -> str:
 
 
 def extract_total_score(raw: dict) -> float:
-    """提取总分。"""
     raw_health_score = raw.get("health_score", 0)
     if isinstance(raw_health_score, dict):
         return float(raw_health_score.get("total_score", 0))
     return float(raw_health_score)
 
 
-# 保留旧名称以兼容现有代码
 _extract_total_score = extract_total_score
 
 
 def _empty_health_trend() -> dict:
-    """空的健康趋势。"""
     return {"previous_score": None, "change": None, "direction": None}
 
 
@@ -166,6 +157,33 @@ def _status_payload(
         "health_score": health_score,
     }
 
+
+_get_session_state = get_graph_state_values
+
+
+def _last_progress_from_values(values: dict) -> tuple[str, int]:
+    msg = "诊断执行中..."
+    progress = 0
+    msgs = values.get("progress_messages") or []
+    if msgs and isinstance(msgs, list):
+        last = msgs[-1] if isinstance(msgs[-1], dict) else {}
+        msg = str(last.get("content", "")) or msg
+        try:
+            progress = int(float(last.get("percent", 0)))
+        except (TypeError, ValueError):
+            pass
+    return msg, progress
+
+
+async def _last_progress_from_cache_or_values(thread_id: str, values: dict) -> tuple[str, int]:
+    cached = await progress_cache.aget(thread_id)
+    if cached:
+        msg = cached.get("message", "诊断执行中...")
+        progress = safe_percent(cached.get("percent", 0))
+        return str(msg), progress
+    return _last_progress_from_values(values)
+
+
 # ── 核心业务逻辑 ──────────────────────────────────────────────
 
 
@@ -176,29 +194,15 @@ async def get_diagnosis_list_items(
     store_id: str | None = None,
     include_running: bool = True,
 ) -> tuple[list[dict], int]:
-    """获取诊断列表（内部格式）。
-    
-    Args:
-        tenant_id: 租户ID
-        skip: 跳过记录数
-        limit: 返回记录数
-        store_id: 门店ID（可选）
-        include_running: 是否包含运行中但未入库的任务
-        
-    Returns:
-        (items, total) - 诊断列表项和总数
-    """
     page = skip // limit + 1 if limit else 1
     items, total = await list_reports(tenant_id, store_id, page, limit)
 
-    # 格式化时间字段（与 API 其它出参一致：北京时间 ISO）
     for row in items:
         if "created_at" in row and row.get("created_at") is not None:
             row["created_at"] = serialize_instant_cn(row["created_at"])
 
     db_thread_ids = {row.get("thread_id", "") for row in items}
 
-    # 找出正在运行但尚未入库的任务
     running_not_in_db: list[dict] = []
     if include_running and tenant_id and skip == 0:
         running_thread_ids = await get_running_threads_for_enterprise(tenant_id)
@@ -225,24 +229,18 @@ async def get_diagnosis_list_items(
 
 
 async def _build_running_item(thread_id: str) -> dict | None:
-    """为尚未入库但正在运行的任务构建列表项。"""
     status = "running"
     progress = 0
     message = "诊断执行中..."
 
     try:
-        app = await get_graph_app()
-        config = {"configurable": {"thread_id": thread_id}}
-        state = await app.aget_state(config)
-        values = state.values if state and state.values else {}
-        msgs = values.get("progress_messages") or []
-        if msgs:
-            last = msgs[-1] if isinstance(msgs[-1], dict) else {}
-            message = str(last.get("content", "")) or message
-            try:
-                progress = int(float(last.get("percent", 0)))
-            except (TypeError, ValueError):
-                pass
+        values, _ = await _get_session_state(thread_id)
+        if values:
+            msg, pct = _last_progress_from_values(values)
+            if msg != "诊断执行中...":
+                message = msg
+            if pct > 0:
+                progress = pct
     except Exception:
         pass
 
@@ -263,7 +261,6 @@ async def _build_running_item(thread_id: str) -> dict | None:
 
 
 async def _build_list_item_from_row(thread_id: str, row: dict) -> dict:
-    """从数据库行构建列表项。"""
     report = await get_report_from_db(thread_id)
 
     status = "completed"
@@ -291,62 +288,37 @@ async def _build_list_item_from_row(thread_id: str, row: dict) -> dict:
             progress = 0
             message = "诊断执行中..."
             try:
-                app = await get_graph_app()
-                config = {"configurable": {"thread_id": thread_id}}
-                state = await app.aget_state(config)
-                values = state.values if state and state.values else {}
-                msgs = values.get("progress_messages") or []
-                if msgs:
-                    last = msgs[-1] if isinstance(msgs[-1], dict) else {}
-                    message = str(last.get("content", "")) or message
-                    try:
-                        progress = int(float(last.get("percent", 0)))
-                    except (TypeError, ValueError):
-                        pass
+                values, _ = await _get_session_state(thread_id)
+                if values:
+                    msg, pct = _last_progress_from_values(values)
+                    if msg != "诊断执行中...":
+                        message = msg
+                    if pct > 0:
+                        progress = pct
             except Exception:
                 pass
     else:
         is_task_running = await is_thread_running_full(thread_id)
 
-        app = await get_graph_app()
-        config = {"configurable": {"thread_id": thread_id}}
-        try:
-            state = await app.aget_state(config)
-            values = state.values if state and state.values else {}
-            if values.get("diagnosis_report"):
-                report = values["diagnosis_report"]
-                report_ready = True
-                health_score_val = report.get("health_score")
-                anomaly_count = len(report.get("anomalies") or [])
-            elif is_task_running:
-                status = "running"
-                msgs = values.get("progress_messages") or []
-                if msgs:
-                    last = msgs[-1] if isinstance(msgs[-1], dict) else {}
-                    message = str(last.get("content", ""))
-                    try:
-                        progress = int(float(last.get("percent", 0)))
-                    except (TypeError, ValueError):
-                        pass
-                else:
-                    message = "诊断执行中..."
-                    progress = 0
-            elif state.next:
-                status = "failed"
-                error_message = await _extract_error_message(values, thread_id)
-                message = error_message
-            else:
-                status = "failed"
-                error_message = await _extract_error_message(values, thread_id)
-                message = error_message
-        except Exception:
-            if is_task_running:
-                status = "running"
-                progress = 0
-                message = "诊断执行中..."
-            else:
-                status = "failed"
-                error_message = "无法获取诊断状态"
+        values, next_nodes = await _get_session_state(thread_id)
+        if values.get("diagnosis_report"):
+            report = values["diagnosis_report"]
+            report_ready = True
+            health_score_val = report.get("health_score")
+            anomaly_count = len(report.get("anomalies") or [])
+        elif is_task_running:
+            status = "running"
+            msg, pct = _last_progress_from_values(values)
+            message = msg
+            progress = pct
+        elif next_nodes:
+            status = "failed"
+            error_message = await _extract_error_message(values, thread_id)
+            message = error_message
+        else:
+            status = "failed"
+            error_message = await _extract_error_message(values, thread_id)
+            message = error_message
 
     _created_at = row.get("created_at")
     _name, _created_at_str = _list_item_cn_time(_created_at)
@@ -367,21 +339,10 @@ async def _build_list_item_from_row(thread_id: str, row: dict) -> dict:
 
 
 async def get_diagnosis_report_data(diagnosis_id: str) -> dict | None:
-    """获取诊断报告数据（内部格式）。
-    
-    Args:
-        diagnosis_id: 诊断ID (thread_id)
-        
-    Returns:
-        报告数据字典，如果不存在返回 None
-    """
     report = await get_report_from_db(diagnosis_id)
     if report is None:
-        app = await get_graph_app()
-        config = {"configurable": {"thread_id": diagnosis_id}}
-        state = await app.aget_state(config)
-        if state and state.values:
-            report = state.values.get("diagnosis_report")
+        values, _ = await _get_session_state(diagnosis_id)
+        report = values.get("diagnosis_report") if isinstance(values, dict) else None
     return report
 
 
@@ -390,7 +351,6 @@ async def compute_health_trend(
     tenant_id: str | None,
     current_total_score: float,
 ) -> dict:
-    """对比同租户按时间倒序的上一份已落库报告，计算综合健康度变化。"""
     empty = _empty_health_trend()
     if not tenant_id:
         return empty
@@ -428,10 +388,6 @@ async def compute_health_trend(
 
 
 def transform_report_to_frontend_format(thread_id: str, raw: dict, trend: dict | None = None) -> dict:
-    """将后端原始 report dict 转换为前端格式。
-    
-    这是兼容层使用的转换函数，将内部报告格式转换为前端期望的格式。
-    """
     raw_health_score = raw.get("health_score", 0)
     if isinstance(raw_health_score, dict):
         total_score = raw_health_score.get("total_score", 0)
@@ -554,14 +510,6 @@ def transform_report_to_frontend_format(thread_id: str, raw: dict, trend: dict |
 
 
 def calculate_benchmark_dimension_scores(industry: str = "general") -> dict:
-    """计算行业基准维度得分。
-    
-    Args:
-        industry: 行业类型（目前未使用，预留扩展）
-        
-    Returns:
-        包含行业和维度得分的字典
-    """
     dim_benchmarks: dict[str, list[dict]] = {}
     for code, meta in INDICATOR_META.items():
         dim = meta["dimension"]
@@ -587,14 +535,6 @@ def calculate_benchmark_dimension_scores(industry: str = "general") -> dict:
 
 
 async def get_diagnosis_status(diagnosis_id: str) -> dict:
-    """获取诊断状态（内部格式）。
-    
-    Args:
-        diagnosis_id: 诊断ID (thread_id)
-        
-    Returns:
-        状态字典，包含 status, progress, message, health_score 等
-    """
     report = await get_report_from_db(diagnosis_id)
     if report:
         wait_adoption_body = await _status_wait_adoption(diagnosis_id, report)
@@ -617,16 +557,12 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
     is_running = await is_thread_running_full(diagnosis_id)
     latest_job = await get_latest_job_by_thread(diagnosis_id)
     if is_running:
-        # 图已停在 wait_adoption 时，诊断 Worker 可能尚未 unregister，避免一直显示 running
         try:
-            app_early = await get_graph_app()
-            cfg_early = {"configurable": {"thread_id": diagnosis_id}}
-            st_early = await app_early.aget_state(cfg_early)
-            nn_early = list(st_early.next) if st_early and st_early.next else []
-            if "wait_adoption" in nn_early:
+            values, next_nodes = await _get_session_state(diagnosis_id)
+            if "wait_adoption" in next_nodes:
                 rep_early = report
-                if not rep_early and st_early.values:
-                    dr = st_early.values.get("diagnosis_report")
+                if not rep_early and values:
+                    dr = values.get("diagnosis_report")
                     if isinstance(dr, dict):
                         rep_early = dr
                 w_early = await _status_wait_adoption(diagnosis_id, rep_early)
@@ -661,7 +597,6 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
             if job_status == JOB_STATUS_RUNNING:
                 pass
             if job_status in {JOB_STATUS_FAILED, JOB_STATUS_CANCELLED}:
-                # 尝试从缓存获取失败前的进度
                 progress = 0
                 cached = await progress_cache.aget(diagnosis_id)
                 if cached:
@@ -682,7 +617,6 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
             msg = cached.get("message", msg)
             progress = safe_percent(cached.get("percent", 0))
             if cached_type == "error":
-                # 使用缓存中的进度，而不是强制设为0
                 error_progress = progress
                 return _status_payload(
                     diagnosis_id,
@@ -694,18 +628,8 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
                 )
         else:
             try:
-                app = await get_graph_app()
-                config = {"configurable": {"thread_id": diagnosis_id}}
-                state = await app.aget_state(config)
-                values = state.values if state and state.values else {}
-                msgs = values.get("progress_messages") or []
-                if msgs:
-                    last = msgs[-1] if isinstance(msgs[-1], dict) else {}
-                    msg = str(last.get("content", "")) or msg
-                    try:
-                        progress = int(float(last.get("percent", 0)))
-                    except (TypeError, ValueError):
-                        pass
+                values, _ = await _get_session_state(diagnosis_id)
+                msg, progress = _last_progress_from_values(values)
             except Exception:
                 pass
         return _status_payload(
@@ -723,7 +647,6 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
         job_status = str(latest_job.get("status") or "").strip().lower()
         job_error = str(latest_job.get("error") or "").strip()
         if job_status == JOB_STATUS_FAILED:
-            # 尝试从缓存获取失败前的进度
             progress = 0
             cached = await progress_cache.aget(diagnosis_id)
             if cached:
@@ -751,14 +674,7 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
             if isinstance(updated_at, datetime):
                 succeeded_updated_at = updated_at
 
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": diagnosis_id}}
-    try:
-        state = await app.aget_state(config)
-    except Exception:
-        state = None
-
-    values = state.values if state and state.values else {}
+    values, next_nodes = await _get_session_state(diagnosis_id)
     state_report = values.get("diagnosis_report") if isinstance(values, dict) else None
     if isinstance(state_report, dict):
         wait_adoption_body = await _status_wait_adoption(diagnosis_id, state_report)
@@ -777,9 +693,8 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
             health_score=hs if not isinstance(hs, dict) else hs.get("total_score", 0),
         )
 
-    if state and state.next:
-        next_nodes_fb = list(state.next)
-        if "wait_adoption" in next_nodes_fb:
+    if next_nodes:
+        if "wait_adoption" in next_nodes:
             rep_fb = None
             if isinstance(values, dict):
                 dr = values.get("diagnosis_report")
@@ -790,7 +705,6 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
                 return w_fb
         if not is_running:
             err = await _extract_error_message(values if isinstance(values, dict) else {}, diagnosis_id)
-            # 尝试从 state 中的进度消息获取失败前的进度
             progress = 0
             msgs = values.get("progress_messages") or [] if isinstance(values, dict) else []
             if msgs:
@@ -807,9 +721,9 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
                 message=err,
                 health_score=None,
             )
-        msgs = values.get("progress_messages") or [] if isinstance(values, dict) else []
         msg = "诊断执行中..."
         progress = 0
+        msgs = values.get("progress_messages") or [] if isinstance(values, dict) else []
         if msgs:
             last = msgs[-1] if isinstance(msgs[-1], dict) else {}
             msg = str(last.get("content", "")) or msg
@@ -818,7 +732,6 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
             except (TypeError, ValueError):
                 pass
         phase = "diagnosis"
-        next_nodes = list(state.next) if state and state.next else []
         if "execute_plans" in next_nodes:
             phase = "execution"
         elif "track_effects" in next_nodes:
@@ -836,7 +749,6 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
 
     if task is not None and task.done():
         err = await _extract_error_message(values if isinstance(values, dict) else {}, diagnosis_id)
-        # 尝试从 state 中的进度消息获取失败前的进度
         progress = 0
         msgs = values.get("progress_messages") or [] if isinstance(values, dict) else []
         if msgs:
@@ -866,7 +778,7 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
                 diagnosis_id,
                 status="failed",
                 phase="diagnosis",
-                progress=99,  # 任务已完成但未落库，显示99%更合理
+                progress=99,
                 message="诊断任务已结束但未生成报告，请稍后重试或联系管理员检查服务日志",
                 health_score=None,
             )
@@ -879,7 +791,6 @@ async def get_diagnosis_status(diagnosis_id: str) -> dict:
             health_score=None,
         )
 
-    # 不存在
     return _status_payload(
         diagnosis_id,
         status="not_found",
@@ -913,18 +824,8 @@ async def _status_while_graph_running(diagnosis_id: str, report: dict | None) ->
             )
     else:
         try:
-            app = await get_graph_app()
-            config = {"configurable": {"thread_id": diagnosis_id}}
-            state = await app.aget_state(config)
-            values = state.values if state and state.values else {}
-            msgs = values.get("progress_messages") or []
-            if msgs:
-                last = msgs[-1] if isinstance(msgs[-1], dict) else {}
-                msg = str(last.get("content", "")) or msg
-                try:
-                    progress = int(float(last.get("percent", 0)))
-                except (TypeError, ValueError):
-                    pass
+            values, _ = await _get_session_state(diagnosis_id)
+            msg, progress = _last_progress_from_values(values)
         except Exception:
             pass
     health_score_val = None
@@ -947,18 +848,10 @@ async def _status_while_graph_running(diagnosis_id: str, report: dict | None) ->
 
 
 async def _status_wait_adoption(diagnosis_id: str, report: dict | None) -> dict | None:
-    """图已暂停在 wait_adoption：诊断阶段（采集/分析/方案生成）已结束，返回阶段完成态。"""
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": diagnosis_id}}
-    try:
-        state = await app.aget_state(config)
-    except Exception:
-        return None
-    next_nodes = list(state.next) if state and state.next else []
+    values, next_nodes = await _get_session_state(diagnosis_id)
     if "wait_adoption" not in next_nodes:
         return None
     msg = "方案生成完成"
-    values = state.values if state and state.values else {}
     progress_msgs = values.get("progress_messages") or []
     if isinstance(progress_msgs, list):
         for item in reversed(progress_msgs):
@@ -967,7 +860,6 @@ async def _status_wait_adoption(diagnosis_id: str, report: dict | None) -> dict 
             text = str(item.get("content") or "").strip()
             if not text:
                 continue
-            # 进入待采纳后不再展示采集阶段旧文案。
             if "采集" in text and "方案" not in text:
                 continue
             msg = text

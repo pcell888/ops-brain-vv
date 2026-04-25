@@ -1,4 +1,4 @@
-"""租户注册表数据访问 — tenant_registry 表。"""
+"""租户注册表数据访问 — tenant_registries 表。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ async def get_tenant_row(tenant_id: str) -> dict | None:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT tenant_id, tenant_name, industry_code, industry_name, config, created_at, updated_at "
-                    "FROM tenant_registry WHERE tenant_id = %s AND status = 1",
+                    "FROM tenant_registries WHERE tenant_id = %s AND status = 1",
                     (tenant_id,),
                 )
                 return await cur.fetchone()
@@ -33,7 +33,7 @@ async def list_active_tenants() -> list[dict]:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT tenant_id, tenant_name, industry_code, industry_name, config, created_at, updated_at "
-                    "FROM tenant_registry WHERE status = 1 "
+                    "FROM tenant_registries WHERE status = 1 "
                     "ORDER BY created_at DESC"
                 )
                 return await cur.fetchall()
@@ -46,7 +46,7 @@ async def get_tenant_config_row(tenant_id: str) -> dict | None:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    "SELECT tenant_id, config FROM tenant_registry WHERE tenant_id = %s",
+                    "SELECT tenant_id, config FROM tenant_registries WHERE tenant_id = %s",
                     (tenant_id,),
                 )
                 return await cur.fetchone()
@@ -66,15 +66,15 @@ async def upsert_tenant(
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "INSERT INTO tenant_registry "
+                    "INSERT INTO tenant_registries "
                     "(tenant_id, tenant_name, api_base_url, auth_type, auth_credential, "
                     "industry_code, industry_name, status, config) "
                     "VALUES (%s, %s, %s, 'token', 'pending', %s, %s, 1, %s::jsonb) "
                     "ON CONFLICT (tenant_id) DO UPDATE SET "
                     "tenant_name = EXCLUDED.tenant_name, "
                     "api_base_url = EXCLUDED.api_base_url, "
-                    "industry_code = COALESCE(EXCLUDED.industry_code, tenant_registry.industry_code), "
-                    "industry_name = COALESCE(EXCLUDED.industry_name, tenant_registry.industry_name), "
+                    "industry_code = COALESCE(EXCLUDED.industry_code, tenant_registries.industry_code), "
+                    "industry_name = COALESCE(EXCLUDED.industry_name, tenant_registries.industry_name), "
                     "status = 1, "
                     "config = EXCLUDED.config, "
                     "updated_at = NOW()",

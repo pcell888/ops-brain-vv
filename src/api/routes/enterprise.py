@@ -1,4 +1,4 @@
-"""企业接口 — /enterprises 系列接口，底层读 tenant_registry。"""
+"""企业接口 — /enterprises 系列接口，底层读 tenant_registries。"""
 
 from __future__ import annotations
 

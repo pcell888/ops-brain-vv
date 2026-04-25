@@ -16,8 +16,8 @@ from src.core.calculator import (
 )
 from src.core.config import CN_TZ
 from src.core.tenant_config import get_tenant_config
-from src.mcp_servers.tenant_router import TenantRouter
-from src.mcp_servers.biz_api_client import BizAPIClient, BizAPIError
+from src.biz_tools.tenant_router import TenantRouter
+from src.biz_tools.biz_api_client import BizAPIClient, BizAPIError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

@@ -6,25 +6,14 @@ import json
 from typing import Any
 
 
-def langgraph_config_for_llm() -> dict | None:
-    """供 LangGraph 节点内嵌套 LLM 使用；Python 3.10 下图节点往往无 ContextVar，需由节点参数注入 config。"""
-    try:
-        from langgraph.config import get_config
-
-        return get_config()
-    except RuntimeError:
-        return None
-
-
 async def llm_ainvoke_in_graph(
     llm: Any,
     messages: Any,
     *,
     runnable_config: dict | None = None,
 ) -> Any:
-    """LangGraph 节点（或图外）调用 LLM：注入 RunnableConfig，并固定 stream=False 以稳定 usage。"""
-    cfg = runnable_config if runnable_config is not None else langgraph_config_for_llm()
-    return await llm.ainvoke(messages, config=cfg, stream=False)
+    """调用 LLM：固定 stream=False 以稳定 usage。runnable_config 参数保留以兼容旧调用方签名，但不再使用。"""
+    return await llm.ainvoke(messages, stream=False)
 
 
 def extract_llm_usage(resp: Any) -> dict | None:

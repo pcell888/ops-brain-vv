@@ -1,6 +1,6 @@
 """效果追踪指标快照落库（定时由 weekly_diagnosis 注册）。
 
-目标 thread：待复盘 pending，以及「已建 ai_effect_tracking 且仍为 active 的 diag_*」（首次快照会 cancel 待复盘但仍需周期采集）。
+目标 thread：待复盘 pending，以及「已建 effect_trackings 且仍为 active 的 diag_*」（首次快照会 cancel 待复盘但仍需周期采集）。
 调度：每日 effect_snapshot_hour 整点跑一轮；同 thread 按 effect_snapshot_interval_days（天，可小数）做时间间隔节流；0 表示不限制。
 复盘节点 track_effects 仍会实时拉指标。"""
 
@@ -11,7 +11,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from src.runtime.graph_app import get_graph_app
+from src.repositories.diagnosis_session import get_session as get_diagnosis_session
 from src.repositories.tracking import get_tracking
 from src.core.config import CN_TZ, get_settings
 from src.core.calculator import resolve_active_indicators
@@ -34,7 +34,7 @@ async def _get_pending_threads() -> list[dict]:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
-                    "SELECT thread_id, tenant_id, store_id, review_due_date FROM ai_pending_review WHERE status = 'pending'"
+                    "SELECT thread_id, tenant_id, store_id, review_due_date FROM pending_reviews WHERE status = 'pending'"
                 )
                 return await cur.fetchall()
     except Exception as e:
@@ -43,7 +43,7 @@ async def _get_pending_threads() -> list[dict]:
 
 
 async def _get_active_diag_tracking_threads(exclude_thread_ids: set[str]) -> list[dict]:
-    """采纳后若用户曾走「首次快照」接口，会 cancel 掉 ai_pending_review，但 ai_effect_tracking 仍为 active。
+    """采纳后若用户曾走「首次快照」接口，会 cancel 掉 pending_reviews，但 effect_trackings 仍为 active。
 
     此类诊断仍应用 LangGraph checkpoint 做周期快照，故在此补全目标列表（仅 diag_ 前缀，与 checkpoint thread_id 一致）。
     """
@@ -56,7 +56,7 @@ async def _get_active_diag_tracking_threads(exclude_thread_ids: set[str]) -> lis
                 await cur.execute(
                     """
                     SELECT t.thread_id, t.tenant_id, t.store_id, NULL::timestamptz AS review_due_date
-                    FROM ai_effect_tracking t
+                    FROM effect_trackings t
                     WHERE LEFT(t.thread_id, 5) = 'diag_'
                       AND (
                         t.tracking_data->>'status' IS NULL
@@ -111,15 +111,22 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
     # 不在此用 review_due_date 拦截：execute 写入的到期日常为「任务 deadline 当日 00:00」，
     # 当天午后会误判为已到期，导致整日无法自动快照。是否仍应采集由 status=pending 界定。
 
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
-    state = await app.aget_state(config)
-    if not state.values:
+    app = await get_diagnosis_session(thread_id)
+    if not app:
         logger.info(
-            "快照跳过 diagnosis_id=%s: LangGraph 无状态（checkpoint 缺失或 thread_id 不一致）",
+            "快照跳过 diagnosis_id=%s: 无诊断会话记录",
             diagnosis_id,
         )
         return
+
+    state_values = app.get("state_json")
+    if isinstance(state_values, str):
+        try:
+            state_values = json.loads(state_values)
+        except (json.JSONDecodeError, TypeError):
+            state_values = {}
+    if not isinstance(state_values, dict):
+        state_values = {}
 
     tracking_data: dict = {}
     row = await get_tracking(thread_id)
@@ -129,10 +136,10 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
             tracking_data = json.loads(raw_td) if raw_td.strip() else {}
         elif isinstance(raw_td, dict):
             tracking_data = dict(raw_td)
-    if state.values.get("selected_dimensions") is not None:
-        tracking_data["selected_dimensions"] = state.values.get("selected_dimensions")
-    if state.values.get("selected_indicators") is not None:
-        tracking_data["selected_indicators"] = state.values.get("selected_indicators")
+    if state_values.get("selected_dimensions") is not None:
+        tracking_data["selected_dimensions"] = state_values.get("selected_dimensions")
+    if state_values.get("selected_indicators") is not None:
+        tracking_data["selected_indicators"] = state_values.get("selected_indicators")
 
     active_dims, _ = resolve_active_indicators(
         tracking_data.get("selected_dimensions"),
@@ -147,7 +154,7 @@ async def _collect_snapshot_for_thread(thread: dict) -> None:
         )
         return
 
-    auth_raw = state.values.get("auth_token")
+    auth_raw = state_values.get("auth_token")
     auth_token = str(auth_raw).strip() if auth_raw else None
     if not auth_token:
         logger.warning(

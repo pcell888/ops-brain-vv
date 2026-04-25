@@ -1,26 +1,30 @@
-"""DiagnosisState — LangGraph 全局状态定义。"""
+"""DiagnosisState — 诊断流程全局状态定义。"""
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypedDict
+from typing import Literal, TypedDict
 
-from langgraph.graph import add_messages
+
+def _merge_messages(existing: list[dict] | None, new: list[dict] | None) -> list[dict]:
+    if existing is None:
+        existing = []
+    if new is None:
+        new = []
+    return existing + new
 
 
 class DiagnosisState(TypedDict):
     """诊断流程全局状态"""
 
-    # ── 输入参数 ──
-    thread_id: str | None  # 由 API 注入，用于落库
+    thread_id: str | None
     tenant_id: str
-    store_id: str  # 空字符串表示全企业诊断
+    store_id: str
     trigger_type: Literal["manual", "scheduled"]
     triggered_by: str | None
     selected_dimensions: list[str] | None
     selected_indicators: list[str] | None
-    auth_token: str | None  # 前端透传的鉴权 token
+    auth_token: str | None
 
-    # ── 采集阶段产出 ──
     store_profile: dict | None
     crm_indicators: dict | None
     marketing_indicators: dict | None
@@ -28,24 +32,19 @@ class DiagnosisState(TypedDict):
     efficiency_indicators: dict | None
     benchmarks: dict | None
 
-    # ── 诊断阶段产出 ──
     health_score: float | None
     dimension_scores: dict | None
     anomalies: list[dict] | None
     root_causes: list[dict] | None
     diagnosis_report: dict | None
 
-    # ── 方案阶段产出 ──
     solution_plans: list[dict] | None
-    pending_adopt_plan_id: str | None  # 用户选择但尚未确认的方案 ID
-    adopted_plan_ids: list[str] | None  # MCP 推送成功后确认的方案 ID
+    pending_adopt_plan_id: str | None
+    adopted_plan_ids: list[str] | None
 
-    # ── 执行阶段产出 ──
     exec_tasks: list[dict] | None
 
-    # ── 追踪阶段产出 ──
     tracking_data: dict | None
     review_report: dict | None
 
-    # ── 进度推送 ──
-    progress_messages: Annotated[list[dict], add_messages]
+    progress_messages: list[dict]

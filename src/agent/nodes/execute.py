@@ -11,7 +11,9 @@ from src.repositories.push_log import save_push_log
 from src.repositories.exec_task import patch_related_resources, save_exec_tasks, update_task_status
 from src.repositories.pending_review import save_pending_review
 from src.agent.progress import emit_progress
-from src.agent.tools import mcp_call
+from src.biz_tools.crm import get_dept_structure
+from src.biz_tools.notify import send_task_assignment_notification, send_customer_targeted_message
+from src.biz_tools.task import create_execution_tasks, create_approval_flow, create_seckill_activity
 from src.core.indicator_push_rules import INDICATOR_PUSH_RULES
 from src.agent.nodes.rule_task_builder import (
     build_execution_tasks,
@@ -34,7 +36,7 @@ async def _send_task_notifications(tenant_id: str, store_id: str, tasks: list[di
     notifiable = [t for t in tasks if t.get("assignee_user_id")]
     if not notifiable:
         return
-    await mcp_call("notify-server", "send_task_assignment_notification", {"tenant_id": tenant_id, "store_id": store_id, "tasks": notifiable})
+    await send_task_assignment_notification(tenant_id=tenant_id, store_id=store_id, tasks=notifiable)
 
 
 async def _batch_push_tasks(
@@ -53,10 +55,8 @@ async def _batch_push_tasks(
         loc["task_id"] = tid
         name = str(loc.get("task_name") or tid)
         try:
-            result = await mcp_call(
-                "task-server",
-                "create_execution_tasks",
-                {"tenant_id": tenant_id, "store_id": store_id, "plan_id": plan_id, "tasks": [loc]},
+            result = await create_execution_tasks(
+                tenant_id=tenant_id, store_id=store_id, plan_id=plan_id, tasks=[loc]
             )
             cr_list = result.get("created_tasks", []) if isinstance(result, dict) else []
             cr0 = cr_list[0] if cr_list and isinstance(cr_list[0], dict) else None
@@ -95,7 +95,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
     store_id = state["store_id"]
     all_tasks: list[dict] = []
 
-    dept_info = await mcp_call("crm-server", "get_dept_structure", {"tenant_id": tenant_id, "store_id": store_id})
+    dept_info = await get_dept_structure(tenant_id=tenant_id, store_id=store_id)
 
     # ── 5.2.3 按异常指标补全规定动作 ──
     anomalies = state.get("anomalies") or []
@@ -185,7 +185,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
                 key = (ind or "", msg_cfg.get("type", ""))
                 if key not in seen_message_key:
                     seen_message_key.add(key)
-                    await mcp_call("notify-server", "send_customer_targeted_message", {"tenant_id": tenant_id, "store_id": store_id, "target_segment": msg_cfg.get("target_segment", ""), "title": msg_cfg.get("title", "系统通知"), "content": msg_cfg.get("content_tpl", ""), "message_type": msg_cfg.get("type", "ai_targeted")})
+                    await send_customer_targeted_message(tenant_id=tenant_id, store_id=store_id, target_segment=msg_cfg.get("target_segment", ""), title=msg_cfg.get("title", "系统通知"), content=msg_cfg.get("content_tpl", ""), message_type=msg_cfg.get("type", "ai_targeted"))
                     emit_progress(state, f"已向目标人群推送: {msg_cfg.get('title', '系统通知')}")
 
     # ── 逐方案执行：审批 / 任务创建 / 自动动作 ──
@@ -202,7 +202,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
                         approver_uid = users[0].get("userId", users[0].get("id"))
                     break
             if approver_uid:
-                await mcp_call("task-server", "create_approval_flow", {"tenant_id": tenant_id, "store_id": store_id, "plan_id": plan.get("plan_id", ""), "title": f"AI诊断方案审批：{plan_name}", "content": plan.get("description", ""), "approver_user_id": approver_uid})
+                await create_approval_flow(tenant_id=tenant_id, store_id=store_id, plan_id=plan.get("plan_id", ""), title=f"AI诊断方案审批：{plan_name}", content=plan.get("description", ""), approver_user_id=approver_uid)
                 emit_progress(state, f"方案「{plan_name}」审批已发起")
 
         emit_progress(state, f"正在创建方案「{plan_name}」的执行任务...")
@@ -254,7 +254,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
                 emit_progress(state, f"已跳过自动优惠券创建: {config.get('coupon_name', '')}")
                 logger.info("已屏蔽 create_coupon_campaign 调用（自动动作）: tenant=%s store=%s", tenant_id, store_id)
             elif action_type == "seckill_activity":
-                await mcp_call("task-server", "create_seckill_activity", {"tenant_id": tenant_id, "store_id": store_id, "activity_config": config})
+                await create_seckill_activity(tenant_id=tenant_id, store_id=store_id, activity_config=config)
                 emit_progress(state, "已自动创建秒杀活动")
 
     emit_progress(state, f"共创建 {len(all_tasks)} 个执行任务")

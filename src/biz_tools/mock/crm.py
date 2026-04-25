@@ -1,39 +1,107 @@
-"""CRM / 企业画像 — 原 crm-server 工具实现。"""
+"""CRM / 企业画像 — 与 biz/crm.py 同名、同签名、同 register；进程内模拟（wlwq_local 由 BizAPIClient 分流）。"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 
-from mcp.server import FastMCP
 
-from src.mcp_servers.biz.shared import biz, router
-from src.mcp_servers.biz_api_client import BizAPIError
-from src.mcp_servers.biz_scope import effective_store_id_for_biz
+
+from src.biz_tools.biz_scope import effective_store_id_for_biz
+from src.biz_tools.mock import client_sales_examine
+from src.biz_tools.mock.stats import store_order_analytics
 
 logger = logging.getLogger(__name__)
 
 
-def _minimal_store_profile(tenant_id: str, store_id: str) -> dict:
-    """业务侧无该店铺（404）时仍返回与成功路径一致的结构，供快照/诊断降级。"""
+# ---------------------------------------------------------------------------
+# 与业务侧 JSON 一致的模拟 data（供本模块工具与 dispatch 复用）
+# ---------------------------------------------------------------------------
+
+
+def _raw_store_list() -> dict:
     return {
-        "tenant_id": tenant_id,
-        "store_id": store_id,
-        "store_name": "",
-        "store_type": "",
-        "business_mode": "hybrid",
-        "industry_code": "",
-        "industry_name": "",
-        "province": "",
-        "city": "",
-        "county": "",
-        "customer_count": 0,
-        "monthly_gmv": 0,
-        "employee_count": 0,
-        "created_days": 0,
-        "admin_account_ids": [],
-        "store_not_found": True,
+        "list": [
+            {
+                "storeId": "s001",
+                "storeName": "杭州旗舰店",
+                "storeType": "retail",
+                "industryCode": "retail_general",
+                "province": "浙江省",
+                "city": "杭州市",
+                "customerCount": 3280,
+                "monthlyGmv": 425000,
+                "employeeCount": 18,
+                "adminAccountIds": ["admin-001", "admin-002"],
+            },
+            {
+                "storeId": "s002",
+                "storeName": "上海体验店",
+                "storeType": "retail",
+                "industryCode": "retail_general",
+                "province": "上海市",
+                "city": "上海市",
+                "customerCount": 2150,
+                "monthlyGmv": 310000,
+                "employeeCount": 12,
+                "adminAccountIds": ["admin-003"],
+            },
+        ]
     }
+
+
+def _raw_store_detail(_store_id: str) -> dict:
+    _ = _store_id
+    return {
+        "storeName": "AI示范店",
+        "storeType": "retail",
+        "businessMode": "mall",
+        "classId": "CLS001",
+        "industryCode": "retail_general",
+        "province": "浙江省",
+        "city": "杭州市",
+        "county": "西湖区",
+        "customerCount": 3280,
+        "monthlyGmv": 425000,
+        "employeeCount": 18,
+        "createdDays": 540,
+        "adminAccountIds": ["admin-001", "admin-002"],
+    }
+
+
+def _raw_store_class(_class_id: str) -> dict:
+    _ = _class_id
+    return {"classCode": "retail_general", "className": "综合零售"}
+
+
+def _raw_dept_tree(_store_id: str | None) -> dict:
+    _ = _store_id
+    return {
+        "list": [
+            {"deptId": 1, "deptName": "总公司", "parentId": 0},
+            {"deptId": 2, "deptName": "销售部", "parentId": 1},
+            {"deptId": 3, "deptName": "运营部", "parentId": 1},
+            {"deptId": 4, "deptName": "客服部", "parentId": 1},
+        ]
+    }
+
+
+def _raw_user_list(dept_id: str | None) -> dict:
+    base = [
+        {"userId": 1, "userName": "管理员", "deptId": 2},
+        {"userId": 2, "userName": "销售主管", "deptId": 2},
+        {"userId": 3, "userName": "运营经理", "deptId": 3},
+        {"userId": 4, "userName": "客服主管", "deptId": 4},
+    ]
+    if dept_id and str(dept_id).isdigit():
+        d = int(dept_id)
+        return {"list": [u for u in base if u["deptId"] == d]}
+    return {"list": base}
+
+
+# ---------------------------------------------------------------------------
+# 与 biz/crm.py 对齐的 MCP 工具实现
+# ---------------------------------------------------------------------------
 
 
 async def get_store_profile(tenant_id: str, store_id: str = "", auth_token: str | None = None) -> dict:
@@ -42,26 +110,16 @@ async def get_store_profile(tenant_id: str, store_id: str = "", auth_token: str 
     store_id 为空时返回企业级聚合画像（全企业诊断）。
     """
     logger.info("Tool called: get_store_profile tenant=%s store=%s", tenant_id, store_id)
+    _ = auth_token
     store_id = effective_store_id_for_biz(tenant_id, store_id)
     if not store_id:
         return await _get_tenant_profile(tenant_id, auth_token)
 
-    try:
-        store_data = await biz.get(tenant_id, f"/store/{store_id}", auth_token=auth_token)
-    except BizAPIError as e:
-        if e.status_code == 404:
-            logger.warning(
-                "get_store_profile: store not found tenant=%s store_id=%s, minimal profile",
-                tenant_id,
-                store_id,
-            )
-            return _minimal_store_profile(tenant_id, store_id)
-        raise
-
+    store_data = _raw_store_detail(store_id)
     class_id = store_data.get("classId")
-    class_data = {}
+    class_data: dict = {}
     if class_id:
-        class_data = await biz.get(tenant_id, f"/store-class/{class_id}", auth_token=auth_token)
+        class_data = _raw_store_class(class_id)
 
     return {
         "tenant_id": tenant_id,
@@ -83,10 +141,11 @@ async def get_store_profile(tenant_id: str, store_id: str = "", auth_token: str 
 
 
 async def _get_tenant_profile(tenant_id: str, auth_token: str | None = None) -> dict:
-    """调用 /store/list 获取全部店铺，聚合为企业级画像。"""
-    store_list_data = await biz.get(tenant_id, "/store/list", auth_token=auth_token)
+    """模拟 /store/list 聚合企业级画像。"""
+    _ = auth_token
+    store_list_data = _raw_store_list()
     stores = store_list_data.get("list", [])
-    tenant_name, industry_code = await router.get_tenant_basic_info(tenant_id)
+    tenant_name, industry_code = "本地业务模拟", "retail_general"
 
     all_admin_ids: list[str] = []
     total_customers = 0
@@ -97,7 +156,7 @@ async def _get_tenant_profile(tenant_id: str, auth_token: str | None = None) -> 
     for s in stores:
         store_names.append(s.get("storeName", s.get("storeId", "")))
         total_customers += s.get("customerCount", 0)
-        total_gmv += s.get("monthlyGmv", 0)
+        total_gmv += float(s.get("monthlyGmv", 0))
         total_employees += s.get("employeeCount", 0)
         all_admin_ids.extend(s.get("adminAccountIds", []))
         bm = s.get("businessMode", "")
@@ -139,8 +198,13 @@ async def get_customer_list(
 ) -> dict:
     """获取客户列表（支持分类筛选: all | high_value | churn_risk | new）。"""
     logger.info(
-        "Tool called: get_customer_list tenant=%s store=%s filter=%s page=%s", tenant_id, store_id, filter_type, page
+        "Tool called: get_customer_list tenant=%s store=%s filter=%s page=%s",
+        tenant_id,
+        store_id,
+        filter_type,
+        page,
     )
+    _ = auth_token
     sid = effective_store_id_for_biz(tenant_id, store_id)
     req: dict = {
         "storeId": sid,
@@ -148,7 +212,7 @@ async def get_customer_list(
         "pageNo": page,
         "pageSize": page_size,
     }
-    data = await biz.get(tenant_id, "/client-record/list", req, auth_token=auth_token)
+    data = client_sales_examine.client_record_list(req)
     return {
         "total": data.get("total", 0),
         "items": data.get("list", []),
@@ -158,10 +222,16 @@ async def get_customer_list(
 async def get_customer_detail(tenant_id: str, client_record_id: str, auth_token: str | None = None) -> dict:
     """获取单个客户详情（含交易记录、跟进记录）。"""
     logger.info("Tool called: get_customer_detail tenant=%s client_id=%s", tenant_id, client_record_id)
-    client_data, contracts = await asyncio.gather(
-        biz.get(tenant_id, f"/client-record/{client_record_id}", auth_token=auth_token),
-        biz.get(tenant_id, "/sales-contract/list", {"clientRecordId": client_record_id}, auth_token=auth_token),
-    )
+    _ = auth_token
+
+    async def _client():
+        return client_sales_examine.client_record_detail(client_record_id)
+
+    async def _contracts():
+        return client_sales_examine.sales_contract_list({"clientRecordId": client_record_id})
+
+    client_data, contracts = await asyncio.gather(_client(), _contracts())
+    client_data = dict(client_data)
     client_data["contracts"] = contracts.get("list", [])
     return client_data
 
@@ -173,10 +243,11 @@ async def get_sales_contract_list(
 ) -> dict:
     """GET /sales-contract/list — 销售合同列表（可选按客户筛选）。"""
     logger.info("Tool called: get_sales_contract_list tenant=%s client_id=%s", tenant_id, client_record_id)
+    _ = auth_token
     req: dict = {}
     if client_record_id:
         req["clientRecordId"] = client_record_id
-    data = await biz.get(tenant_id, "/sales-contract/list", req, auth_token=auth_token)
+    data = client_sales_examine.sales_contract_list(req)
     return {"total": data.get("total", 0), "items": data.get("list", [])}
 
 
@@ -197,6 +268,7 @@ async def get_order_analytics(
         end_date,
         group_by,
     )
+    _ = auth_token
     sid = effective_store_id_for_biz(tenant_id, store_id)
     req: dict = {
         "storeId": sid,
@@ -204,17 +276,12 @@ async def get_order_analytics(
         "endDate": end_date,
         "groupBy": group_by,
     }
-    data = await biz.get(tenant_id, "/store-order/analytics", req, auth_token=auth_token)
-    return data
+    return store_order_analytics(req)
 
 
 async def _sys_dept_tree(tenant_id: str, store_id: str, auth_token: str | None = None) -> dict:
-    raw = await biz.get(tenant_id, "/sys-dept/tree", {"storeId": store_id}, auth_token=auth_token)
-    if isinstance(raw, list):
-        return {"list": raw}
-    if isinstance(raw, dict):
-        return raw
-    return {"list": []}
+    _ = tenant_id, auth_token
+    return _raw_dept_tree(store_id)
 
 
 async def get_dept_tree(tenant_id: str, store_id: str = "", auth_token: str | None = None) -> dict:
@@ -227,7 +294,8 @@ async def get_dept_tree(tenant_id: str, store_id: str = "", auth_token: str | No
 async def get_users_by_dept(tenant_id: str, dept_id: str, auth_token: str | None = None) -> dict:
     """GET /sys-user/list — 部门下用户列表。"""
     logger.info("Tool called: get_users_by_dept tenant=%s dept_id=%s", tenant_id, dept_id)
-    data = await biz.get(tenant_id, "/sys-user/list", {"deptId": dept_id}, auth_token=auth_token)
+    _ = auth_token
+    data = _raw_user_list(dept_id)
     return {"list": data.get("list", [])}
 
 
@@ -238,7 +306,7 @@ async def get_dept_structure(tenant_id: str, store_id: str = "", auth_token: str
     if sid:
         return await _fetch_dept_tree(tenant_id, sid, auth_token)
 
-    store_list_data = await biz.get(tenant_id, "/store/list", auth_token=auth_token)
+    store_list_data = _raw_store_list()
     stores = store_list_data.get("list", [])
     if not stores:
         return {"store_id": "", "departments": []}
@@ -261,7 +329,7 @@ async def _fetch_dept_tree(tenant_id: str, store_id: str, auth_token: str | None
     departments = []
     for dept in raw_list:
         dept_id = dept.get("deptId", dept.get("id"))
-        users_data = await biz.get(tenant_id, "/sys-user/list", {"deptId": dept_id}, auth_token=auth_token)
+        users_data = _raw_user_list(str(dept_id) if dept_id is not None else None)
         users = users_data.get("list") or []
         departments.append(
             {
@@ -272,17 +340,3 @@ async def _fetch_dept_tree(tenant_id: str, store_id: str, auth_token: str | None
             }
         )
     return {"store_id": store_id, "departments": departments}
-
-
-def register(server: FastMCP) -> None:
-    for fn in (
-        get_store_profile,
-        get_customer_list,
-        get_customer_detail,
-        get_sales_contract_list,
-        get_order_analytics,
-        get_dept_tree,
-        get_users_by_dept,
-        get_dept_structure,
-    ):
-        server.add_tool(fn)

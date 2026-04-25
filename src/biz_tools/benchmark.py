@@ -1,8 +1,4 @@
-"""
-benchmark-server: 行业基准数据
-传输: stdio
-数据来源: 平台中台（非企业API）
-"""
+"""行业基准数据 — 业务工具函数。"""
 
 from __future__ import annotations
 
@@ -10,15 +6,13 @@ import json
 import logging
 
 import redis.asyncio as aioredis
-from mcp.server import FastMCP
 
 from src.core.config import get_settings
-from src.mcp_servers.tenant_router import TenantRouter
-from src.mcp_servers.biz_api_client import BizAPIClient
+from src.biz_tools.tenant_router import TenantRouter
+from src.biz_tools.biz_api_client import BizAPIClient
 
 logger = logging.getLogger(__name__)
 
-server = FastMCP("benchmark-server")
 router = TenantRouter()
 biz = BizAPIClient(router)
 _redis: aioredis.Redis | None = None
@@ -113,7 +107,6 @@ def _looks_like_zero_cache(all_benchmarks: dict, indicator_codes: list[str]) -> 
 
 
 async def _fetch_benchmarks_from_platform(industry_code: str, period: str | None) -> dict:
-    """中台基准接口未对接时返回内置 DEFAULT_BENCHMARKS；对接后改为 biz.platform_get。"""
     return {"benchmarks": DEFAULT_BENCHMARKS.copy()}
 
 
@@ -125,19 +118,12 @@ async def _get_redis() -> aioredis.Redis:
     return _redis
 
 
-@server.tool()
 async def get_industry_benchmark(
     tenant_id: str,
     industry_code: str,
     indicator_codes: list[str],
     period: str | None = None,
 ) -> dict:
-    """
-    获取指定行业的基准数据。
-    返回: 每个指标的 avg_value / median_value / excellent_value (P90)。
-    优先从 Redis 缓存读取，缓存未命中调用平台中台API。
-    tenant_id: 企业租户，中台请求使用其 platform_auth_credential 鉴权。
-    """
     logger.info(
         "Tool called: get_industry_benchmark tenant=%s industry=%s indicators=%s period=%s",
         tenant_id,
@@ -181,22 +167,18 @@ async def get_industry_benchmark(
     }
 
 
-@server.tool()
 async def list_industries(tenant_id: str) -> list[dict]:
-    """获取所有行业编码及名称列表。tenant_id: 企业租户，中台请求使用其 platform_auth_credential。"""
     logger.info("Tool called: list_industries tenant=%s", tenant_id)
     data = await biz.platform_get("/store-class/list", auth_tenant_id=tenant_id)
     return data.get("list", data) if isinstance(data, dict) else data
 
 
-@server.tool()
 async def get_industry_trend(
     tenant_id: str,
     industry_code: str,
     indicator_code: str,
     periods: int = 6,
 ) -> list[dict]:
-    """获取行业指标趋势数据（最近N个月，用于对比分析图表）。tenant_id: 企业租户，中台请求使用其 platform_auth_credential。"""
     logger.info(
         "Tool called: get_industry_trend tenant=%s industry=%s indicator=%s periods=%s",
         tenant_id,
@@ -216,21 +198,7 @@ async def get_industry_trend(
     return data.get("trends", data) if isinstance(data, dict) else data
 
 
-@server.tool()
 async def get_project_enterprise_info(tenant_id: str) -> dict:
-    """
-    通过租户 ID 从平台中台获取项目及关联客户（企业）信息。
-    tenant_id: 在 tenant_registry 中的企业 ID；请求 query 仅含 projectId（与同字段同源），
-    鉴权使用该企业 platform_auth_credential / auth_credential（auth_tenant_id）。
-    """
     logger.info("Tool called: get_project_enterprise_info tenant=%s", tenant_id)
     q = {"projectId": tenant_id}
     return await biz.platform_get("ai/customer/projectInfo", q, auth_tenant_id=tenant_id)
-
-
-# ── stdio Transport ──────────────────────────────────────────────
-
-if __name__ == "__main__":
-    from src.core.logging_setup import setup_logging
-    setup_logging("mcp-servers", console=False)
-    server.run(transport="stdio")

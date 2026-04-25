@@ -26,12 +26,12 @@ async def save_effect_tracking(
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO ai_effect_tracking (thread_id, tenant_id, store_id, tracking_data)
+                    INSERT INTO effect_trackings (thread_id, tenant_id, store_id, tracking_data)
                     VALUES (%s, %s, %s, %s::jsonb)
                     ON CONFLICT (thread_id) DO UPDATE SET
                         tenant_id = EXCLUDED.tenant_id,
                         store_id = EXCLUDED.store_id,
-                        tracking_data = ai_effect_tracking.tracking_data || EXCLUDED.tracking_data,
+                        tracking_data = effect_trackings.tracking_data || EXCLUDED.tracking_data,
                         created_at = NOW()
                     """,
                     (thread_id[:128], tenant_id[:32], store_id[:32], data_json),
@@ -54,7 +54,7 @@ async def save_review_report(
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO ai_review_report (thread_id, tenant_id, store_id, report)
+                    INSERT INTO review_reports (thread_id, tenant_id, store_id, report)
                     VALUES (%s, %s, %s, %s::jsonb)
                     ON CONFLICT (thread_id) DO UPDATE SET
                         tenant_id = EXCLUDED.tenant_id,
@@ -75,7 +75,7 @@ async def review_report_exists(thread_id: str) -> bool:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT 1 FROM ai_review_report WHERE thread_id = %s LIMIT 1",
+                    "SELECT 1 FROM review_reports WHERE thread_id = %s LIMIT 1",
                     (thread_id[:128],),
                 )
                 return await cur.fetchone() is not None
@@ -89,7 +89,7 @@ async def get_tracking(thread_id: str) -> dict | None:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT thread_id, tenant_id, store_id, tracking_data, created_at "
-                    "FROM ai_effect_tracking WHERE thread_id = %s",
+                    "FROM effect_trackings WHERE thread_id = %s",
                     (thread_id,),
                 )
                 return await cur.fetchone()
@@ -103,7 +103,7 @@ async def update_tracking_data(thread_id: str, tracking_data: dict) -> None:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "UPDATE ai_effect_tracking SET tracking_data = %s WHERE thread_id = %s",
+                    "UPDATE effect_trackings SET tracking_data = %s WHERE thread_id = %s",
                     (json.dumps(tracking_data, ensure_ascii=False), thread_id),
                 )
             await conn.commit()
@@ -116,7 +116,7 @@ async def tracking_exists(thread_id: str) -> bool:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT 1 FROM ai_effect_tracking WHERE thread_id = %s",
+                    "SELECT 1 FROM effect_trackings WHERE thread_id = %s",
                     (thread_id,),
                 )
                 return await cur.fetchone() is not None
@@ -131,7 +131,7 @@ async def get_review_report(thread_id: str) -> dict | None:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     "SELECT thread_id, tenant_id, store_id, report, created_at "
-                    "FROM ai_review_report WHERE thread_id = %s",
+                    "FROM review_reports WHERE thread_id = %s",
                     (thread_id,),
                 )
                 return await cur.fetchone()
@@ -145,7 +145,7 @@ async def update_review_report(thread_id: str, report: dict) -> None:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "UPDATE ai_review_report SET report = %s WHERE thread_id = %s",
+                    "UPDATE review_reports SET report = %s WHERE thread_id = %s",
                     (json.dumps(report, ensure_ascii=False), thread_id),
                 )
             await conn.commit()

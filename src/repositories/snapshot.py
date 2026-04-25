@@ -26,7 +26,7 @@ async def save_snapshot(
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO ai_effect_snapshot (thread_id, tenant_id, store_id, snapshot_data)
+                    INSERT INTO effect_snapshots (thread_id, tenant_id, store_id, snapshot_data)
                     VALUES (%s, %s, %s, %s::jsonb)
                     """,
                     (thread_id[:128], tenant_id[:32], store_id[:32], data_json),
@@ -44,7 +44,7 @@ async def list_snapshots(thread_id: str) -> list[dict]:
                 await cur.execute(
                     """
                     SELECT snapshot_data, snapshot_at
-                    FROM ai_effect_snapshot
+                    FROM effect_snapshots
                     WHERE thread_id = %s
                     ORDER BY snapshot_at ASC
                     """,
@@ -65,7 +65,7 @@ async def get_last_snapshot_time(thread_id: str):
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT MAX(snapshot_at) FROM ai_effect_snapshot WHERE thread_id = %s",
+                    "SELECT MAX(snapshot_at) FROM effect_snapshots WHERE thread_id = %s",
                     (thread_id,),
                 )
                 row = await cur.fetchone()
@@ -80,7 +80,7 @@ async def get_snapshot_by_id(snapshot_id: int) -> dict | None:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
-                    "SELECT id, thread_id, snapshot_data, snapshot_at FROM ai_effect_snapshot WHERE id = %s",
+                    "SELECT id, thread_id, snapshot_data, snapshot_at FROM effect_snapshots WHERE id = %s",
                     (snapshot_id,),
                 )
                 return await cur.fetchone()
@@ -94,7 +94,7 @@ async def list_snapshots_with_id(thread_id: str) -> list[dict]:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
-                    "SELECT id, snapshot_data, snapshot_at FROM ai_effect_snapshot WHERE thread_id = %s ORDER BY snapshot_at ASC",
+                    "SELECT id, snapshot_data, snapshot_at FROM effect_snapshots WHERE thread_id = %s ORDER BY snapshot_at ASC",
                     (thread_id,),
                 )
                 return await cur.fetchall()
@@ -108,7 +108,7 @@ async def get_latest_snapshot(thread_id: str) -> dict | None:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
-                    "SELECT id, snapshot_data FROM ai_effect_snapshot WHERE thread_id = %s ORDER BY snapshot_at DESC LIMIT 1",
+                    "SELECT id, snapshot_data FROM effect_snapshots WHERE thread_id = %s ORDER BY snapshot_at DESC LIMIT 1",
                     (thread_id,),
                 )
                 return await cur.fetchone()

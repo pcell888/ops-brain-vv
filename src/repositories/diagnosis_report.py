@@ -27,7 +27,7 @@ async def save_report(
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO ai_diagnosis_report (thread_id, tenant_id, store_id, trigger_type, report)
+                    INSERT INTO diag_reports (thread_id, tenant_id, store_id, trigger_type, report)
                     VALUES (%s, %s, %s, %s, %s::jsonb)
                     ON CONFLICT (thread_id) DO UPDATE SET
                         tenant_id = EXCLUDED.tenant_id,
@@ -49,7 +49,7 @@ async def get_report(thread_id: str) -> dict | None:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    "SELECT tenant_id, store_id, report FROM ai_diagnosis_report WHERE thread_id = %s",
+                    "SELECT tenant_id, store_id, report FROM diag_reports WHERE thread_id = %s",
                     (thread_id,),
                 )
                 row = await cur.fetchone()
@@ -81,7 +81,7 @@ async def list_reports(
                 where_sql = " AND ".join(where) if where else "1=1"
 
                 await cur.execute(
-                    f"SELECT COUNT(*) AS c FROM ai_diagnosis_report WHERE {where_sql}",
+                    f"SELECT COUNT(*) AS c FROM diag_reports WHERE {where_sql}",
                     params,
                 )
                 total = (await cur.fetchone()).get("c", 0)
@@ -90,7 +90,7 @@ async def list_reports(
                 await cur.execute(
                     f"""
                     SELECT thread_id, tenant_id, store_id, trigger_type, created_at
-                    FROM ai_diagnosis_report WHERE {where_sql}
+                    FROM diag_reports WHERE {where_sql}
                     ORDER BY created_at DESC LIMIT %s OFFSET %s
                     """,
                     params,
@@ -110,7 +110,7 @@ async def update_plan_ids(thread_id: str, plan_ids: list[str]) -> None:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    UPDATE ai_diagnosis_report
+                    UPDATE diag_reports
                     SET plan_ids = %s::jsonb
                     WHERE thread_id = %s
                     """,
@@ -129,7 +129,7 @@ async def find_thread_id_by_plan_id(plan_id: str) -> str | None:
                 await cur.execute(
                     """
                     SELECT thread_id
-                    FROM ai_diagnosis_report
+                    FROM diag_reports
                     WHERE plan_ids @> %s::jsonb
                     ORDER BY created_at DESC
                     LIMIT 1

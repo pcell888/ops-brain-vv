@@ -25,7 +25,7 @@ async def create_tracking(
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO ai_effect_tracking (thread_id, tenant_id, store_id, tracking_data, created_at)
+                    INSERT INTO effect_trackings (thread_id, tenant_id, store_id, tracking_data, created_at)
                     VALUES (%s, %s, %s, %s, %s)
                     """,
                     (thread_id, tenant_id, store_id, json.dumps(tracking_data, ensure_ascii=False), created_at),
@@ -39,7 +39,7 @@ async def get_tracking(thread_id: str) -> dict | None:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT thread_id, tenant_id, store_id, tracking_data, created_at FROM ai_effect_tracking WHERE thread_id = %s",
+                "SELECT thread_id, tenant_id, store_id, tracking_data, created_at FROM effect_trackings WHERE thread_id = %s",
                 (thread_id,),
             )
             return await cur.fetchone()
@@ -48,7 +48,7 @@ async def get_tracking(thread_id: str) -> dict | None:
 async def tracking_exists(thread_id: str) -> bool:
     async with get_conn() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT 1 FROM ai_effect_tracking WHERE thread_id = %s", (thread_id,))
+            await cur.execute("SELECT 1 FROM effect_trackings WHERE thread_id = %s", (thread_id,))
             return await cur.fetchone() is not None
 
 
@@ -62,7 +62,7 @@ async def list_tracking_thread_ids_for_tenant_plan(tenant_id: str, plan_id: str)
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT thread_id FROM ai_effect_tracking
+                SELECT thread_id FROM effect_trackings
                 WHERE tenant_id = %s AND COALESCE(tracking_data->>'plan_id', '') = %s
                 ORDER BY created_at DESC
                 """,
@@ -77,7 +77,7 @@ async def update_tracking_data(thread_id: str, tracking_data: dict) -> None:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "UPDATE ai_effect_tracking SET tracking_data = %s WHERE thread_id = %s",
+                    "UPDATE effect_trackings SET tracking_data = %s WHERE thread_id = %s",
                     (json.dumps(tracking_data, ensure_ascii=False), thread_id),
                 )
             await conn.commit()
@@ -96,7 +96,7 @@ async def count_trackings(enterprise_id: str | None, diagnosis_id: str | None) -
             """(
             t.thread_id = %s
             OR EXISTS (
-                SELECT 1 FROM ai_exec_task e
+                SELECT 1 FROM exec_tasks e
                 WHERE (t.tracking_data->>'plan_id') IS NOT NULL
                   AND (t.tracking_data->>'plan_id') <> ''
                   AND e.plan_id = (t.tracking_data->>'plan_id')
@@ -110,7 +110,7 @@ async def count_trackings(enterprise_id: str | None, diagnosis_id: str | None) -
     where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(f"SELECT COUNT(*) FROM ai_effect_tracking t {where_sql}", params)
+            await cur.execute(f"SELECT COUNT(*) FROM effect_trackings t {where_sql}", params)
             row = await cur.fetchone()
             return int((row or {}).get("count", 0))
 
@@ -131,7 +131,7 @@ async def list_trackings(
             """(
             t.thread_id = %s
             OR EXISTS (
-                SELECT 1 FROM ai_exec_task e
+                SELECT 1 FROM exec_tasks e
                 WHERE (t.tracking_data->>'plan_id') IS NOT NULL
                   AND (t.tracking_data->>'plan_id') <> ''
                   AND e.plan_id = (t.tracking_data->>'plan_id')
@@ -147,13 +147,13 @@ async def list_trackings(
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"""SELECT t.thread_id, t.tenant_id, t.store_id, t.tracking_data, t.created_at,
-                    (SELECT MIN(e.thread_id) FROM ai_exec_task e
+                    (SELECT MIN(e.thread_id) FROM exec_tasks e
                      WHERE e.plan_id = (t.tracking_data->>'plan_id')
                        AND e.tenant_id = t.tenant_id) AS diagnosis_id
-                    ,(SELECT sk.plan_name FROM ai_solution_knowledge sk
+                    ,(SELECT sk.plan_name FROM solution_knowledges sk
                       WHERE sk.thread_id = t.thread_id
                       ORDER BY sk.created_at DESC LIMIT 1) AS adopted_plan_name
-                    FROM ai_effect_tracking t
+                    FROM effect_trackings t
                     {where_sql}
                     ORDER BY t.created_at DESC OFFSET %s LIMIT %s""",
                 params + [skip, limit],
@@ -165,7 +165,7 @@ async def get_diagnosis_health_score(thread_id: str) -> float | None:
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute("SELECT report FROM ai_diagnosis_report WHERE thread_id = %s", (thread_id,))
+                await cur.execute("SELECT report FROM diag_reports WHERE thread_id = %s", (thread_id,))
                 row = await cur.fetchone()
         if not row:
             return None
@@ -187,7 +187,7 @@ async def get_diagnosis_scores(thread_ids: list[str]) -> dict[str, float]:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """SELECT thread_id, report->>'health_score' AS hs
-                   FROM ai_diagnosis_report WHERE thread_id = ANY(%s)""",
+                   FROM diag_reports WHERE thread_id = ANY(%s)""",
                 (thread_ids,),
             )
             rows = await cur.fetchall()
@@ -207,7 +207,7 @@ async def get_latest_adopted_plan_name(thread_id: str) -> str | None:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                """SELECT plan_name FROM ai_solution_knowledge
+                """SELECT plan_name FROM solution_knowledges
                    WHERE thread_id = %s ORDER BY created_at DESC LIMIT 1""",
                 (thread_id,),
             )
@@ -220,13 +220,13 @@ async def get_first_exec_task(thread_id: str, plan_id: str | None = None) -> dic
         async with conn.cursor(row_factory=dict_row) as cur:
             if plan_id:
                 await cur.execute(
-                    """SELECT description, task_name, created_at FROM ai_exec_task
+                    """SELECT description, task_name, created_at FROM exec_tasks
                        WHERE thread_id = %s AND plan_id = %s ORDER BY created_at ASC LIMIT 1""",
                     (thread_id, plan_id),
                 )
             else:
                 await cur.execute(
-                    """SELECT description, task_name, created_at FROM ai_exec_task
+                    """SELECT description, task_name, created_at FROM exec_tasks
                        WHERE thread_id = %s ORDER BY created_at ASC LIMIT 1""",
                     (thread_id,),
                 )
@@ -237,7 +237,7 @@ async def get_earliest_exec_task_created_at(thread_id: str) -> datetime | None:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT MIN(created_at) AS t FROM ai_exec_task WHERE thread_id = %s",
+                "SELECT MIN(created_at) AS t FROM exec_tasks WHERE thread_id = %s",
                 (thread_id,),
             )
             row = await cur.fetchone()
@@ -255,7 +255,7 @@ async def get_diagnosis_thread_id_for_plan(tenant_id: str, plan_id: str) -> str 
             await cur.execute(
                 """
                 SELECT MIN(thread_id) AS diagnosis_thread_id
-                FROM ai_exec_task
+                FROM exec_tasks
                 WHERE tenant_id = %s
                   AND plan_id = %s
                   AND COALESCE(TRIM(thread_id), '') <> ''
@@ -271,7 +271,7 @@ async def get_first_exec_task_plan_store(thread_id: str, tenant_id: str) -> dict
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT plan_id, store_id FROM ai_exec_task WHERE thread_id = %s AND tenant_id = %s ORDER BY created_at ASC LIMIT 1",
+                "SELECT plan_id, store_id FROM exec_tasks WHERE thread_id = %s AND tenant_id = %s ORDER BY created_at ASC LIMIT 1",
                 (thread_id, tenant_id),
             )
             return await cur.fetchone()
@@ -281,7 +281,7 @@ async def list_exec_tasks_for_report(thread_id: str) -> list[dict]:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT task_name, status, description, deadline FROM ai_exec_task WHERE thread_id = %s ORDER BY created_at ASC",
+                "SELECT task_name, status, description, deadline FROM exec_tasks WHERE thread_id = %s ORDER BY created_at ASC",
                 (thread_id,),
             )
             return await cur.fetchall()
@@ -300,7 +300,7 @@ async def get_exec_task_stats(thread_id: str) -> dict[str, int]:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT COALESCE(status, 'pending') AS st, COUNT(*)::int AS cnt FROM ai_exec_task WHERE thread_id = %s GROUP BY COALESCE(status, 'pending')",
+                "SELECT COALESCE(status, 'pending') AS st, COUNT(*)::int AS cnt FROM exec_tasks WHERE thread_id = %s GROUP BY COALESCE(status, 'pending')",
                 (thread_id,),
             )
             rows = await cur.fetchall()
@@ -315,7 +315,7 @@ async def get_exec_task_team_size(thread_id: str) -> int:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT COUNT(DISTINCT assignee_user_id)::int AS team_size FROM ai_exec_task WHERE thread_id = %s AND assignee_user_id IS NOT NULL",
+                "SELECT COUNT(DISTINCT assignee_user_id)::int AS team_size FROM exec_tasks WHERE thread_id = %s AND assignee_user_id IS NOT NULL",
                 (thread_id,),
             )
             row = await cur.fetchone()
@@ -327,7 +327,7 @@ async def list_snapshots(thread_id: str, *, with_id: bool = False) -> list[dict]
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                f"SELECT {fields} FROM ai_effect_snapshot WHERE thread_id = %s ORDER BY snapshot_at ASC",
+                f"SELECT {fields} FROM effect_snapshots WHERE thread_id = %s ORDER BY snapshot_at ASC",
                 (thread_id,),
             )
             return await cur.fetchall()
@@ -337,7 +337,7 @@ async def get_latest_snapshot(thread_id: str) -> dict | None:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, snapshot_data FROM ai_effect_snapshot WHERE thread_id = %s ORDER BY snapshot_at DESC LIMIT 1",
+                "SELECT id, snapshot_data FROM effect_snapshots WHERE thread_id = %s ORDER BY snapshot_at DESC LIMIT 1",
                 (thread_id,),
             )
             return await cur.fetchone()
@@ -347,7 +347,7 @@ async def get_snapshot_by_id(snapshot_id: int) -> dict | None:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT snapshot_data, snapshot_at FROM ai_effect_snapshot WHERE id = %s",
+                "SELECT snapshot_data, snapshot_at FROM effect_snapshots WHERE id = %s",
                 (snapshot_id,),
             )
             return await cur.fetchone()
@@ -364,7 +364,7 @@ async def insert_snapshot(
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "INSERT INTO ai_effect_snapshot (thread_id, tenant_id, store_id, snapshot_data, snapshot_at) VALUES (%s, %s, %s, %s, %s)",
+                    "INSERT INTO effect_snapshots (thread_id, tenant_id, store_id, snapshot_data, snapshot_at) VALUES (%s, %s, %s, %s, %s)",
                     (thread_id, tenant_id, store_id, json.dumps(snapshot_data, ensure_ascii=False), snapshot_at),
                 )
             await conn.commit()
@@ -375,7 +375,7 @@ async def insert_snapshot(
 async def get_review_report(thread_id: str) -> dict | None:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute("SELECT report, created_at FROM ai_review_report WHERE thread_id = %s", (thread_id,))
+            await cur.execute("SELECT report, created_at FROM review_reports WHERE thread_id = %s", (thread_id,))
             return await cur.fetchone()
 
 
@@ -384,7 +384,7 @@ async def update_review_report(thread_id: str, report: dict) -> None:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "UPDATE ai_review_report SET report = %s WHERE thread_id = %s",
+                    "UPDATE review_reports SET report = %s WHERE thread_id = %s",
                     (json.dumps(report, ensure_ascii=False), thread_id),
                 )
             await conn.commit()
@@ -404,7 +404,7 @@ async def upsert_review_report(
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO ai_review_report (thread_id, tenant_id, store_id, report, created_at)
+                    INSERT INTO review_reports (thread_id, tenant_id, store_id, report, created_at)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (thread_id) DO UPDATE SET report = EXCLUDED.report
                     """,
@@ -430,12 +430,12 @@ async def search_solution_cases(
     where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(f"SELECT COUNT(*) FROM ai_solution_knowledge {where_sql}", params)
+            await cur.execute(f"SELECT COUNT(*) FROM solution_knowledges {where_sql}", params)
             total = int((await cur.fetchone() or {}).get("count", 0))
             await cur.execute(
                 f"""SELECT id, tenant_id, thread_id, plan_id, plan_name, target_indicators, industry_code,
                            achievement_rate, indicator_changes, plan_detail, lessons_learned, created_at
-                    FROM ai_solution_knowledge {where_sql}
+                    FROM solution_knowledges {where_sql}
                     ORDER BY achievement_rate DESC OFFSET %s LIMIT %s""",
                 params + [skip, limit],
             )
@@ -454,7 +454,7 @@ async def list_similar_solution_cases(
                 await cur.execute(
                     """SELECT id, tenant_id, thread_id, plan_id, plan_name, target_indicators, industry_code,
                               achievement_rate, indicator_changes, plan_detail, lessons_learned, created_at
-                       FROM ai_solution_knowledge WHERE target_indicators && %s
+                       FROM solution_knowledges WHERE target_indicators && %s
                        ORDER BY achievement_rate DESC LIMIT %s""",
                     (indicator_list, limit),
                 )
@@ -464,7 +464,7 @@ async def list_similar_solution_cases(
                 await cur.execute(
                     f"""SELECT id, tenant_id, thread_id, plan_id, plan_name, target_indicators, industry_code,
                                achievement_rate, indicator_changes, plan_detail, lessons_learned, created_at
-                        FROM ai_solution_knowledge {where}
+                        FROM solution_knowledges {where}
                         ORDER BY achievement_rate DESC LIMIT %s""",
                     params + [limit],
                 )
@@ -474,5 +474,5 @@ async def list_similar_solution_cases(
 async def get_solution_case(case_id: int) -> dict | None:
     async with get_conn() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute("SELECT * FROM ai_solution_knowledge WHERE id = %s", (case_id,))
+            await cur.execute("SELECT * FROM solution_knowledges WHERE id = %s", (case_id,))
             return await cur.fetchone()

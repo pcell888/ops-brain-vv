@@ -6,8 +6,6 @@ import json
 import logging
 from typing import Any
 
-from langchain_core.runnables import RunnableConfig
-
 from src.core.config import get_settings
 from src.core.json_utils import strip_json_fence
 from src.core.llm import build_chat_llm
@@ -45,7 +43,7 @@ async def llm_call_json(
     label: str = "LLM",
     temperature: float = 0.3,
     max_tokens: int | None = None,
-    runnable_config: RunnableConfig | None = None,
+    runnable_config: Any | None = None,
     model: str | None = None,
 ) -> tuple[Any, str, dict | None]:
     """统一的 LLM JSON 调用流程。

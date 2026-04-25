@@ -7,7 +7,9 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from src.api.deps import manager, get_graph_app, progress_cache, running_tasks
+from src.api.deps import manager, progress_cache, running_tasks
+from src.repositories.diagnosis_session import update_session_state
+from src.runtime.task_runner import get_graph_state_values
 from src.core.diagnosis_errors import public_diagnosis_error_message
 from src.worker.arq_queue import enqueue_adoption_job
 from src.services import async_job_service
@@ -202,9 +204,6 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
 
             if data.get("action") == "adopt_plans":
                 try:
-                    app = await get_graph_app()
-                    config = {"configurable": {"thread_id": thread_id}}
-
                     if data.get("plan_id"):
                         plan_ids = [str(data["plan_id"]).strip()]
                     else:
@@ -222,7 +221,7 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
                         continue
 
                     if not plan_ids:
-                        await app.aupdate_state(config, {"adopted_plan_ids": []})
+                        await update_session_state(thread_id, {"adopted_plan_ids": []})
                         await manager.send_progress(
                             thread_id,
                             {
@@ -233,8 +232,8 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
                         continue
 
                     pid = plan_ids[0]
-                    state = await app.aget_state(config)
-                    if not (state.next and "wait_adoption" in state.next):
+                    values, next_nodes = await get_graph_state_values(thread_id)
+                    if "wait_adoption" not in next_nodes:
                         await manager.send_progress(
                             thread_id,
                             {
@@ -243,7 +242,7 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
                             },
                         )
                         continue
-                    all_plan_ids = {p.get("plan_id") for p in (state.values.get("solution_plans") or [])}
+                    all_plan_ids = {p.get("plan_id") for p in (values.get("solution_plans") or [])}
                     if pid not in all_plan_ids:
                         await manager.send_progress(
                             thread_id,
@@ -254,7 +253,7 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
                         )
                         continue
 
-                    existing = (state.values.get("adopted_plan_ids") or [])[:1]
+                    existing = (values.get("adopted_plan_ids") or [])[:1]
                     if existing and existing[0] != pid:
                         await manager.send_progress(
                             thread_id,
@@ -265,7 +264,7 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
                         )
                         continue
 
-                    await app.aupdate_state(config, {"adopted_plan_ids": [pid]})
+                    await update_session_state(thread_id, {"adopted_plan_ids": [pid]})
                     await manager.send_progress(
                         thread_id,
                         {
@@ -273,7 +272,7 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
                             "message": "已采纳方案，开始执行...",
                         },
                     )
-                    tenant_id = str((state.values or {}).get("tenant_id") or "")
+                    tenant_id = str(values.get("tenant_id") or "")
                     if not tenant_id:
                         await manager.send_progress(
                             thread_id,

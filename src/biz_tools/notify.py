@@ -1,13 +1,11 @@
-"""消息通知 — 原 notify-server 工具实现。"""
+"""消息通知 — 业务工具函数。"""
 
 from __future__ import annotations
 
 import logging
 
-from mcp.server import FastMCP
-
-from src.mcp_servers.biz.shared import biz
-from src.mcp_servers.biz_scope import effective_store_id_for_biz
+from src.biz_tools.shared import biz
+from src.biz_tools.biz_scope import effective_store_id_for_biz
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +16,6 @@ async def send_diagnosis_report_notification(
     admin_account_ids: list[str],
     report_summary: dict,
 ) -> dict:
-    """
-    推送诊断报告完成通知给企业管理员。
-
-    report_summary:
-    {"health_score", "anomaly_count", "top_anomaly", "report_url"}
-    """
     logger.info(
         "Tool called: send_diagnosis_report_notification tenant=%s store=%s admin_count=%d",
         tenant_id,
@@ -33,7 +25,7 @@ async def send_diagnosis_report_notification(
     health_score = report_summary.get("health_score", 0)
     anomaly_count = report_summary.get("anomaly_count", 0)
     top_anomaly = report_summary.get("top_anomaly", "")
-    notify_type = report_summary.get("notification_type", "ai_diagnosis_report")
+    notify_type = report_summary.get("notification_type", "diag_reports")
     diagnosis_time = report_summary.get("diagnosis_time", "")
     analysis_period = report_summary.get("analysis_period_days", 30)
 
@@ -71,10 +63,6 @@ async def send_task_reminder(
     reminder_type: str,
     message: str,
 ) -> dict:
-    """
-    发送任务相关提醒。
-    reminder_type: overdue | approaching_deadline | blocked
-    """
     logger.info("Tool called: send_task_reminder tenant=%s task_id=%s type=%s", tenant_id, task_id, reminder_type)
     type_labels = {
         "overdue": "任务超期提醒",
@@ -109,7 +97,6 @@ async def send_plan_adoption_request(
     thread_id: str,
     plans_summary: list[dict],
 ) -> dict:
-    """推送方案待采纳通知。"""
     logger.info(
         "Tool called: send_plan_adoption_request tenant=%s store=%s plan_count=%d",
         tenant_id,
@@ -145,7 +132,6 @@ async def send_review_report_notification(
     thread_id: str,
     review_summary: dict,
 ) -> dict:
-    """推送复盘报告完成通知。"""
     logger.info(
         "Tool called: send_review_report_notification tenant=%s store=%s thread_id=%s", tenant_id, store_id, thread_id
     )
@@ -174,7 +160,7 @@ async def send_review_report_notification(
             "accountId": aid,
             "title": title,
             "content": content,
-            "type": "ai_review_report",
+            "type": "review_reports",
             "jumpUrl": thread_id,
         }
         for aid in admin_account_ids
@@ -192,10 +178,6 @@ async def send_task_assignment_notification(
     store_id: str,
     tasks: list[dict],
 ) -> dict:
-    """
-    批量发送任务分配通知给各任务负责人。
-    tasks 中每项需包含: task_id, task_name, assignee_user_id, assignee_account_id, deadline
-    """
     logger.info(
         "Tool called: send_task_assignment_notification tenant=%s store=%s task_count=%d",
         tenant_id,
@@ -235,11 +217,6 @@ async def send_customer_targeted_message(
     content: str,
     message_type: str = "ai_targeted",
 ) -> dict:
-    """
-    按人群定向推送消息（5.2.3 用）。
-    target_segment: churn_risk | no_repurchase_90d | coupon_expiring_soon | low_conversion
-    业务侧需实现 POST /message-remind/targeted 或由本工具先拉取客户列表再 batch-create。
-    """
     logger.info(
         "Tool called: send_customer_targeted_message tenant=%s store=%s segment=%s", tenant_id, store_id, target_segment
     )
@@ -253,15 +230,3 @@ async def send_customer_targeted_message(
     }
     data = await biz.post(tenant_id, "/message-remind/targeted", body)
     return {"sent_count": data.get("sent_count", 0), "status": "sent", **data}
-
-
-def register(server: FastMCP) -> None:
-    for fn in (
-        send_diagnosis_report_notification,
-        send_task_reminder,
-        send_plan_adoption_request,
-        send_review_report_notification,
-        send_task_assignment_notification,
-        send_customer_targeted_message,
-    ):
-        server.add_tool(fn)

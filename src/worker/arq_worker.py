@@ -92,11 +92,10 @@ async def job_resume_after_adoption(ctx: dict, payload: dict) -> None:
 
     thread_id = str(payload["thread_id"])
     job_id = str(payload.get("job_id") or "")
-    config = {"configurable": {"thread_id": thread_id}}
     try:
         if job_id:
             await mark_running(job_id)
-        await resume_after_adoption(thread_id, config)
+        await resume_after_adoption(thread_id)
         await _mark_job_after_run_or_cancel(thread_id, job_id)
     except asyncio.CancelledError:
         await _mark_job_on_async_cancel(thread_id, job_id)
@@ -116,11 +115,10 @@ async def job_resume_track_effects(ctx: dict, payload: dict) -> None:
 
     thread_id = str(payload["thread_id"])
     job_id = str(payload.get("job_id") or "")
-    config = {"configurable": {"thread_id": thread_id}}
     try:
         if job_id:
             await mark_running(job_id)
-        await review_service.resume_track_effects(thread_id, config)
+        await review_service.resume_track_effects(thread_id)
         await _mark_job_after_run_or_cancel(thread_id, job_id)
     except asyncio.CancelledError:
         await _mark_job_on_async_cancel(thread_id, job_id)

@@ -31,7 +31,7 @@ async def save_effective_plan(
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO ai_solution_knowledge
+                    INSERT INTO solution_knowledges
                         (tenant_id, store_id, thread_id, plan_id, plan_name,
                          target_indicators, industry_code, achievement_rate,
                          indicator_changes, plan_detail, lessons_learned)
@@ -71,7 +71,7 @@ async def search_similar_plans(
                     SELECT plan_name, target_indicators, achievement_rate,
                            indicator_changes, plan_detail, lessons_learned,
                            industry_code, created_at
-                    FROM ai_solution_knowledge
+                    FROM solution_knowledges
                     WHERE target_indicators && %s
                       AND achievement_rate >= %s
                     ORDER BY achievement_rate DESC, created_at DESC
@@ -111,7 +111,7 @@ async def list_knowledge(
         async with get_conn() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute(
-                    f"SELECT COUNT(*) AS cnt FROM ai_solution_knowledge {where}",
+                    f"SELECT COUNT(*) AS cnt FROM solution_knowledges {where}",
                     params,
                 )
                 total = (await cur.fetchone())["cnt"]
@@ -121,7 +121,7 @@ async def list_knowledge(
                     SELECT id, tenant_id, store_id, thread_id, plan_id, plan_name,
                            target_indicators, industry_code, achievement_rate,
                            indicator_changes, lessons_learned, created_at
-                    FROM ai_solution_knowledge
+                    FROM solution_knowledges
                     {where}
                     ORDER BY achievement_rate DESC, created_at DESC
                     LIMIT %s OFFSET %s

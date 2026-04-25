@@ -6,11 +6,11 @@ import json
 import logging
 from datetime import datetime
 
-from langchain_core.runnables import RunnableConfig
+from typing import Any
 
 from src.agent.state import DiagnosisState
 from src.agent.progress import emit_progress
-from src.agent.tools import mcp_call
+from src.biz_tools.notify import send_diagnosis_report_notification
 from src.agent.prompts.root_cause_analysis import (
     ROOT_CAUSE_ANALYSIS_SYSTEM,
     ROOT_CAUSE_ANALYSIS_USER,
@@ -61,7 +61,7 @@ async def _llm_root_cause_analysis(
     anomalies: list[dict],
     all_indicators: dict,
     *,
-    runnable_config: RunnableConfig | None = None,
+    runnable_config: Any | None = None,
 ) -> tuple[list[dict], dict | None]:
     settings = get_settings()
     if not settings.llm_enabled:
@@ -103,7 +103,7 @@ class DiagnosisDataMissingError(RuntimeError):
     """诊断所需的基础数据缺失（上游数据采集未成功完成）。"""
 
 
-async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
+async def diagnose_node(state: DiagnosisState, config: Any = None) -> dict:
     emit_progress(state, "开始诊断分析", percent=35)
     emit_progress(state, "正在计算运营健康度...", percent=45)
 
@@ -297,17 +297,13 @@ async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
         }
         if is_scheduled:
             report_summary["notification_type"] = "ai_weekly_digest"
-        await mcp_call(
-            "notify-server",
-            "send_diagnosis_report_notification",
-            {
-                "tenant_id": state["tenant_id"],
-                "store_id": state["store_id"],
-                "admin_account_ids": _get_admin_accounts(state.get("store_profile", {})),
-                "report_summary": report_summary,
-            },
+        await send_diagnosis_report_notification(
+            tenant_id=state["tenant_id"],
+            store_id=state["store_id"],
+            admin_account_ids=_get_admin_accounts(state.get("store_profile", {})),
+            report_summary=report_summary,
         )
-        notify_type = report_summary.get("notification_type", "ai_diagnosis_report")
+        notify_type = report_summary.get("notification_type", "diag_reports")
         scope_tag = f"【{scope_label}】"
         title = f"{'【周度】' if notify_type == 'ai_weekly_digest' else ''}{scope_tag}AI诊断报告已生成 — 健康度 {health_score:.1f}分"
         analysis_period = report_summary.get("analysis_period_days", 30)
@@ -343,7 +339,7 @@ async def diagnose_node(state: DiagnosisState, config: RunnableConfig) -> dict:
             logger.exception("诊断报告落库失败")
             emit_progress(state, f"诊断报告落库失败，历史记录可能无法查看: {e}")
 
-    # 在节点返回前写入，避免依赖 astream_events 的 on_chain_end（可能晚于下一节点首行 emit）
+    # 在节点返回前写入，避免依赖后续节点的时序
     emit_progress(state, "根因分析完成", percent=70)
 
     return {

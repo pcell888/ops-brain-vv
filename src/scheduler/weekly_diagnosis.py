@@ -8,9 +8,10 @@ import logging
 import psycopg.rows
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from src.runtime.graph_app import astream_events_with_retry, generate_thread_id
+from src.runtime.graph_app import generate_thread_id
 from src.core.config import CN_TZ, get_settings
 from src.core.tenant_config import normalize_diagnosis_trigger_mode
+from src.core.diagnosis_engine import run_diagnosis_pipeline
 from src.scheduler.task_deadline_checker import check_task_deadlines
 from src.scheduler.effect_review_checker import check_pending_reviews
 from src.scheduler.snapshot_collector import collect_effect_snapshots
@@ -19,12 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 async def _get_active_tenants() -> list[dict]:
-    """从 tenant_registry 获取所有活跃租户和店铺。"""
+    """从 tenant_registries 获取所有活跃租户和店铺。"""
     from src.core.db_pool import get_conn
     async with get_conn() as conn:
         async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             await cur.execute(
-                "SELECT tenant_id, tenant_name, config FROM tenant_registry "
+                "SELECT tenant_id, tenant_name, config FROM tenant_registries "
                 "WHERE status=1"
             )
             return await cur.fetchall()
@@ -33,18 +34,15 @@ async def _get_active_tenants() -> list[dict]:
 async def _run_single_diagnosis(tenant_id: str, store_id: str):
     """为单个租户/店铺执行自动诊断。"""
     thread_id = generate_thread_id()
-    config = {"configurable": {"thread_id": thread_id}}
-    initial_state = {
-        "tenant_id": tenant_id,
-        "store_id": store_id,
-        "trigger_type": "scheduled",
-        "triggered_by": "system",
-        "progress_messages": [],
-    }
 
     try:
-        async for _ in astream_events_with_retry(initial_state, config):
-            pass
+        await run_diagnosis_pipeline(
+            thread_id=thread_id,
+            tenant_id=tenant_id,
+            store_id=store_id,
+            trigger_type="scheduled",
+            triggered_by="system",
+        )
         logger.info("周度诊断完成: tenant=%s, store=%s, thread=%s", tenant_id, store_id, thread_id)
     except Exception as e:
         logger.error("周度诊断失败: tenant=%s, store=%s, error=%s", tenant_id, store_id, e)

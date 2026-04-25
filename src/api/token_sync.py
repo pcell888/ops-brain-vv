@@ -1,4 +1,4 @@
-"""请求 token 同步依赖：自动识别租户并回写 tenant_registry。"""
+"""请求 token 同步依赖：自动识别租户并回写 tenant_registries。"""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ async def sync_runtime_tokens(tenant_id: str, biz_token: str | None, platform_to
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    UPDATE tenant_registry
+                    UPDATE tenant_registries
                     SET
                         auth_credential = COALESCE(%s, auth_credential),
                         platform_auth_credential = COALESCE(%s, platform_auth_credential),

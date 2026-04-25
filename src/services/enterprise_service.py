@@ -11,8 +11,8 @@ from pydantic import BaseModel, Field
 from src.core.config import get_settings
 from src.core.datetime_cn import serialize_instant_cn
 from src.core.redis_client import get_redis
-from src.mcp_servers.biz_api_client import BizAPIClient, BizAPIError
-from src.mcp_servers.tenant_router import TenantNotFoundError, TenantRouter
+from src.biz_tools.biz_api_client import BizAPIClient, BizAPIError
+from src.biz_tools.tenant_router import TenantNotFoundError, TenantRouter
 from src.core.tenant_config import (
     CONFIG_DEFAULTS,
     normalize_diagnosis_trigger_mode,

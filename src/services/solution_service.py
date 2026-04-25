@@ -6,13 +6,14 @@ import logging
 from datetime import datetime
 
 from src.agent.progress import clear_progress_sender, set_progress_sender
-from src.agent.tools import mcp_call
+from src.biz_tools.task import create_execution_tasks
 from src.core.config import CN_TZ, format_delay_days_zh, get_settings
 from src.core.diagnosis_errors import public_diagnosis_error_message
 from src.core.phases import calc_overall_progress, phase_name, WORKFLOW_NODES
 from src.core.progress_utils import is_thread_running_full
-from src.runtime.graph_app import get_graph_app
-from src.runtime.graph_app import astream_events_with_retry
+from src.repositories.diagnosis_session import get_session, update_session_state
+from src.core.diagnosis_engine import phase_to_next_nodes
+from src.runtime.task_runner import get_graph_state_values
 from src.runtime.diagnosis_ws_manager import manager
 from src.runtime.progress_store import progress_cache
 from src.runtime.progress_store import write_progress_cache
@@ -24,6 +25,9 @@ from src.worker.arq_queue import enqueue_adoption_job
 from src.services import async_job_service
 
 logger = logging.getLogger(__name__)
+
+
+_get_state = get_graph_state_values
 
 
 async def _seed_adoption_progress_after_submit(thread_id: str, plan_id: str) -> None:
@@ -259,10 +263,7 @@ def compat_active_generation_payload(diagnosis_id: str) -> dict:
 
 
 async def build_compat_solution_list(diagnosis_id: str) -> dict:
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": diagnosis_id}}
-    state = await app.aget_state(config)
-    values = state.values if state and state.values else {}
+    values, _ = await _get_state(diagnosis_id)
 
     plans = values.get("solution_plans") or []
     adopted_ids = (values.get("adopted_plan_ids") or [])[:1]
@@ -323,19 +324,17 @@ async def resolve_thread_id_for_plan(solution_id: str, *, prefer_wait_adoption: 
 
     当 plan_id 在历史数据中重复时，可优先选择当前处于 wait_adoption 的诊断。
     """
-    app = await get_graph_app()
     fallback_thread_id: str | None = None
 
     try:
         thread_id = await find_thread_id_by_plan_id(solution_id)
         if thread_id:
-            config = {"configurable": {"thread_id": thread_id}}
-            state = await app.aget_state(config)
-            if state and state.values:
-                plans = state.values.get("solution_plans") or []
+            values, next_nodes = await _get_state(thread_id)
+            if values:
+                plans = values.get("solution_plans") or []
                 plan_ids = {p.get("plan_id") for p in plans}
                 if solution_id in plan_ids:
-                    if not prefer_wait_adoption or ("wait_adoption" in (state.next or [])):
+                    if not prefer_wait_adoption or ("wait_adoption" in next_nodes):
                         return thread_id
                     fallback_thread_id = thread_id
     except Exception as e:
@@ -350,15 +349,14 @@ async def resolve_thread_id_for_plan(solution_id: str, *, prefer_wait_adoption: 
 
         for row in items:
             thread_id = row.get("thread_id", "")
-            config = {"configurable": {"thread_id": thread_id}}
             try:
-                state = await app.aget_state(config)
-                if not state or not state.values:
+                values, next_nodes = await _get_state(thread_id)
+                if not values:
                     continue
-                plans = state.values.get("solution_plans") or []
+                plans = values.get("solution_plans") or []
                 plan_ids = {p.get("plan_id") for p in plans}
                 if solution_id in plan_ids:
-                    if prefer_wait_adoption and ("wait_adoption" in (state.next or [])):
+                    if prefer_wait_adoption and ("wait_adoption" in next_nodes):
                         plan_id_list = [p.get("plan_id") for p in plans if p.get("plan_id")]
                         if plan_id_list:
                             try:
@@ -388,11 +386,7 @@ async def resolve_thread_id_for_plan(solution_id: str, *, prefer_wait_adoption: 
 
 
 async def get_solutions_payload(thread_id: str) -> dict:
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
-    state = await app.aget_state(config)
-    values = state.values if state and state.values else {}
-    next_nodes = list(state.next) if state and state.next else []
+    values, next_nodes = await _get_state(thread_id)
     plans = values.get("solution_plans") or []
     adopted_ids = (values.get("adopted_plan_ids") or [])[:1]
     anomalies = values.get("anomalies") or []
@@ -418,18 +412,16 @@ async def get_solutions_payload(thread_id: str) -> dict:
 
 
 async def adopt_plan_and_enqueue(thread_id: str, plan_id: str) -> dict:
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
-    state = await app.aget_state(config)
-    if not (state.next and "wait_adoption" in state.next):
+    values, next_nodes = await _get_state(thread_id)
+    if "wait_adoption" not in next_nodes:
         raise SolutionServiceError(400, "该诊断不在待采纳状态")
 
-    all_plan_ids = {p.get("plan_id") for p in (state.values.get("solution_plans") or [])}
+    all_plan_ids = {p.get("plan_id") for p in (values.get("solution_plans") or [])}
     if plan_id not in all_plan_ids:
         raise SolutionServiceError(400, f"无效的 plan_id: {plan_id}")
 
-    existing_adopted = (state.values.get("adopted_plan_ids") or [])[:1]
-    existing_pending = state.values.get("pending_adopt_plan_id")
+    existing_adopted = (values.get("adopted_plan_ids") or [])[:1]
+    existing_pending = values.get("pending_adopt_plan_id")
     if existing_adopted and existing_adopted[0] == plan_id:
         raise SolutionServiceError(400, "该方案已采纳，无需重复提交")
     if existing_pending and existing_pending == plan_id:
@@ -445,12 +437,11 @@ async def adopt_plan_and_enqueue(thread_id: str, plan_id: str) -> dict:
     if len(db_plan_ids) == 1 and db_plan_ids[0] != plan_id:
         raise SolutionServiceError(400, "该诊断已绑定其他方案的执行任务，不可采纳当前方案")
 
-    await app.aupdate_state(config, {"pending_adopt_plan_id": plan_id})
-    # 刷新状态，确保 checkpoint 已持久化
-    refreshed_state = await app.aget_state(config)
-    if refreshed_state.values.get("pending_adopt_plan_id") != plan_id:
+    await update_session_state(thread_id, {"pending_adopt_plan_id": plan_id})
+    refreshed_values, _ = await _get_state(thread_id)
+    if refreshed_values.get("pending_adopt_plan_id") != plan_id:
         raise SolutionServiceError(500, "状态更新失败，请重试")
-    tenant_id = str((refreshed_state.values or {}).get("tenant_id") or "")
+    tenant_id = str(refreshed_values.get("tenant_id") or "")
     if not tenant_id:
         raise SolutionServiceError(400, "缺少 tenant_id，无法派发执行任务")
 
@@ -468,11 +459,7 @@ async def adopt_plan_and_enqueue(thread_id: str, plan_id: str) -> dict:
 
 
 async def get_adopt_execution_progress_payload(thread_id: str) -> dict:
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
-    state = await app.aget_state(config)
-    values = state.values if state and state.values else {}
-    next_nodes = list(state.next) if state and state.next else []
+    values, next_nodes = await _get_state(thread_id)
     wait_adopt = "wait_adoption" in next_nodes
 
     cached = (await progress_cache.aget(thread_id)) or {}
@@ -620,20 +607,17 @@ async def get_adopt_execution_progress_payload(thread_id: str) -> dict:
 
 
 async def build_compat_solution_detail(solution_id: str) -> dict:
-    app = await get_graph_app()
-
     items, _ = await list_reports(None, None, 1, 50)
 
     for row in items:
         thread_id = row.get("thread_id", "")
-        config = {"configurable": {"thread_id": thread_id}}
         try:
-            state = await app.aget_state(config)
-            if not state or not state.values:
+            values, _ = await _get_state(thread_id)
+            if not values:
                 continue
-            plans = state.values.get("solution_plans") or []
-            adopted_ids = (state.values.get("adopted_plan_ids") or [])[:1]
-            anomalies = state.values.get("anomalies") or []
+            plans = values.get("solution_plans") or []
+            adopted_ids = (values.get("adopted_plan_ids") or [])[:1]
+            anomalies = values.get("anomalies") or []
 
             for plan in plans:
                 if plan.get("plan_id") != solution_id:
@@ -691,7 +675,7 @@ async def build_compat_solution_detail(solution_id: str) -> dict:
                     "related_anomalies": related_anomalies,
                     "tasks": tasks,
                     "execution_plan": None,
-                    "created_at": state.values.get("diagnosis_report", {}).get("generated_at", ""),
+                    "created_at": values.get("diagnosis_report", {}).get("generated_at", ""),
                 }
         except Exception:
             continue
@@ -722,54 +706,28 @@ async def _send_execution_progress(thread_id: str, payload: dict) -> None:
 
 
 async def resume_after_adoption(thread_id: str, config: dict | None = None) -> None:
-    if config is None:
-        config = {"configurable": {"thread_id": thread_id}}
+    from src.core.diagnosis_engine import resume_after_adoption as engine_resume
 
-    adoption_completed_sent = False
     try:
         set_progress_sender(thread_id, manager, write_progress_cache)
-        async for event in astream_events_with_retry(None, config):
-            if await running_tasks.is_cancel_requested(thread_id):
-                return
-            if event["event"] != "on_chain_end":
-                continue
+        await _send_execution_progress(
+            thread_id,
+            {"type": "progress", "stage": "execution", "message": "正在执行采纳方案…"},
+        )
 
-            node_name = event.get("name", "")
-            output = event.get("data", {}).get("output", {})
+        await engine_resume(thread_id)
 
-            if node_name not in WORKFLOW_NODES:
-                continue
-            if node_name == "track_effects":
-                continue
-
-            if isinstance(output, dict) and "progress_messages" in output:
-                for msg in output["progress_messages"]:
-                    if isinstance(msg, dict) and msg.get("stage") == "effect_track":
-                        continue
-                    content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-                    await _send_execution_progress(
-                        thread_id,
-                        {"type": "progress", "stage": "execution", "message": content},
-                    )
-
-            await _send_execution_progress(
-                thread_id,
-                {"type": "node_complete", "stage": "execution", "node": node_name},
-            )
-
-            if node_name == "execute_plans":
-                delay = float(get_settings().effect_track_delay_days)
-                hint = format_delay_days_zh(delay)
-                done_msg = (
-                    f"方案执行任务已全部创建，效果追踪将在 {hint}后自动执行"
-                    if delay > 0
-                    else "方案执行任务已全部创建"
-                )
-                await _send_execution_progress(
-                    thread_id,
-                    {"type": "completed", "stage": "execution", "message": done_msg},
-                )
-                adoption_completed_sent = True
+        delay = float(get_settings().effect_track_delay_days)
+        hint = format_delay_days_zh(delay)
+        done_msg = (
+            f"方案执行任务已全部创建，效果追踪将在 {hint}后自动执行"
+            if delay > 0
+            else "方案执行任务已全部创建"
+        )
+        await _send_execution_progress(
+            thread_id,
+            {"type": "completed", "stage": "execution", "message": done_msg},
+        )
     except Exception as e:
         logger.exception("恢复执行异常 thread_id=%s", thread_id)
         await _send_execution_progress(
@@ -784,36 +742,9 @@ async def resume_after_adoption(thread_id: str, config: dict | None = None) -> N
     finally:
         clear_progress_sender()
 
-    if not adoption_completed_sent:
-        app = await get_graph_app()
-        state = await app.aget_state(config)
-        if state.next and "track_effects" in state.next:
-            delay = float(get_settings().effect_track_delay_days)
-            hint = format_delay_days_zh(delay)
-            await _send_execution_progress(
-                thread_id,
-                {
-                    "type": "completed",
-                    "stage": "execution",
-                    "message": f"方案执行任务已全部创建，效果追踪将在 {hint}后自动执行",
-                },
-            )
-        else:
-            await _send_execution_progress(
-                thread_id,
-                {
-                    "type": "completed",
-                    "stage": "execution",
-                    "message": "方案执行任务已全部创建",
-                },
-            )
-
 
 async def redistribute_plan_tasks(thread_id: str, plan_id: str) -> dict:
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
-    state = await app.aget_state(config)
-    values = state.values if state.values else {}
+    values, _ = await _get_state(thread_id)
 
     tenant_id = values.get("tenant_id")
     store_id = values.get("store_id")
@@ -833,15 +764,11 @@ async def redistribute_plan_tasks(thread_id: str, plan_id: str) -> dict:
         tid = str(task.get("task_id") or "")
         try:
             payload = task_db_row_to_push_payload(task)
-            await mcp_call(
-                "task-server",
-                "create_execution_tasks",
-                {
-                    "tenant_id": tenant_id,
-                    "store_id": store_id,
-                    "plan_id": plan_id,
-                    "tasks": [payload],
-                },
+            await create_execution_tasks(
+                tenant_id=tenant_id,
+                store_id=store_id,
+                plan_id=plan_id,
+                tasks=[payload],
             )
             await patch_related_resources(tid, {"dispatch_status": "dispatched"})
             await update_exec_tasks_status([tid], "running")
@@ -859,7 +786,7 @@ async def redistribute_plan_tasks(thread_id: str, plan_id: str) -> dict:
     if all_success:
         pending_id = values.get("pending_adopt_plan_id")
         if pending_id == plan_id:
-            await app.aupdate_state(config, {"adopted_plan_ids": [plan_id], "pending_adopt_plan_id": None})
+            await update_session_state(thread_id, {"adopted_plan_ids": [plan_id], "pending_adopt_plan_id": None})
 
     return {
         "plan_id": plan_id,

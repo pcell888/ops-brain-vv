@@ -6,16 +6,25 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from src.agent.constants import DIMENSION_TOOL_MAP, DIMENSION_STATE_KEY
+from src.agent.constants import DIMENSION_STATE_KEY
 from src.agent.state import DiagnosisState
 from src.agent.progress import emit_progress
-from src.agent.tools import mcp_call, unwrap_mcp_json_value
 from src.core.calculator import extract_indicator_codes, resolve_active_indicators, NOT_APPLICABLE_MAP
 from src.core.config import CN_TZ, get_settings
 from src.core.tenant_config import get_tenant_config
-from src.mcp_servers.biz_scope import effective_store_id_for_biz
+from src.biz_tools.biz_scope import effective_store_id_for_biz
+from src.biz_tools.crm import get_store_profile
+from src.biz_tools.metrics import get_crm_indicators, get_marketing_indicators, get_retention_indicators, get_efficiency_indicators
+from src.biz_tools.benchmark import get_industry_benchmark
 
 logger = logging.getLogger(__name__)
+
+_DIMENSION_TOOL_FN = {
+    "crm": get_crm_indicators,
+    "marketing": get_marketing_indicators,
+    "retention": get_retention_indicators,
+    "efficiency": get_efficiency_indicators,
+}
 
 
 async def collect_data_node(state: DiagnosisState) -> dict:
@@ -54,7 +63,7 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         if dim in active_dims:
             ordered_dims.append(dim)
 
-    total_calls = 1 + len(ordered_dims)  # profile + each dimension
+    total_calls = 1 + len(ordered_dims)
     base_percent = 10
     end_percent = 23
     percent_step = (end_percent - base_percent) / total_calls if total_calls > 0 else 0
@@ -71,27 +80,22 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         return result
 
     profile_task = _wrap_with_progress(
-        mcp_call(
-            "crm-server", "get_store_profile", {"tenant_id": tenant_id, "store_id": store_id, "auth_token": auth_token}
-        ),
+        get_store_profile(tenant_id=tenant_id, store_id=store_id, auth_token=auth_token),
         "企业画像",
     )
     dim_tasks = {
         dim: _wrap_with_progress(
-            mcp_call("metrics-server", DIMENSION_TOOL_MAP[dim], common_args), DIM_DISPLAY.get(dim, dim)
+            _DIMENSION_TOOL_FN[dim](**common_args), DIM_DISPLAY.get(dim, dim)
         )
         for dim in ordered_dims
     }
 
-    # 任一 API 失败 → 直接终止诊断（不兜底，避免产出无意义的 60 分报告）
     try:
         all_results = await asyncio.gather(profile_task, *dim_tasks.values())
     except Exception as e:
         logger.error("collect_data failed: %s", e, exc_info=True)
-        # 发送失败进度消息，保留当前进度，让用户知道失败原因
         current_percent = base_percent + int(percent_step * _done_calls[0]) if total_calls > 0 else 10
         error_msg = str(e)
-        # 简化错误消息，避免暴露内部细节
         if "connection" in error_msg.lower() or "timeout" in error_msg.lower():
             user_msg = "分析过程中获取数据失败，请稍后重试。"
         else:
@@ -103,15 +107,10 @@ async def collect_data_node(state: DiagnosisState) -> dict:
     dim_raw_results = dict(zip(dim_tasks.keys(), all_results[1:]))
 
     if not isinstance(profile, dict):
-        profile = unwrap_mcp_json_value(profile)
-    if not isinstance(profile, dict):
         profile = {}
-
     dim_results: dict[str, object] = {}
     for dim in ordered_dims:
         v = dim_raw_results.get(dim)
-        if not isinstance(v, dict):
-            v = unwrap_mcp_json_value(v)
         dim_results[dim] = v if isinstance(v, dict) else {}
 
     emit_progress(state, "数据采集完成，正在获取行业基准数据...", percent=25)
@@ -120,17 +119,11 @@ async def collect_data_node(state: DiagnosisState) -> dict:
     all_indicator_codes = extract_indicator_codes(*indicator_dicts)
     filtered_codes = [c for c in all_indicator_codes if c in active_inds]
 
-    benchmarks = await mcp_call(
-        "benchmark-server",
-        "get_industry_benchmark",
-        {
-            "tenant_id": tenant_id,
-            "industry_code": profile.get("industry_code", ""),
-            "indicator_codes": filtered_codes,
-        },
+    benchmarks = await get_industry_benchmark(
+        tenant_id=tenant_id,
+        industry_code=profile.get("industry_code", ""),
+        indicator_codes=filtered_codes,
     )
-    if not isinstance(benchmarks, dict):
-        benchmarks = unwrap_mcp_json_value(benchmarks)
     if not isinstance(benchmarks, dict):
         benchmarks = {}
 
@@ -155,8 +148,6 @@ async def collect_data_node(state: DiagnosisState) -> dict:
     if store_id != raw_store:
         output["store_id"] = store_id
 
-    # 在节点返回前写入，避免 on_chain_end(collect_data) 晚于 diagnose 内 emit
     emit_progress(state, "数据采集完成", percent=35)
 
     return output
-

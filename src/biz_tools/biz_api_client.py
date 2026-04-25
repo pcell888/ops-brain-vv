@@ -11,8 +11,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from src.mcp_servers.biz_constants import is_biz_mock_tenant
-from src.mcp_servers.tenant_router import PLATFORM_TENANT_ID, TenantNotFoundError, TenantRouter
+from src.biz_tools.biz_constants import is_biz_mock_tenant
+from src.biz_tools.tenant_router import PLATFORM_TENANT_ID, TenantNotFoundError, TenantRouter
 from src.core.tracing import get_tracer
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,6 @@ def _full_request_url(
 
 
 def _method_path_query_for_log(method: str, path: str, params: dict | None) -> str:
-    """METHOD + 路径（含 query），不含 api base，作日志首段。"""
     p = str(path).strip()
     if p.startswith(("http://", "https://")):
         merged = str(httpx.Request(method, p, params=params).url)
@@ -46,7 +45,6 @@ def _method_path_query_for_log(method: str, path: str, params: dict | None) -> s
 
 
 def _log_route_label(method: str, path: str) -> str:
-    """简短路由（无 query），与上一行完整请求 URL 对照即可。"""
     s = str(path).strip()
     if s.startswith(("http://", "https://")):
         u = urlparse(s)
@@ -72,7 +70,6 @@ def _log_outgoing_biz_request(
 
 
 def _normalize_biz_error_message(payload: Any, status_code: int, fallback_text: str = "") -> str:
-    """优先按业务错误码映射标准文案，避免依赖字符串清洗。"""
     if isinstance(payload, dict):
         biz_code = payload.get("code")
         if biz_code in (401, "401"):
@@ -88,7 +85,6 @@ def _normalize_biz_error_message(payload: Any, status_code: int, fallback_text: 
 
 
 def _response_body_for_log(body: Any, http_status: int) -> Any:
-    """日志用响应体：业务失败时改写 msg/message，与 BizAPIError 一致，不重复打原始拼接文案。"""
     if not isinstance(body, dict) or "code" not in body:
         return body
     if body["code"] in (0, 200, "0", "200"):
@@ -111,8 +107,6 @@ class BizAPIError(Exception):
 
 
 class BizAPIClient:
-    """封装对业务系统API的调用，统一处理 response 解析、错误处理。"""
-
     def __init__(self, router: TenantRouter):
         self.router = router
 
@@ -151,10 +145,6 @@ class BizAPIClient:
         auth_tenant_id: str | None = None,
         auth_authorization_override: str | None = None,
     ) -> dict[str, Any]:
-        """调用平台中台 API（连接键为 __platform__）。
-        auth_tenant_id: 使用该企业的 platform_auth_credential（或 auth_credential）访问中台。
-        auth_authorization_override: 直接作为 Authorization 头（首访租户尚未入库时使用）。
-        二者同时存在时优先 override。"""
         return await self._safe_request(
             PLATFORM_TENANT_ID,
             "GET",
@@ -164,10 +154,9 @@ class BizAPIClient:
             platform_auth_authorization_override=auth_authorization_override,
         )
 
-    # 租户解析(Redis/PG) + 取鉴权头 + HTTP 共享此时长；须 ≤ TenantRouter 中 httpx.AsyncClient 的 timeout
     _REQUEST_TIMEOUT = 30.0
     _MAX_RETRIES = 3
-    _RETRY_DELAY = 1.0  # 秒
+    _RETRY_DELAY = 1.0
 
     async def _safe_request(
         self,
@@ -206,7 +195,7 @@ class BizAPIClient:
         json_data: dict | None,
         tenant_id: str,
     ) -> dict[str, Any]:
-        from src.mcp_servers.biz_mock.dispatch import dispatch_biz_mock
+        from src.biz_tools.mock.dispatch import dispatch_biz_mock  # noqa: F811
 
         start_time = time.time()
         result = await dispatch_biz_mock(method, path, params, json_data)
@@ -379,7 +368,6 @@ class BizAPIClient:
         span.set_attribute("http.status_code", resp.status_code)
         if isinstance(body, dict) and "code" in body:
             if body["code"] not in (0, 200, "0", "200"):
-                # 支持 msg 和 message 两种错误字段格式
                 error_msg = _normalize_biz_error_message(body, resp.status_code)
                 logger.error(
                     "响应错误: %s %s code=%s msg=%s",

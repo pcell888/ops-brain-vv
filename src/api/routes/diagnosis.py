@@ -18,12 +18,14 @@ from src.core.datetime_cn import serialize_instant_cn
 from src.core.progress_utils import is_thread_running_full
 from src.services import async_job_service, diagnosis_service
 from src.api.deps import (
-    get_graph_app,
     manager,
     running_tasks,
     generate_thread_id,
     progress_cache,
 )
+from src.repositories.diagnosis_session import get_session
+from src.core.diagnosis_engine import phase_to_next_nodes
+from src.runtime.task_runner import get_graph_state_values
 from src.runtime.thread_enterprise import (
     get_active_diagnosis_thread_for_tenant,
     register_thread_enterprise,
@@ -147,13 +149,10 @@ async def _get_report_snapshot(thread_id: str) -> dict | None:
     report = await diagnosis_service.get_diagnosis_report_data(thread_id)
     if report is not None:
         return report
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
-    state = await app.aget_state(config)
-    if state and state.values:
-        report = state.values.get("diagnosis_report")
-        if isinstance(report, dict):
-            return report
+    values, _ = await get_graph_state_values(thread_id)
+    report = values.get("diagnosis_report")
+    if isinstance(report, dict):
+        return report
     return None
 
 
@@ -321,25 +320,18 @@ async def cancel_diagnosis(thread_id: str):
 @router.get("/{thread_id}/state", summary="获取诊断流程状态")
 async def get_diagnosis_state(thread_id: str):
     """获取当前诊断流程状态。"""
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
-    state = await app.aget_state(config)
-
+    values, next_nodes = await get_graph_state_values(thread_id)
     return {
         "thread_id": thread_id,
-        "next_nodes": list(state.next) if state.next else [],
-        "values": {k: v for k, v in state.values.items() if k != "progress_messages"},
+        "next_nodes": next_nodes,
+        "values": {k: v for k, v in values.items() if k != "progress_messages"},
     }
 
 
 @router.get("/{thread_id}/progress", summary="查询诊断进度")
 async def get_diagnosis_progress(thread_id: str):
     """返回按流程节点组织的诊断进度，供前端轮询渲染步骤条。"""
-    app = await get_graph_app()
-    config = {"configurable": {"thread_id": thread_id}}
-    state = await app.aget_state(config)
-    values = state.values if state and state.values else {}
-    next_nodes = list(state.next) if state and state.next else []
+    values, next_nodes = await get_graph_state_values(thread_id)
     messages = values.get("progress_messages") or []
 
     is_running = await is_thread_running_full(thread_id)

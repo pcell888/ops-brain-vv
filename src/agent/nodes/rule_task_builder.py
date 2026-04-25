@@ -121,7 +121,7 @@ def ensure_deadline_at(task: dict) -> None:
 
 
 def task_db_row_to_push_payload(row: dict) -> dict:
-    """将 ai_exec_task 行转为 create_execution_tasks 单条 payload，并保证 deadline_at。"""
+    """将 exec_tasks 行转为 create_execution_tasks 单条 payload，并保证 deadline_at。"""
     rr = row.get("related_resources")
     if isinstance(rr, str):
         try:
