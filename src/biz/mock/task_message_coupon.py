@@ -1,10 +1,11 @@
-"""执行任务、消息、优惠券、秒杀 — 原 wlwq exec_task / message / coupon。"""
+"""执行任务、消息、优惠券、秒杀 — mock 数据生成。"""
 
 from __future__ import annotations
 
 import random as _r
 import uuid
 from datetime import datetime
+
 
 def parse_deadline_at(task: dict) -> datetime | None:
     raw = task.get("deadline_at") or task.get("deadlineAt")

@@ -10,7 +10,7 @@ from typing import Any
 
 from src.agent.state import DiagnosisState
 from src.agent.progress import emit_progress
-from src.biz_tools.notify import send_diagnosis_report_notification
+from src.biz.client import tenant_client
 from src.agent.prompts.root_cause_analysis import (
     ROOT_CAUSE_ANALYSIS_SYSTEM,
     ROOT_CAUSE_ANALYSIS_USER,
@@ -297,7 +297,8 @@ async def diagnose_node(state: DiagnosisState, config: Any = None) -> dict:
         }
         if is_scheduled:
             report_summary["notification_type"] = "ai_weekly_digest"
-        await send_diagnosis_report_notification(
+        tc = tenant_client(state["tenant_id"])
+        await tc.send_diagnosis_report_notification(
             tenant_id=state["tenant_id"],
             store_id=state["store_id"],
             admin_account_ids=_get_admin_accounts(state.get("store_profile", {})),

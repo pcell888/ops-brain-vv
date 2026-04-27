@@ -8,10 +8,9 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from src.biz_tools.biz_api_client import BizAPIError
-from src.biz_tools.crm import get_store_profile
-from src.biz_tools.metrics import get_crm_indicators, get_marketing_indicators, get_retention_indicators, get_efficiency_indicators
-from src.biz_tools.benchmark import get_industry_benchmark
+from src.biz.http_client import HTTPClientError
+from src.biz.client import tenant_client
+from src.biz.platform_client import platform_client
 from src.core.calculator import (
     INDICATOR_META,
     NOT_APPLICABLE_MAP,
@@ -34,18 +33,18 @@ from src.core.config import CN_TZ, get_settings
 from src.repositories.pending_review import cancel_pending_review
 from src.repositories.snapshot import list_snapshots as list_effect_snapshots_for_thread
 from src.core.tenant_config import get_tenant_config
-from src.biz_tools.biz_scope import effective_store_id_for_biz
+from src.biz.biz_scope import effective_store_id_for_biz
 
 from src.services.tracking_error_service import TrackingServiceError
 from src.services.tracking_helper import _ser
 
 logger = logging.getLogger(__name__)
 
-_TRACKING_METRIC_TOOLS: dict[str, Any] = {
-    "crm": get_crm_indicators,
-    "marketing": get_marketing_indicators,
-    "retention": get_retention_indicators,
-    "efficiency": get_efficiency_indicators,
+_DIMENSION_METHOD = {
+    "crm": "get_crm_indicators",
+    "marketing": "get_marketing_indicators",
+    "retention": "get_retention_indicators",
+    "efficiency": "get_efficiency_indicators",
 }
 
 
@@ -67,15 +66,11 @@ async def _build_effect_tracking_snapshot(
     lookback_days = int(tenant_config.get("analysis_period_days") or settings.diagnosis_lookback_days)
     end_date = snapshot_at.strftime("%Y-%m-%d %H:%M:%S")
     start_date = (snapshot_at - timedelta(days=lookback_days)).strftime("%Y-%m-%d %H:%M:%S")
-    common_args: dict = {"tenant_id": tenant_id, "store_id": store_id, "start_date": start_date, "end_date": end_date}
-    if auth_token:
-        common_args["auth_token"] = auth_token
 
     ordered_dims = [d for d in ("crm", "marketing", "retention", "efficiency") if d in active_dims]
-    profile_task = get_store_profile(
-        tenant_id=tenant_id, store_id=store_id, **({"auth_token": auth_token} if auth_token else {}),
-    )
-    dim_tasks = [_TRACKING_METRIC_TOOLS[d](**common_args) for d in ordered_dims]
+    tc = tenant_client(tenant_id)
+    profile_task = tc.get_store_profile(tenant_id, store_id, auth_token=auth_token)
+    dim_tasks = [getattr(tc, _DIMENSION_METHOD[d])(tenant_id, store_id, start_date, end_date, auth_token=auth_token) for d in ordered_dims]
     all_results = await asyncio.gather(profile_task, *dim_tasks)
 
     profile = all_results[0]
@@ -98,7 +93,7 @@ async def _build_effect_tracking_snapshot(
 
     indicator_dicts = [dim_results[d] for d in ordered_dims]
     codes_for_benchmark = [c for c in extract_indicator_codes(*indicator_dicts) if c in active_inds]
-    benchmarks = await get_industry_benchmark(
+    benchmarks = await platform_client.get_industry_benchmark(
         tenant_id=tenant_id, industry_code=profile.get("industry_code", ""), indicator_codes=codes_for_benchmark,
     )
     if not isinstance(benchmarks, dict):
@@ -151,7 +146,7 @@ async def _build_effect_tracking_snapshot(
         "indicators": flat,
         "snapshot_type": "periodic",
         "period": {"start_date": start_date, "end_date": end_date},
-        "source": "mcp_metrics",
+        "source": "biz_api_metrics",
     }
 
 
@@ -220,8 +215,8 @@ async def take_tracking_snapshot(tracking_id: str, enterprise_id: str | None, au
         snapshot_count_before = int(td.get("snapshot_count") or 0)
         try:
             snapshot_data = await _build_effect_tracking_snapshot(tenant_id, store_id, td, snapshot_at=now, auth_token=auth_token)
-        except BizAPIError as e:
-            logger.exception("采集快照 MCP 业务错误 tracking_id=%s", tracking_id)
+        except HTTPClientError as e:
+            logger.exception("采集快照业务错误 tracking_id=%s", tracking_id)
             msg = str(e).strip() or "指标采集失败，请稍后重试"
             raise TrackingServiceError(502, msg) from e
         except RuntimeError as err:

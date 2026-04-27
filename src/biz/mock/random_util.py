@@ -1,4 +1,4 @@
-"""与原 wlwq 一致：环境变量控制随机区间（biz_mock 进程内）。"""
+"""随机工具 — 环境变量控制随机区间。"""
 
 from __future__ import annotations
 

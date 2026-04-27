@@ -12,7 +12,7 @@ from typing import Any
 
 from src.agent.state import DiagnosisState
 from src.agent.progress import emit_progress
-from src.biz_tools.notify import send_plan_adoption_request
+from src.biz.client import tenant_client
 from src.agent.prompts.solution_generation import (
     SOLUTION_GENERATION_SYSTEM,
     SOLUTION_GENERATION_USER,
@@ -389,7 +389,8 @@ async def generate_solutions_node(state: DiagnosisState, config: Any = None) -> 
 
     try:
         plans_summary = [{"name": p.get("plan_name", ""), "priority": p.get("priority_level", "medium")} for p in plans]
-        await send_plan_adoption_request(
+        tc = tenant_client(state["tenant_id"])
+        await tc.send_plan_adoption_request(
             tenant_id=state["tenant_id"],
             store_id=state["store_id"],
             admin_account_ids=_get_admin_accounts(store_profile),

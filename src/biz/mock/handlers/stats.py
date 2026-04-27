@@ -1,4 +1,4 @@
-"""统计类 GET — 原 wlwq.routes.mock_stats。"""
+"""统计类 GET — mock 数据生成。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import random as _r
 import uuid
 from datetime import datetime, timedelta
 
-from src.biz_tools.mock.random_util import (
+from src.biz.mock.handlers.random_util import (
     query_param_bool,
     random_enabled,
     random_float,

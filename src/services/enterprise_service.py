@@ -11,8 +11,8 @@ from pydantic import BaseModel, Field
 from src.core.config import get_settings
 from src.core.datetime_cn import serialize_instant_cn
 from src.core.redis_client import get_redis
-from src.biz_tools.biz_api_client import BizAPIClient, BizAPIError
-from src.biz_tools.tenant_router import TenantNotFoundError, TenantRouter
+from src.biz.platform_client import PlatformAPIError, platform_client
+from src.biz.router import TenantNotFoundError
 from src.core.tenant_config import (
     CONFIG_DEFAULTS,
     normalize_diagnosis_trigger_mode,
@@ -27,9 +27,6 @@ from src.repositories.tenant_registry import (
 )
 
 logger = logging.getLogger(__name__)
-
-_platform_router = TenantRouter()
-_platform_biz = BizAPIClient(_platform_router)
 
 
 class EnterpriseServiceError(Exception):
@@ -154,13 +151,13 @@ async def _fetch_project_info_for_sync(enterprise_id: str, auth_override: str | 
     params = {"projectId": enterprise_id}
     ov = (auth_override or "").strip()
     if ov:
-        return await _platform_biz.platform_get(
+        return await platform_client.get(
             "ai/customer/projectInfo",
             params,
             auth_authorization_override=ov,
         )
     try:
-        return await _platform_biz.platform_get(
+        return await platform_client.get(
             "ai/customer/projectInfo",
             params,
             auth_tenant_id=enterprise_id,
@@ -209,7 +206,7 @@ async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody, auth_ove
         raise
     except ValueError as e:
         raise EnterpriseServiceError(400, str(e)) from e
-    except BizAPIError as e:
+    except PlatformAPIError as e:
         raise EnterpriseServiceError(502, f"中台请求失败: {e.message}") from e
     except asyncio.TimeoutError as e:
         raise EnterpriseServiceError(504, "中台请求超时，请稍后重试") from e

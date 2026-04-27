@@ -12,18 +12,17 @@ from src.agent.progress import emit_progress
 from src.core.calculator import extract_indicator_codes, resolve_active_indicators, NOT_APPLICABLE_MAP
 from src.core.config import CN_TZ, get_settings
 from src.core.tenant_config import get_tenant_config
-from src.biz_tools.biz_scope import effective_store_id_for_biz
-from src.biz_tools.crm import get_store_profile
-from src.biz_tools.metrics import get_crm_indicators, get_marketing_indicators, get_retention_indicators, get_efficiency_indicators
-from src.biz_tools.benchmark import get_industry_benchmark
+from src.biz.biz_scope import effective_store_id_for_biz
+from src.biz.client import tenant_client
+from src.biz.platform_client import platform_client
 
 logger = logging.getLogger(__name__)
 
-_DIMENSION_TOOL_FN = {
-    "crm": get_crm_indicators,
-    "marketing": get_marketing_indicators,
-    "retention": get_retention_indicators,
-    "efficiency": get_efficiency_indicators,
+_DIMENSION_METHOD = {
+    "crm": "get_crm_indicators",
+    "marketing": "get_marketing_indicators",
+    "retention": "get_retention_indicators",
+    "efficiency": "get_efficiency_indicators",
 }
 
 
@@ -50,13 +49,7 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         state, f"开始采集{scope_label}运营数据（{len(active_dims)}个维度, {len(active_inds)}项指标）...", percent=10
     )
 
-    common_args = {
-        "tenant_id": tenant_id,
-        "store_id": store_id,
-        "start_date": start_date,
-        "end_date": end_date,
-        "auth_token": auth_token,
-    }
+    tc = tenant_client(tenant_id)
 
     ordered_dims: list[str] = []
     for dim in ("crm", "marketing", "retention", "efficiency"):
@@ -80,12 +73,13 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         return result
 
     profile_task = _wrap_with_progress(
-        get_store_profile(tenant_id=tenant_id, store_id=store_id, auth_token=auth_token),
+        tc.get_store_profile(tenant_id, store_id, auth_token=auth_token),
         "企业画像",
     )
     dim_tasks = {
         dim: _wrap_with_progress(
-            _DIMENSION_TOOL_FN[dim](**common_args), DIM_DISPLAY.get(dim, dim)
+            getattr(tc, _DIMENSION_METHOD[dim])(tenant_id, store_id, start_date, end_date, auth_token=auth_token),
+            DIM_DISPLAY.get(dim, dim),
         )
         for dim in ordered_dims
     }
@@ -119,7 +113,7 @@ async def collect_data_node(state: DiagnosisState) -> dict:
     all_indicator_codes = extract_indicator_codes(*indicator_dicts)
     filtered_codes = [c for c in all_indicator_codes if c in active_inds]
 
-    benchmarks = await get_industry_benchmark(
+    benchmarks = await platform_client.get_industry_benchmark(
         tenant_id=tenant_id,
         industry_code=profile.get("industry_code", ""),
         indicator_codes=filtered_codes,

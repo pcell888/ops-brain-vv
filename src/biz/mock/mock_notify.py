@@ -1,13 +1,11 @@
-"""消息通知 — 与 biz/notify.py 同名、同签名、同 register；进程内模拟。"""
+"""消息通知 — 进程内模拟。"""
 
 from __future__ import annotations
 
 import logging
 
-
-
-from src.biz_tools.mock import task_message_coupon
-from src.biz_tools.biz_scope import effective_store_id_for_biz
+from src.biz.biz_scope import effective_store_id_for_biz
+from src.biz.mock.handlers import task_message_coupon
 
 logger = logging.getLogger(__name__)
 
@@ -223,14 +221,3 @@ async def send_customer_targeted_message(
     }
     data = task_message_coupon.message_targeted(body)
     return {"sent_count": data.get("sent_count", 0), "status": "sent", **data}
-
-
-def try_raw_request(method: str, path: str, q: dict, body: dict) -> dict | None:
-    """供 dispatch：message-remind POST。"""
-    m = method.upper()
-    if m == "POST" and path == "message-remind/batch-create":
-        return task_message_coupon.message_batch_create(body)
-    if m == "POST" and path == "message-remind/targeted":
-        return task_message_coupon.message_targeted(body)
-    _ = q
-    return None

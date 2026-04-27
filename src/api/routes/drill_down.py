@@ -16,8 +16,9 @@ from src.core.calculator import (
 )
 from src.core.config import CN_TZ
 from src.core.tenant_config import get_tenant_config
-from src.biz_tools.tenant_router import TenantRouter
-from src.biz_tools.biz_api_client import BizAPIClient, BizAPIError
+from src.biz.router import TenantRouter
+from src.biz.client import tenant_client
+from src.biz.http_client import HTTPClientError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,8 +28,7 @@ _METRIC_NAME_TO_CODE.update(
     {(meta.get("name") or "").strip().lower(): code for code, meta in INDICATOR_META.items() if meta.get("name")}
 )
 
-_biz_router = TenantRouter()
-_biz = BizAPIClient(_biz_router)
+
 
 
 def _resolve_metric_code(metric_name: str) -> str | None:
@@ -62,36 +62,23 @@ async def query_drill_data_from_biz(
 ) -> tuple[list[dict], int]:
     now = datetime.now(CN_TZ)
     start_at = now - timedelta(days=days)
-    endpoint_conf = _DRILL_ENDPOINT_MAP.get(metric_code)
-    if endpoint_conf is None:
-        return [], 0
-    endpoint, extra_params = endpoint_conf
-    params = {
-        "storeId": "",
-        "startDate": start_at.strftime("%Y-%m-%d %H:%M:%S"),
-        "endDate": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "pageNo": page,
-        "pageSize": page_size,
-    }
-    params.update(extra_params)
     try:
-        data = await _biz.get(enterprise_id, endpoint, params)
-    except BizAPIError as e:
+        tc = tenant_client(enterprise_id)
+        data = await tc.drill_down_indicator(
+            enterprise_id, "", metric_code,
+            start_at.strftime("%Y-%m-%d %H:%M:%S"),
+            now.strftime("%Y-%m-%d %H:%M:%S"),
+            page=page, page_size=page_size,
+        )
+    except HTTPClientError as e:
         logger.exception("指标钻取调用业务接口失败: metric=%s enterprise_id=%s", metric_code, enterprise_id)
         raise HTTPException(status_code=502, detail="调用业务侧接口失败，请稍后重试") from e
     except Exception as e:
         logger.exception("指标钻取调用业务接口异常: metric=%s enterprise_id=%s", metric_code, enterprise_id)
         raise HTTPException(status_code=502, detail="调用业务侧接口异常，请稍后重试") from e
 
-    raw_items = data.get("list") if isinstance(data, dict) else None
-    if raw_items is None and isinstance(data, dict):
-        raw_items = data.get("items")
-    if raw_items is None:
-        raw_items = [data] if isinstance(data, dict) and data else []
-
-    allowed = DRILL_ITEM_FIELDS.get(metric_code)
-    items = [filter_drill_row_by_allowed_fields(it, allowed) for it in raw_items] if allowed else raw_items
-    total = data.get("total", len(items)) if isinstance(data, dict) else len(items)
+    items = data.get("items", [])
+    total = data.get("total", len(items))
     return items, int(total or 0)
 
 

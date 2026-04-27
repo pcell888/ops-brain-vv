@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from src.agent.progress import clear_progress_sender, set_progress_sender
-from src.biz_tools.task import create_execution_tasks
+from src.biz.client import tenant_client
 from src.core.config import CN_TZ, format_delay_days_zh, get_settings
 from src.core.diagnosis_errors import public_diagnosis_error_message
 from src.core.phases import calc_overall_progress, phase_name, WORKFLOW_NODES
@@ -764,7 +764,8 @@ async def redistribute_plan_tasks(thread_id: str, plan_id: str) -> dict:
         tid = str(task.get("task_id") or "")
         try:
             payload = task_db_row_to_push_payload(task)
-            await create_execution_tasks(
+            tc = tenant_client(tenant_id)
+            await tc.create_execution_tasks(
                 tenant_id=tenant_id,
                 store_id=store_id,
                 plan_id=plan_id,

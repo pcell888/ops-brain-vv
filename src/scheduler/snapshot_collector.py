@@ -20,7 +20,7 @@ from src.services.tracking_snapshot import _build_effect_tracking_snapshot
 
 logger = logging.getLogger(__name__)
 
-# IntervalTrigger 与 max_instances 配合：上一轮若仍在打 MCP，新触发可进入本协程并立即返回，避免被调度器整段丢弃。
+# IntervalTrigger 与 max_instances 配合：上一轮若仍在采集指标，新触发可进入本协程并立即返回，避免被调度器整段丢弃。
 _snapshot_collect_lock = asyncio.Lock()
 _snapshot_collect_busy = False
 

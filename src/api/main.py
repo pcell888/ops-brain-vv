@@ -77,7 +77,6 @@ api_router.include_router(tracking.router, dependencies=_token_sync_dep)
 api_router.include_router(enterprise.router, dependencies=_token_sync_dep)
 api_router.include_router(dimensions.router, dependencies=_token_sync_dep)
 api_router.include_router(ws.router)
-# api_router.include_router(mcp.router, dependencies=_token_sync_dep)
 
 app.include_router(api_router)
 

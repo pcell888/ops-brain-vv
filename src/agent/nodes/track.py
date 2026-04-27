@@ -12,8 +12,7 @@ from typing import Any
 from src.agent.constants import DIMENSION_STATE_KEY
 from src.agent.state import DiagnosisState
 from src.agent.progress import emit_progress
-from src.biz_tools.metrics import get_crm_indicators, get_marketing_indicators, get_retention_indicators, get_efficiency_indicators
-from src.biz_tools.notify import send_review_report_notification
+from src.biz.client import tenant_client
 from src.agent.prompts.review_analysis import REVIEW_ANALYSIS_SYSTEM, REVIEW_ANALYSIS_USER
 from src.core.calculator import calculate_effect_changes, resolve_active_indicators
 from src.agent.utils import get_admin_accounts as _get_admin_accounts
@@ -115,20 +114,6 @@ async def track_effects_node(state: DiagnosisState, config: Any = None) -> dict:
         "end_date": now,
     }
 
-    _TRACKING_DIM_FN = {
-        "crm": get_crm_indicators,
-        "marketing": get_marketing_indicators,
-        "retention": get_retention_indicators,
-        "efficiency": get_efficiency_indicators,
-    }
-
-    ordered_dims: list[str] = []
-    tasks: list = []
-    for dim in ("crm", "marketing", "retention", "efficiency"):
-        if dim in active_dims:
-            tasks.append(_TRACKING_DIM_FN[dim](**common_args))
-            ordered_dims.append(dim)
-
     results = await asyncio.gather(*tasks)
     dim_results = dict(zip(ordered_dims, results))
 
@@ -196,7 +181,7 @@ async def track_effects_node(state: DiagnosisState, config: Any = None) -> dict:
             "report_time": report_time,
             "tracking_period": tracking_period,
         }
-        await send_review_report_notification(
+        await tc.send_review_report_notification(
             tenant_id=tenant_id,
             store_id=store_id,
             admin_account_ids=_get_admin_accounts(state.get("store_profile", {})),

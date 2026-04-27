@@ -1,11 +1,11 @@
-"""客户记录、合同、审批跟进 — 原 wlwq client_record / sales_contract / examine_initiate。"""
+"""客户记录、合同、审批跟进 — mock 数据生成。"""
 
 from __future__ import annotations
 
 import random as _r
 import uuid
 
-from src.biz_tools.mock.random_util import (
+from src.biz.mock.handlers.random_util import (
     query_param_bool,
     random_enabled,
     random_float,

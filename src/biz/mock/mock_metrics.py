@@ -1,15 +1,13 @@
-"""运营指标 — 与 biz/metrics.py 同名、同签名、同 register；进程内模拟（wlwq_local 由 BizAPIClient 分流）。"""
+"""运营指标 — 进程内模拟（wlwq_local）。"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
 
-
-
-from src.biz_tools.mock import client_sales_examine, stats
-from src.biz_tools.biz_scope import effective_store_id_for_biz
+from src.biz.biz_scope import effective_store_id_for_biz
+from src.biz.mock.handlers import client_sales_examine
+from src.biz.mock.handlers import stats
 from src.core.calculator import DRILL_FIELD_LABELS, DRILL_ITEM_FIELDS, filter_drill_row_by_allowed_fields
 
 logger = logging.getLogger(__name__)
@@ -22,26 +20,6 @@ def _store_aware_params(tenant_id: str, store_id: str, start_date: str, end_date
 
 def _num(v, default: float | int = 0):
     return default if v is None else v
-
-
-_DRILL_FETCHERS: dict[str, Callable[[dict], dict]] = {
-    "/client-record/list": client_sales_examine.client_record_list,
-    "/examine-initiate/follow-stats": client_sales_examine.examine_follow_stats,
-    "/account-coupon/statistics": stats.coupon_statistics,
-    "/manage-data/exposure-stats": stats.exposure_stats,
-    "/store-order/conversion-stats": stats.conversion_stats,
-    "/seckill-apply/conversion-stats": stats.seckill_conversion_stats,
-    "/store-refund-order/statistics": stats.refund_statistics,
-    "/store-order-evaluate/statistics": stats.evaluate_statistics,
-    "/store-order/repurchase-stats": stats.repurchase_stats,
-    "/service-order/completion-stats": stats.service_completion_stats,
-    "/store-order/shipping-stats": stats.shipping_stats,
-}
-
-
-def _drill_fetch_data(endpoint: str, params: dict) -> dict:
-    fn = _DRILL_FETCHERS.get(endpoint)
-    return fn(params) if fn else {}
 
 
 async def get_crm_indicators(
@@ -282,6 +260,26 @@ async def get_efficiency_indicators(
     }
 
 
+_DRILL_FETCHERS: dict[str, ...] = {
+    "/client-record/list": client_sales_examine.client_record_list,
+    "/examine-initiate/follow-stats": client_sales_examine.examine_follow_stats,
+    "/account-coupon/statistics": stats.coupon_statistics,
+    "/manage-data/exposure-stats": stats.exposure_stats,
+    "/store-order/conversion-stats": stats.conversion_stats,
+    "/seckill-apply/conversion-stats": stats.seckill_conversion_stats,
+    "/store-refund-order/statistics": stats.refund_statistics,
+    "/store-order-evaluate/statistics": stats.evaluate_statistics,
+    "/store-order/repurchase-stats": stats.repurchase_stats,
+    "/service-order/completion-stats": stats.service_completion_stats,
+    "/store-order/shipping-stats": stats.shipping_stats,
+}
+
+
+def _drill_fetch_data(endpoint: str, params: dict) -> dict:
+    fn = _DRILL_FETCHERS.get(endpoint)
+    return fn(params) if fn else {}
+
+
 async def drill_down_indicator(
     tenant_id: str,
     store_id: str,
@@ -339,31 +337,3 @@ async def drill_down_indicator(
         "field_labels": field_labels,
         "summary": data.get("summary", f"{indicator_code} 钻取数据"),
     }
-
-
-_METRIC_GET_HANDLERS: tuple[tuple[str, Callable[[dict], dict]], ...] = (
-    ("client-record/statistics", client_sales_examine.client_record_statistics),
-    ("sales-contract/statistics", client_sales_examine.sales_contract_statistics),
-    ("examine-initiate/follow-stats", client_sales_examine.examine_follow_stats),
-    ("examine-initiate/turnaround-stats", client_sales_examine.examine_turnaround_stats),
-    ("service-order/completion-stats", stats.service_completion_stats),
-    ("store-order/shipping-stats", stats.shipping_stats),
-    ("account-coupon/statistics", stats.coupon_statistics),
-    ("manage-data/exposure-stats", stats.exposure_stats),
-    ("store-order/conversion-stats", stats.conversion_stats),
-    ("seckill-apply/conversion-stats", stats.seckill_conversion_stats),
-    ("store-refund-order/statistics", stats.refund_statistics),
-    ("store-order-evaluate/statistics", stats.evaluate_statistics),
-    ("store-order/repurchase-stats", stats.repurchase_stats),
-)
-
-
-def try_raw_request(method: str, path: str, q: dict, body: dict) -> dict | None:
-    """供 dispatch：与 biz.get 统计类 path 对齐。"""
-    if method.upper() != "GET":
-        return None
-    for p, fn in _METRIC_GET_HANDLERS:
-        if path == p:
-            return fn(q)
-    _ = body
-    return None

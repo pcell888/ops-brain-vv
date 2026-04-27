@@ -7,7 +7,7 @@ import logging
 
 import psycopg.rows
 
-from src.biz_tools.notify import send_task_reminder
+from src.biz.client import tenant_client
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,8 @@ async def _send_reminders(tasks: list[dict], reminder_type: str):
         if not account_id:
             continue
         try:
-            await send_task_reminder(
+            tc = tenant_client(tenant_id)
+            await tc.send_task_reminder(
                 tenant_id=tenant_id,
                 user_id=t.get("assignee_user_id", 0),
                 account_id=account_id,

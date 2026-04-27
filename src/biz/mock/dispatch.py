@@ -1,12 +1,13 @@
-"""BizAPIClient 在 wlwq_local 时的 path 模拟；CRM 路由用 biz_mock.crm 的 _raw_*，与工具层共用数据源。"""
+"""业务模拟路径路由 — CRM 路由用 handlers 的 _raw_*，与工具层共用数据源。"""
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
-from src.biz_tools.biz_api_client import BizAPIError
-from src.biz_tools.mock import client_sales_examine, crm, metrics, notify, task
-from src.biz_tools.mock.stats import store_order_analytics
+from src.biz.http_client import HTTPClientError
+from src.biz.mock.handlers import client_sales_examine
+from src.biz.mock.handlers.stats import store_order_analytics
+from src.biz.mock import crm_handlers, metrics_handlers, notify_handlers, task_handlers
 
 _Handler = Callable[[str, str, dict[str, Any], dict[str, Any]], dict[str, Any] | None]
 
@@ -14,11 +15,11 @@ _Handler = Callable[[str, str, dict[str, Any], dict[str, Any]], dict[str, Any] |
 def _dispatch_crm_raw(method: str, path: str, q: dict[str, Any], body: dict[str, Any]) -> dict[str, Any] | None:
     m = method.upper()
     if m == "GET" and path == "store/list":
-        return crm._raw_store_list()
+        return crm_handlers._raw_store_list()
     if m == "GET" and path.startswith("store-class/"):
-        return crm._raw_store_class(path.split("/", 1)[1])
+        return crm_handlers._raw_store_class(path.split("/", 1)[1])
     if m == "GET" and path.startswith("store/") and path != "store/list":
-        return crm._raw_store_detail(path.split("/", 1)[1])
+        return crm_handlers._raw_store_detail(path.split("/", 1)[1])
     if m == "GET" and path == "client-record/list":
         return client_sales_examine.client_record_list(q)
     if m == "GET" and path.startswith("client-record/"):
@@ -31,19 +32,18 @@ def _dispatch_crm_raw(method: str, path: str, q: dict[str, Any], body: dict[str,
     if m == "GET" and path == "store-order/analytics":
         return store_order_analytics(q)
     if m == "GET" and path == "sys-dept/tree":
-        return crm._raw_dept_tree(q.get("storeId"))
+        return crm_handlers._raw_dept_tree(q.get("storeId"))
     if m == "GET" and path == "sys-user/list":
-        return crm._raw_user_list(q.get("deptId"))
+        return crm_handlers._raw_user_list(q.get("deptId"))
     _ = body
     return None
 
 
-# 顺序重要：metrics 须先于 crm，避免 client-record/statistics 被当成单条 id
 _DOMAIN_HANDLERS: tuple[tuple[str, _Handler], ...] = (
-    ("metrics", metrics.try_raw_request),
+    ("metrics", metrics_handlers.try_raw_request),
     ("crm", _dispatch_crm_raw),
-    ("notify", notify.try_raw_request),
-    ("task", task.try_raw_request),
+    ("notify", notify_handlers.try_raw_request),
+    ("task", task_handlers.try_raw_request),
 )
 
 
@@ -70,4 +70,4 @@ async def dispatch_biz_mock(
         if result is not None:
             return result
 
-    raise BizAPIError(404, f"业务模拟未实现: {m} /{p}", path)
+    raise HTTPClientError(404, f"业务模拟未实现: {m} /{p}", path)
