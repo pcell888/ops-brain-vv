@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, HTTPException, Request
 
+from src.biz.router import TenantNotFoundError
 from src.services import enterprise_service
 from src.services.enterprise_service import SyncEnterpriseBody
 
@@ -33,6 +34,8 @@ async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody, request:
         return await enterprise_service.sync_enterprise(enterprise_id, body, auth_override)
     except enterprise_service.EnterpriseServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+    except TenantNotFoundError as e:
+        raise HTTPException(status_code=401, detail=str(e)) from e
 
 
 @router.patch("/{enterprise_id}/config", summary="更新企业配置")

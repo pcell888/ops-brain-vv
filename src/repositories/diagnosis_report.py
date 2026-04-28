@@ -19,24 +19,28 @@ async def save_report(
     store_id: str,
     trigger_type: str,
     report: dict,
+    *,
+    plan_ids: list[str] | None = None,
 ) -> None:
     """写入或覆盖该 thread_id 的诊断报告。落库前确保表存在。"""
     report_json = json.dumps(report, ensure_ascii=False)
+    plan_ids_json = json.dumps(plan_ids or [], ensure_ascii=False)
     try:
         async with get_conn() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO diag_reports (thread_id, tenant_id, store_id, trigger_type, report)
-                    VALUES (%s, %s, %s, %s, %s::jsonb)
+                    INSERT INTO diag_reports (thread_id, tenant_id, store_id, trigger_type, report, plan_ids)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb)
                     ON CONFLICT (thread_id) DO UPDATE SET
                         tenant_id = EXCLUDED.tenant_id,
                         store_id = EXCLUDED.store_id,
                         trigger_type = EXCLUDED.trigger_type,
                         report = EXCLUDED.report,
+                        plan_ids = EXCLUDED.plan_ids,
                         created_at = NOW()
                     """,
-                    (thread_id, tenant_id, store_id, trigger_type, report_json),
+                    (thread_id, tenant_id, store_id, trigger_type, report_json, plan_ids_json),
                 )
             await conn.commit()
     except Exception as e:
@@ -121,8 +125,8 @@ async def update_plan_ids(thread_id: str, plan_ids: list[str]) -> None:
         raise AppError("更新 plan_ids 失败", thread_id=thread_id) from e
 
 
-async def find_thread_id_by_plan_id(plan_id: str) -> str | None:
-    """通过 plan_id 查找对应的 thread_id。"""
+async def find_all_thread_ids_by_plan_id(plan_id: str) -> list[str]:
+    """通过 plan_id 查找所有对应的 thread_id，按创建时间倒序。"""
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -132,11 +136,10 @@ async def find_thread_id_by_plan_id(plan_id: str) -> str | None:
                     FROM diag_reports
                     WHERE plan_ids @> %s::jsonb
                     ORDER BY created_at DESC
-                    LIMIT 1
                     """,
                     (json.dumps([plan_id]),),
                 )
-                row = await cur.fetchone()
-                return row.get("thread_id") if row else None
+                rows = await cur.fetchall()
+                return [r["thread_id"] for r in rows if r.get("thread_id")]
     except Exception as e:
         raise AppError("通过 plan_id 查找 thread_id 失败", plan_id=plan_id) from e

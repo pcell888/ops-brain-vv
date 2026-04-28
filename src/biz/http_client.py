@@ -15,6 +15,25 @@ logger = logging.getLogger(__name__)
 tracer = get_tracer("biz_http")
 
 
+def _unwrap_standard_envelope(body: Any) -> Any:
+    """若响应为网关常见的 {code,msg,data} 且成功，则对调用方返回 data 本体。"""
+    if not isinstance(body, dict):
+        return body
+    code = body.get("code")
+    if code != 200:
+        return body
+    if "data" not in body:
+        return body
+    inner = body.get("data")
+    if inner is None:
+        return body
+    if isinstance(inner, dict):
+        return inner
+    if isinstance(inner, list):
+        return {"list": inner}
+    return body
+
+
 class HTTPClientError(Exception):
     def __init__(self, status_code: int, message: str, url: str):
         self.status_code = status_code
@@ -97,11 +116,29 @@ class HTTPClient:
                     last_exc = err
                     logger.warning("HTTP %s %s %.2fs [%d] retry", method, path, elapsed, resp.status_code)
                 else:
-                    logger.info("HTTP %s %s %.2fs", method, path, elapsed)
+                    elapsed = time.time() - start
+                    req_url = f"{self.base_url}{path}"
+                    req_params = params if params else {}
+                    req_body = json_data if json_data else {}
                     try:
-                        return resp.json()
+                        resp_json = resp.json()
+                        resp_text = str(resp_json)[:2000] if resp_json else ""
+                        if len(str(resp_json)) > 2000:
+                            resp_text += "... [truncated]"
                     except Exception:
-                        return {"_raw": resp.text}
+                        resp_text = resp.text[:2000] if resp.text else ""
+                        resp_json = {"_raw": resp_text}
+                    
+                    logger.info(
+                        "[BIZ_HTTP] %s %s | params=%s | body=%s | response=%s | elapsed=%.2fs",
+                        method,
+                        req_url,
+                        str(req_params)[:500],
+                        str(req_body)[:500],
+                        resp_text,
+                        elapsed,
+                    )
+                    return _unwrap_standard_envelope(resp_json)  # type: ignore[return-value]
 
             if attempt < self._max_retries:
                 await asyncio.sleep(self._retry_delay * attempt)

@@ -298,10 +298,27 @@ async def diagnose_node(state: DiagnosisState, config: Any = None) -> dict:
         if is_scheduled:
             report_summary["notification_type"] = "ai_weekly_digest"
         tc = tenant_client(state["tenant_id"])
+        logger.info(
+            "[诊断推送] 开始 tenant=%s store=%s health_score=%s",
+            state["tenant_id"],
+            state["store_id"],
+            health_score,
+        )
+        admin_account_ids = await _get_admin_accounts(
+            state.get("store_profile", {}),
+            tenant_id=state.get("tenant_id"),
+        )
+        logger.info(
+            "[诊断推送] tenant=%s store=%s admin_accounts=%s health_score=%s",
+            state["tenant_id"],
+            state["store_id"],
+            admin_account_ids,
+            health_score,
+        )
         await tc.send_diagnosis_report_notification(
             tenant_id=state["tenant_id"],
             store_id=state["store_id"],
-            admin_account_ids=_get_admin_accounts(state.get("store_profile", {})),
+            admin_account_ids=admin_account_ids,
             report_summary=report_summary,
         )
         notify_type = report_summary.get("notification_type", "diag_reports")

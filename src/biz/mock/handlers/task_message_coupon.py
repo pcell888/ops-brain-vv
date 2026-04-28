@@ -31,12 +31,8 @@ def exec_task_batch_create(body: dict) -> dict:
 
 
 def has_create_task_permission(q: dict) -> dict:
-    try:
-        user_id = int(q.get("userId") or 0)
-    except (TypeError, ValueError):
-        user_id = 0
-    # 模拟规则：有效用户ID默认有权限，便于本地联调。
-    return {"hasPermission": "true" if user_id > 0 else "false"}
+    user_id = str(q.get("userId") or "").strip()
+    return {"hasPermission": "true" if user_id else "false"}
 
 
 def exec_task_update_status(task_id: str, body: dict) -> dict:

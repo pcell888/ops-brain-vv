@@ -143,10 +143,11 @@ class PlatformClient:
         )
         return data.get("trends", data) if isinstance(data, dict) else data
 
-    async def get_project_enterprise_info(self, tenant_id: str) -> dict:
-        logger.info("Tool called: get_project_enterprise_info tenant=%s", tenant_id)
+    async def get_project_enterprise_info(self, tenant_id: str, auth_override: str | None = None) -> dict:
+        logger.info("Tool called: get_project_enterprise_info tenant=%s override=%s", tenant_id, bool(auth_override))
         http = await self._ensure_http()
-        headers = await _get_platform_auth_headers(tenant_id)
+        ov = (auth_override or "").strip()
+        headers = await _resolve_auth_headers(None if ov else tenant_id, ov if ov else None)
         return await http.get("ai/customer/projectInfo", params={"projectId": tenant_id}, headers=headers)
 
     async def close(self) -> None:

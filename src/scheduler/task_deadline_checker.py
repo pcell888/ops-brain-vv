@@ -8,6 +8,7 @@ import logging
 import psycopg.rows
 
 from src.biz.client import tenant_client
+from src.repositories.push_log import save_push_log
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,10 @@ async def _get_overdue_tasks() -> list[dict]:
 async def _send_reminders(tasks: list[dict], reminder_type: str):
     for t in tasks:
         tenant_id = t.get("tenant_id", "")
+        store_id = t.get("store_id", "")
         account_id = t.get("assignee_account_id") or str(t.get("assignee_user_id", ""))
+        task_id = t.get("task_id", "")
+        task_name = t.get("task_name", "")
         if not account_id:
             continue
         try:
@@ -68,12 +72,23 @@ async def _send_reminders(tasks: list[dict], reminder_type: str):
                 tenant_id=tenant_id,
                 user_id=t.get("assignee_user_id", 0),
                 account_id=account_id,
-                task_id=t.get("task_id", ""),
+                task_id=task_id,
                 reminder_type=reminder_type,
-                message=f"任务「{t.get('task_name', '')}」{'已超过截止日期' if reminder_type == 'overdue' else '即将到期'}，请及时处理。",
+                message=f"任务「{task_name}」{'已超过截止日期' if reminder_type == 'overdue' else '即将到期'}，请及时处理。",
+            )
+            type_label = "任务超期提醒" if reminder_type == "overdue" else "任务即将到期提醒"
+            await save_push_log(
+                task_id,
+                tenant_id,
+                store_id,
+                "message",
+                f"ai_task_{reminder_type}",
+                type_label,
+                f"任务「{task_name}」{'已超过截止日期' if reminder_type == 'overdue' else '即将到期'}，请及时处理。",
+                {"task_id": task_id, "task_name": task_name, "account_id": account_id, "reminder_type": reminder_type},
             )
         except Exception as e:
-            logger.warning("发送%s提醒失败 [%s]: %s", reminder_type, t.get("task_id"), e)
+            logger.warning("发送%s提醒失败 [%s]: %s", reminder_type, task_id, e)
 
 
 async def check_task_deadlines():

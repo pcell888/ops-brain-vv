@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
+from src.core.exceptions import AppError
+from src.repositories.tenant_registry import get_tenant_row
 
-def get_admin_accounts(profile: dict) -> list[str]:
-    """从企业画像中提取管理员账号 ID 列表。"""
-    return profile.get("admin_account_ids", [])
+
+async def get_admin_accounts(
+    profile: dict | None = None,
+    *,
+    tenant_id: str | None = None,
+) -> list[str]:
+
+    row = await get_tenant_row(tenant_id)
+    if not row:
+        raise AppError("租户未注册或已停用", tenant_id=tenant_id)
+
+    uid = row.get("user_id")
+    v = str(uid).strip() if uid is not None else ""
+    if not v:
+        raise AppError("tenant_registries.user_id 未配置，无法推送", tenant_id=tenant_id)
+    return [v]
 
 
 def slim_anomalies(anomalies: list[dict]) -> list[dict]:

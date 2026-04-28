@@ -484,17 +484,19 @@ async def get_drill_down(
     days: int = Query(default=90, ge=1, le=365),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
+    diagnosis_id: str | None = Query(default=None, description="诊断ID，用于精确获取诊断时的 store_id"),
 ):
     from src.api.routes.drill_down import _resolve_metric_code, _DRILL_ENDPOINT_MAP, query_drill_data_from_biz
 
     logger.info(
-        "指标钻取 收到请求 metric_name=%s enterprise_id=%s dimension=%s days=%s page=%s page_size=%s",
+        "指标钻取 收到请求 metric_name=%s enterprise_id=%s dimension=%s days=%s page=%s page_size=%s diagnosis_id=%s",
         metric_name,
         enterprise_id,
         dimension,
         days,
         page,
         page_size,
+        diagnosis_id,
     )
     meta = INDICATOR_META.get(metric_name)
     if not meta:
@@ -516,7 +518,7 @@ async def get_drill_down(
 
     try:
         rows, total = await query_drill_data_from_biz(
-            metric_code, eid, days, page, page_size
+            metric_code, eid, days, page, page_size, diagnosis_id
         )
     except HTTPException as e:
         logger.warning("指标钻取业务接口失败 %s: %s", metric_name, e.detail)

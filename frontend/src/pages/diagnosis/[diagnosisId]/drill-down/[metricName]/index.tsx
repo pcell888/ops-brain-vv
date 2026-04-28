@@ -45,6 +45,7 @@ export default function DrillDownPage() {
   
   const metricName = decodeURIComponent(params.metricName as string);
   const dimension = searchParams.get('dimension') || 'crm';
+  const diagnosisId = params.diagnosisId as string;
   
   const enterpriseId = currentEnterprise?.id || null;
 
@@ -68,6 +69,7 @@ export default function DrillDownPage() {
     analysisPeriodDays,
     currentPage,
     pageSize,
+    diagnosisId,
     { enabled: !isEnterpriseLoading }
   );
   const drillData = rawDrillData as DrillDownData | undefined;

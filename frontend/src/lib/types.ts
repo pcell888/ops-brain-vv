@@ -316,6 +316,8 @@ export interface ExecutionTask {
   assigned_to?: string;
   /** 与 assigned_to 一致，列表展示「接收者」 */
   recipient?: string;
+  /** 后端 assignee_user_name，用于展示接收者姓名 */
+  assignee_user_name?: string;
   /** 派发状态：如 dispatched */
   dispatch_status?: string;
   /** 派发时间（任务 created_at，北京时间 ISO +08:00） */

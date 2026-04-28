@@ -7,6 +7,7 @@ from datetime import datetime
 
 from src.agent.progress import clear_progress_sender, set_progress_sender
 from src.biz.client import tenant_client
+from src.repositories.tenant_registry import get_tenant_row
 from src.core.config import CN_TZ, format_delay_days_zh, get_settings
 from src.core.diagnosis_errors import public_diagnosis_error_message
 from src.core.phases import calc_overall_progress, phase_name, WORKFLOW_NODES
@@ -18,9 +19,10 @@ from src.runtime.diagnosis_ws_manager import manager
 from src.runtime.progress_store import progress_cache
 from src.runtime.progress_store import write_progress_cache
 from src.runtime.running_tasks import running_tasks
-from src.repositories.diagnosis_report import find_thread_id_by_plan_id, list_reports, update_plan_ids
+from src.repositories.diagnosis_report import find_all_thread_ids_by_plan_id, list_reports, update_plan_ids
 from src.agent.nodes.rule_task_builder import task_db_row_to_push_payload
 from src.repositories.exec_task import get_tasks_by_plan_id, list_distinct_plan_ids_for_thread, patch_related_resources, update_task_status
+from src.repositories.push_log import save_push_log
 from src.worker.arq_queue import enqueue_adoption_job
 from src.services import async_job_service
 
@@ -324,60 +326,21 @@ async def resolve_thread_id_for_plan(solution_id: str, *, prefer_wait_adoption: 
 
     当 plan_id 在历史数据中重复时，可优先选择当前处于 wait_adoption 的诊断。
     """
+    thread_ids = await find_all_thread_ids_by_plan_id(solution_id)
+
     fallback_thread_id: str | None = None
 
-    try:
-        thread_id = await find_thread_id_by_plan_id(solution_id)
-        if thread_id:
-            values, next_nodes = await _get_state(thread_id)
-            if values:
-                plans = values.get("solution_plans") or []
-                plan_ids = {p.get("plan_id") for p in plans}
-                if solution_id in plan_ids:
-                    if not prefer_wait_adoption or ("wait_adoption" in next_nodes):
-                        return thread_id
-                    fallback_thread_id = thread_id
-    except Exception as e:
-        logger.warning("从 plan_ids 索引查找失败: %s", e)
-
-    page = 1
-    page_size = 100
-    while True:
-        items, total = await list_reports(None, None, page, page_size)
-        if not items:
-            break
-
-        for row in items:
-            thread_id = row.get("thread_id", "")
-            try:
-                values, next_nodes = await _get_state(thread_id)
-                if not values:
-                    continue
-                plans = values.get("solution_plans") or []
-                plan_ids = {p.get("plan_id") for p in plans}
-                if solution_id in plan_ids:
-                    if prefer_wait_adoption and ("wait_adoption" in next_nodes):
-                        plan_id_list = [p.get("plan_id") for p in plans if p.get("plan_id")]
-                        if plan_id_list:
-                            try:
-                                await update_plan_ids(thread_id, plan_id_list)
-                            except Exception:
-                                pass
-                        return thread_id
-                    if fallback_thread_id is None:
-                        fallback_thread_id = thread_id
-                    plan_id_list = [p.get("plan_id") for p in plans if p.get("plan_id")]
-                    if plan_id_list:
-                        try:
-                            await update_plan_ids(thread_id, plan_id_list)
-                        except Exception:
-                            pass
-            except Exception:
+    for tid in thread_ids:
+        try:
+            values, next_nodes = await _get_state(tid)
+            if not values:
                 continue
-
-        if page * page_size >= total:
-            break
-        page += 1
+            if prefer_wait_adoption and "wait_adoption" in next_nodes:
+                return tid
+            if fallback_thread_id is None:
+                fallback_thread_id = tid
+        except Exception:
+            continue
 
     if fallback_thread_id:
         return fallback_thread_id
@@ -444,6 +407,14 @@ async def adopt_plan_and_enqueue(thread_id: str, plan_id: str) -> dict:
     tenant_id = str(refreshed_values.get("tenant_id") or "")
     if not tenant_id:
         raise SolutionServiceError(400, "缺少 tenant_id，无法派发执行任务")
+
+    tenant_row = await get_tenant_row(tenant_id)
+    reg_user_id = (tenant_row or {}).get("user_id")
+    if reg_user_id:
+        tc = tenant_client(tenant_id)
+        perm_result = await tc.has_create_task_permission(tenant_id=tenant_id, user_id=str(reg_user_id))
+        if not perm_result.get("has_permission"):
+            raise SolutionServiceError(403, "请联系业务系统管理员赋予您创建任务的权限")
 
     job_id = await enqueue_adoption_job(thread_id=thread_id)
     await async_job_service.register_enqueued_job(
@@ -774,6 +745,17 @@ async def redistribute_plan_tasks(thread_id: str, plan_id: str) -> dict:
             await patch_related_resources(tid, {"dispatch_status": "dispatched"})
             await update_exec_tasks_status([tid], "running")
             redistributed.append(task.get("task_id"))
+            task_name = task.get("task_name", "")
+            await save_push_log(
+                thread_id,
+                tenant_id,
+                store_id,
+                "task",
+                "exec_task_redispatch",
+                f"重新派发任务：{task_name}",
+                f"任务「{task_name}」已重新派发",
+                {"task_id": tid, "plan_id": plan_id, "task_name": task_name},
+            )
         except Exception as e:
             logger.warning("任务派发失败: task_id=%s, error=%s", task.get("task_id"), e)
             await patch_related_resources(tid, {"dispatch_status": "failed", "dispatch_error": str(e)[:500]})

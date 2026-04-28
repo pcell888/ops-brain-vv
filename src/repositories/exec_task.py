@@ -55,14 +55,16 @@ async def save_exec_tasks(
                         """
                         INSERT INTO exec_tasks
                         (task_id, thread_id, tenant_id, store_id, plan_id, task_name, description,
-                         assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at, priority, status, related_resources)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                         assignee_user_id, assignee_account_id, assignee_dept_id, assignee_user_name,
+                         deadline, deadline_at, priority, status, related_resources)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                         ON CONFLICT (task_id) DO UPDATE SET
                             task_name = EXCLUDED.task_name,
                             description = EXCLUDED.description,
                             assignee_user_id = EXCLUDED.assignee_user_id,
                             assignee_account_id = EXCLUDED.assignee_account_id,
                             assignee_dept_id = EXCLUDED.assignee_dept_id,
+                            assignee_user_name = EXCLUDED.assignee_user_name,
                             deadline = EXCLUDED.deadline,
                             deadline_at = EXCLUDED.deadline_at,
                             priority = EXCLUDED.priority,
@@ -79,6 +81,7 @@ async def save_exec_tasks(
                             t.get("assignee_user_id"),
                             str(t.get("assignee_account_id", ""))[:32],
                             str(t.get("assignee_dept_id", ""))[:32],
+                            (t.get("assignee_user_name") or "")[:128] if t.get("assignee_user_name") else None,
                             deadline_str,
                             deadline_at_dt,
                             str(t.get("priority", ""))[:20],
@@ -141,8 +144,8 @@ async def get_tasks_by_plan_id(tenant_id: str, store_id: str, plan_id: str, stat
                     await cur.execute(
                         """
                         SELECT task_id, thread_id, tenant_id, store_id, plan_id, task_name, description,
-                               assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at,
-                               priority, status, related_resources, created_at
+                               assignee_user_id, assignee_account_id, assignee_dept_id, assignee_user_name,
+                               deadline, deadline_at, priority, status, related_resources, created_at
                         FROM exec_tasks
                         WHERE tenant_id = %s AND store_id = %s AND plan_id = %s AND status = %s
                         ORDER BY created_at
@@ -153,8 +156,8 @@ async def get_tasks_by_plan_id(tenant_id: str, store_id: str, plan_id: str, stat
                     await cur.execute(
                         """
                         SELECT task_id, thread_id, tenant_id, store_id, plan_id, task_name, description,
-                               assignee_user_id, assignee_account_id, assignee_dept_id, deadline, deadline_at,
-                               priority, status, related_resources, created_at
+                               assignee_user_id, assignee_account_id, assignee_dept_id, assignee_user_name,
+                               deadline, deadline_at, priority, status, related_resources, created_at
                         FROM exec_tasks
                         WHERE tenant_id = %s AND store_id = %s AND plan_id = %s
                         ORDER BY created_at
@@ -369,7 +372,7 @@ async def query_filtered_tasks(
                 await cur.execute(
                     f"""
                     SELECT task_id, plan_id, thread_id, task_name, description, priority, status,
-                           assignee_user_id, assignee_dept_id, deadline, created_at, related_resources
+                           assignee_user_id, assignee_dept_id, assignee_user_name, deadline, created_at, related_resources
                     FROM exec_tasks
                     {where_sql}
                     ORDER BY created_at DESC
@@ -390,7 +393,7 @@ async def get_task_by_id(task_id: str) -> dict | None:
                 await cur.execute(
                     """
                     SELECT task_id, plan_id, thread_id, tenant_id, store_id, task_name, description,
-                           priority, status, assignee_user_id, assignee_dept_id, deadline, created_at,
+                           priority, status, assignee_user_id, assignee_dept_id, assignee_user_name, deadline, created_at,
                            related_resources
                     FROM exec_tasks
                     WHERE task_id = %s
@@ -438,7 +441,7 @@ async def query_plan_tasks(plan_id: str, status: str | None = None) -> list[dict
                 await cur.execute(
                     f"""
                     SELECT task_id, plan_id, thread_id, task_name, description, priority, status,
-                           assignee_user_id, assignee_dept_id, deadline, created_at, related_resources
+                           assignee_user_id, assignee_dept_id, assignee_user_name, deadline, created_at, related_resources
                     FROM exec_tasks
                     {where}
                     ORDER BY created_at

@@ -240,16 +240,18 @@ export function useDrillDownData(
   days: number = 30,
   page: number = 1,
   pageSize: number = 10,
+  diagnosisId?: string,
   options?: { enabled?: boolean }
 ) {
   return useQuery<DrillDownResponse>({
-    queryKey: ['diagnosis', 'drill-down', metricName, enterpriseId, dimension, days, page, pageSize],
+    queryKey: ['diagnosis', 'drill-down', metricName, enterpriseId, dimension, days, page, pageSize, diagnosisId],
     queryFn: () => diagnosisApi.drillDown(metricName, {
       enterprise_id: enterpriseId!,
       dimension,
       days,
       page,
       page_size: pageSize,
+      diagnosis_id: diagnosisId,
     }),
     enabled: (options?.enabled ?? true) && !!enterpriseId && !!metricName,
   });
@@ -267,7 +269,7 @@ export function useEnterpriseDetail(enterpriseId: string | null) {
 // 指标钻取
 export function useDrillDown(
   metricName: string | null,
-  params: { enterprise_id: string; dimension: string; days?: number } | null
+  params: { enterprise_id: string; dimension: string; days?: number; diagnosis_id?: string } | null
 ) {
   return useQuery({
     queryKey: ['diagnosis', 'drillDown', metricName, params],

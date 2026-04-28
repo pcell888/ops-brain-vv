@@ -13,6 +13,7 @@ from src.repositories.tracking import (
     count_trackings,
     create_tracking,
     get_diagnosis_thread_id_for_plan,
+    get_first_exec_task_plan_store,
     list_tracking_thread_ids_for_tenant_plan,
     get_diagnosis_scores,
     get_latest_snapshot,
@@ -113,6 +114,13 @@ async def start_effect_tracking(enterprise_id: str, plan_id: str, interval_days:
             f"该方案已存在效果追踪，请使用 tracking_id={existing_track[0]}",
         )
 
+    # 通过 plan_id 查找关联的诊断 thread，获取 store_id
+    store_id = ""
+    diag_thread_id = await get_diagnosis_thread_id_for_plan(enterprise_id.strip(), plan_id.strip())
+    if diag_thread_id:
+        et = await get_first_exec_task_plan_store(diag_thread_id, enterprise_id.strip())
+        store_id = (et["store_id"] or "") if et else ""
+
     thread_id = f"trk_{uuid.uuid4().hex[:16]}"
     now = datetime.now(CN_TZ)
     tracking_data = {
@@ -129,7 +137,7 @@ async def start_effect_tracking(enterprise_id: str, plan_id: str, interval_days:
         await create_tracking(
             thread_id=thread_id,
             tenant_id=enterprise_id,
-            store_id="",
+            store_id=store_id,
             tracking_data=tracking_data,
             created_at=now,
         )

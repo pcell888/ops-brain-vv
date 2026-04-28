@@ -180,8 +180,9 @@ class ExecTask(BaseModel):
     task_id: str = ""
     task_name: str
     description: str
-    assignee_user_id: int | None = None
-    assignee_dept_id: int | None = None
+    assignee_user_id: str | None = None
+    assignee_dept_id: str | None = None
+    assignee_user_name: str | None = None
     deadline: str | None = None
     deadline_at: str | None = None
     priority: Literal["high", "medium", "low"] = "medium"

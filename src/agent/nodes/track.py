@@ -184,7 +184,10 @@ async def track_effects_node(state: DiagnosisState, config: Any = None) -> dict:
         await tc.send_review_report_notification(
             tenant_id=tenant_id,
             store_id=store_id,
-            admin_account_ids=_get_admin_accounts(state.get("store_profile", {})),
+            admin_account_ids=await _get_admin_accounts(
+                state.get("store_profile", {}),
+                tenant_id=tenant_id,
+            ),
             thread_id=thread_id,
             review_summary=review_summary,
         )

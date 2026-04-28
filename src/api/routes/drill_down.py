@@ -59,13 +59,21 @@ async def query_drill_data_from_biz(
     days: int,
     page: int,
     page_size: int,
+    diagnosis_id: str | None = None,
 ) -> tuple[list[dict], int]:
     now = datetime.now(CN_TZ)
     start_at = now - timedelta(days=days)
+
+    store_id = ""
+    if diagnosis_id:
+        from src.services import diagnosis_service
+        report = await diagnosis_service.get_diagnosis_report_data(diagnosis_id)
+        store_id = (report or {}).get("store_id", "")
+
     try:
         tc = tenant_client(enterprise_id)
         data = await tc.drill_down_indicator(
-            enterprise_id, "", metric_code,
+            enterprise_id, store_id, metric_code,
             start_at.strftime("%Y-%m-%d %H:%M:%S"),
             now.strftime("%Y-%m-%d %H:%M:%S"),
             page=page, page_size=page_size,
@@ -98,14 +106,16 @@ async def get_diagnosis_drill_down(
     dimension: str = Query(default="crm"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200),
+    diagnosis_id: str | None = Query(default=None, description="诊断ID，用于精确获取诊断时的 store_id"),
 ):
     logger.info(
-        "指标钻取(新API) 收到请求 metric_name=%s enterprise_id=%s dimension=%s page=%s page_size=%s",
+        "指标钻取(新API) 收到请求 metric_name=%s enterprise_id=%s dimension=%s page=%s page_size=%s diagnosis_id=%s",
         metric_name,
         enterprise_id,
         dimension,
         page,
         page_size,
+        diagnosis_id,
     )
     if not enterprise_id:
         raise HTTPException(status_code=400, detail="enterprise_id 不能为空")
@@ -116,7 +126,7 @@ async def get_diagnosis_drill_down(
     tenant_config = await get_tenant_config(enterprise_id)
     days = int(tenant_config.get("analysis_period_days") or 30)
     logger.info(
-        "指标钻取请求 metric_name=%s metric_code=%s enterprise_id=%s dimension=%s days=%s page=%s page_size=%s",
+        "指标钻取请求 metric_name=%s metric_code=%s enterprise_id=%s dimension=%s days=%s page=%s page_size=%s diagnosis_id=%s",
         metric_name,
         metric_code,
         enterprise_id,
@@ -124,8 +134,9 @@ async def get_diagnosis_drill_down(
         days,
         page,
         page_size,
+        diagnosis_id,
     )
-    rows, total = await query_drill_data_from_biz(metric_code, enterprise_id, days, page, page_size)
+    rows, total = await query_drill_data_from_biz(metric_code, enterprise_id, days, page, page_size, diagnosis_id)
     now = datetime.now(CN_TZ)
     start = now - timedelta(days=days)
     fields = DRILL_ITEM_FIELDS.get(metric_code, [])

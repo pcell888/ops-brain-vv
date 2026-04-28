@@ -21,6 +21,7 @@ from src.agent.utils import get_admin_accounts as _get_admin_accounts, slim_anom
 from src.core.config import get_settings
 from src.core.dept_resolver import dept_keyword_match as _dept_keyword_match
 from src.core.llm_caller import llm_call_json
+from src.repositories.diagnosis_report import update_plan_ids
 from src.repositories.push_log import save_push_log
 from src.repositories.solution_knowledge import search_similar_plans
 from src.core.indicator_push_rules import (
@@ -393,7 +394,10 @@ async def generate_solutions_node(state: DiagnosisState, config: Any = None) -> 
         await tc.send_plan_adoption_request(
             tenant_id=state["tenant_id"],
             store_id=state["store_id"],
-            admin_account_ids=_get_admin_accounts(store_profile),
+            admin_account_ids=await _get_admin_accounts(
+                store_profile,
+                tenant_id=state.get("tenant_id"),
+            ),
             thread_id=state.get("thread_id", ""),
             plans_summary=plans_summary,
         )
@@ -410,6 +414,14 @@ async def generate_solutions_node(state: DiagnosisState, config: Any = None) -> 
         )
     except Exception as e:
         logger.warning("推送方案采纳通知失败: %s", e)
+
+    plan_id_list = [p.get("plan_id") for p in plans if p.get("plan_id")]
+    thread_id = state.get("thread_id")
+    if plan_id_list and thread_id:
+        try:
+            await update_plan_ids(thread_id, plan_id_list)
+        except Exception as e:
+            logger.warning("同步 plan_ids 到 DB 失败: %s", e)
 
     return {
         "solution_plans": plans,

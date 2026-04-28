@@ -18,7 +18,7 @@ async def get_tenant_row(tenant_id: str) -> dict | None:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    "SELECT tenant_id, tenant_name, industry_code, industry_name, config, created_at, updated_at "
+                    "SELECT tenant_id, tenant_name, industry_code, industry_name, config, user_id, user_name, created_at, updated_at "
                     "FROM tenant_registries WHERE tenant_id = %s AND status = 1",
                     (tenant_id,),
                 )
@@ -32,7 +32,7 @@ async def list_active_tenants() -> list[dict]:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    "SELECT tenant_id, tenant_name, industry_code, industry_name, config, created_at, updated_at "
+                    "SELECT tenant_id, tenant_name, industry_code, industry_name, config, user_id, user_name, created_at, updated_at "
                     "FROM tenant_registries WHERE status = 1 "
                     "ORDER BY created_at DESC"
                 )
@@ -41,7 +41,7 @@ async def list_active_tenants() -> list[dict]:
         raise AppError("查询企业列表失败") from e
 
 
-async def get_tenant_config_row(tenant_id: str) -> dict | None:
+async def get_tenant_config(tenant_id: str) -> dict | None:
     try:
         async with get_conn() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -61,6 +61,8 @@ async def upsert_tenant(
     industry_code: str | None,
     industry_name: str | None,
     config: dict,
+    user_id: str | None = None,
+    user_name: str | None = None,
 ) -> None:
     try:
         async with get_conn() as conn:
@@ -68,8 +70,8 @@ async def upsert_tenant(
                 await cur.execute(
                     "INSERT INTO tenant_registries "
                     "(tenant_id, tenant_name, api_base_url, auth_type, auth_credential, "
-                    "industry_code, industry_name, status, config) "
-                    "VALUES (%s, %s, %s, 'token', 'pending', %s, %s, 1, %s::jsonb) "
+                    "industry_code, industry_name, status, config, user_id, user_name) "
+                    "VALUES (%s, %s, %s, 'token', 'pending', %s, %s, 1, %s::jsonb, %s, %s) "
                     "ON CONFLICT (tenant_id) DO UPDATE SET "
                     "tenant_name = EXCLUDED.tenant_name, "
                     "api_base_url = EXCLUDED.api_base_url, "
@@ -77,6 +79,8 @@ async def upsert_tenant(
                     "industry_name = COALESCE(EXCLUDED.industry_name, tenant_registries.industry_name), "
                     "status = 1, "
                     "config = EXCLUDED.config, "
+                    "user_id = COALESCE(EXCLUDED.user_id, tenant_registries.user_id), "
+                    "user_name = COALESCE(EXCLUDED.user_name, tenant_registries.user_name), "
                     "updated_at = NOW()",
                     (
                         tenant_id,
@@ -85,6 +89,8 @@ async def upsert_tenant(
                         industry_code,
                         industry_name,
                         json.dumps(config, ensure_ascii=False),
+                        user_id,
+                        user_name,
                     ),
                 )
             await conn.commit()

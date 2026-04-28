@@ -3,6 +3,11 @@ from __future__ import annotations
 import asyncio
 
 from arq.connections import RedisSettings
+
+from src.core.logging_setup import setup_logging
+
+# Worker 进程同样需要初始化日志，否则推送日志不会落盘
+setup_logging("ops-brain")
 from urllib.parse import urlparse
 
 from src.runtime.running_tasks import running_tasks

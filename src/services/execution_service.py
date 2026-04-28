@@ -99,6 +99,7 @@ def task_row_to_dict(row: dict, *, include_plan_meta: bool = False) -> dict:
         "progress": _task_progress_percent(task_status, related),
         "assigned_to": recipient,
         "recipient": recipient,
+        "assignee_user_name": row.get("assignee_user_name"),
         "dispatch_status": _dispatch_status_from_related(related),
         "dispatch_time": serialize_instant_cn(row["created_at"]) if row.get("created_at") else None,
     }

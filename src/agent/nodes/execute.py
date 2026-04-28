@@ -10,6 +10,7 @@ from src.core.config import CN_TZ, get_settings
 from src.repositories.push_log import save_push_log
 from src.repositories.exec_task import patch_related_resources, save_exec_tasks, update_task_status
 from src.repositories.pending_review import save_pending_review
+from src.repositories.tenant_registry import get_tenant_row
 from src.agent.progress import emit_progress
 from src.biz.client import tenant_client
 from src.core.indicator_push_rules import INDICATOR_PUSH_RULES
@@ -24,18 +25,23 @@ logger = logging.getLogger(__name__)
 RULE_PLAN_ID = "rule_5.2.3"
 
 
-def _needs_approval(plan: dict) -> bool:
-    if plan.get("priority_level") != "high":
-        return False
-    return bool(plan.get("auto_actions"))
-
-
-async def _send_task_notifications(tenant_id: str, store_id: str, tasks: list[dict]):
+async def _send_task_notifications(tenant_id: str, store_id: str, tasks: list[dict], thread_id: str = ""):
     notifiable = [t for t in tasks if t.get("assignee_user_id")]
     if not notifiable:
         return
     tc = tenant_client(tenant_id)
-    await tc.send_task_assignment_notification(tenant_id=tenant_id, store_id=store_id, tasks=notifiable)
+    result = await tc.send_task_assignment_notification(tenant_id=tenant_id, store_id=store_id, tasks=notifiable)
+    task_names = [t.get("task_name", "") for t in notifiable]
+    await save_push_log(
+        thread_id,
+        tenant_id,
+        store_id,
+        "message",
+        "ai_task_assignment",
+        f"新任务分配通知（{len(notifiable)} 条）",
+        f"已向执行人推送任务分配通知：{'、'.join(task_names[:5])}",
+        {"task_count": len(notifiable), "task_names": task_names, "sent_count": result.get("sent_count", 0)},
+    )
 
 
 async def _batch_push_tasks(
@@ -95,8 +101,11 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
     store_id = state["store_id"]
     all_tasks: list[dict] = []
 
+    tenant_row = await get_tenant_row(tenant_id)
+    registry_user_id = (tenant_row or {}).get("user_id")
+    registry_user_name = (tenant_row or {}).get("user_name")
+
     tc = tenant_client(tenant_id)
-    dept_info = await tc.get_dept_structure(tenant_id=tenant_id, store_id=store_id)
 
     # ── 5.2.3 按异常指标补全规定动作 ──
     anomalies = state.get("anomalies") or []
@@ -120,7 +129,13 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
         rule = INDICATOR_PUSH_RULES.get(ind) if ind else None
         if not rule or not rule.get("tasks"):
             continue
-        for t in build_tasks_from_rule_specs(rule["tasks"], dept_info, ind):
+        for t in build_tasks_from_rule_specs(
+            rule["tasks"],
+            {},
+            ind,
+            override_assignee_user_id=str(registry_user_id) if registry_user_id else None,
+            override_assignee_user_name=registry_user_name if registry_user_id else None,
+        ):
             name = t.get("task_name", "")
             if name and name not in seen_task_name:
                 seen_task_name.add(name)
@@ -139,7 +154,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
             rule_failed_names.extend([n for n, _ in fails])
         if rule_created:
             emit_progress(state, f"已按规范推送 {len(rule_created)} 项指标动作任务")
-            await _send_task_notifications(tenant_id, store_id, rule_created)
+            await _send_task_notifications(tenant_id, store_id, rule_created, thread_id)
             await save_push_log(
                 thread_id,
                 tenant_id,
@@ -188,26 +203,27 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
                     seen_message_key.add(key)
                     await tc.send_customer_targeted_message(tenant_id=tenant_id, store_id=store_id, target_segment=msg_cfg.get("target_segment", ""), title=msg_cfg.get("title", "系统通知"), content=msg_cfg.get("content_tpl", ""), message_type=msg_cfg.get("type", "ai_targeted"))
                     emit_progress(state, f"已向目标人群推送: {msg_cfg.get('title', '系统通知')}")
+                    await save_push_log(
+                        state.get("thread_id", ""),
+                        tenant_id,
+                        store_id,
+                        "message",
+                        msg_cfg.get("type", "ai_targeted"),
+                        msg_cfg.get("title", "系统通知"),
+                        msg_cfg.get("content_tpl", ""),
+                        {"indicator": ind, "target_segment": msg_cfg.get("target_segment", "")},
+                    )
 
     # ── 逐方案执行：审批 / 任务创建 / 自动动作 ──
     for plan in adopted_plans:
         plan_name = plan.get("plan_name", "")
 
-        if _needs_approval(plan):
-            emit_progress(state, f"方案「{plan_name}」需审批，正在发起审批流程...")
-            approver_uid = None
-            for dept in dept_info.get("departments", []):
-                if "管理" in (dept.get("dept_name") or ""):
-                    users = dept.get("users", [])
-                    if users:
-                        approver_uid = users[0].get("userId", users[0].get("id"))
-                    break
-            if approver_uid:
-                await tc.create_approval_flow(tenant_id=tenant_id, store_id=store_id, plan_id=plan.get("plan_id", ""), title=f"AI诊断方案审批：{plan_name}", content=plan.get("description", ""), approver_user_id=approver_uid)
-                emit_progress(state, f"方案「{plan_name}」审批已发起")
-
         emit_progress(state, f"正在创建方案「{plan_name}」的执行任务...")
-        tasks = build_execution_tasks(plan, dept_info)
+        tasks = build_execution_tasks(
+            plan,
+            override_assignee_user_id=str(registry_user_id) if registry_user_id else None,
+            override_assignee_user_name=registry_user_name if registry_user_id else None,
+        )
 
         saved_task_ids = await save_exec_tasks(state.get("thread_id", ""), tenant_id, store_id, plan.get("plan_id", ""), tasks)
 
@@ -220,7 +236,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
         )
         all_tasks.extend(created)
         if created:
-            await _send_task_notifications(tenant_id, store_id, created)
+            await _send_task_notifications(tenant_id, store_id, created, state.get("thread_id", ""))
             await save_push_log(
                 state.get("thread_id", ""),
                 tenant_id,

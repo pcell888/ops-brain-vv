@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime, timedelta
 
 from src.core.config import CN_TZ
-from src.core.dept_resolver import resolve_dept_assignee, resolve_default_assignee
+
+logger = logging.getLogger(__name__)
 
 _DATE_PATTERNS = (
     re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})"),
@@ -140,16 +142,10 @@ def task_db_row_to_push_payload(row: dict) -> dict:
         deadline_at = None
     uid = row.get("assignee_user_id")
     if uid is not None:
-        try:
-            uid = int(uid)
-        except (TypeError, ValueError):
-            uid = None
+        uid = str(uid)
     did = row.get("assignee_dept_id")
     if did is not None and did != "":
-        try:
-            did = int(did)
-        except (TypeError, ValueError):
-            did = None
+        did = str(did)
     else:
         did = None
     pr = row.get("priority") or "medium"
@@ -159,6 +155,7 @@ def task_db_row_to_push_payload(row: dict) -> dict:
         "description": (row.get("description") or "")[:10000],
         "assignee_user_id": uid,
         "assignee_dept_id": did,
+        "assignee_user_name": row.get("assignee_user_name"),
         "deadline": row.get("deadline"),
         "deadline_at": deadline_at,
         "priority": str(pr)[:20],
@@ -168,31 +165,28 @@ def task_db_row_to_push_payload(row: dict) -> dict:
     return payload
 
 
-def build_tasks_from_rule_specs(specs: list[dict], dept_info: dict, indicator_code: str | None = None) -> list[dict]:
-    """从 5.2.3 规则任务规格列表构建 create_execution_tasks 所需的 tasks。"""
-    from src.core.exceptions import AppError
+def build_tasks_from_rule_specs(
+    specs: list[dict],
+    dept_info: dict,
+    indicator_code: str | None = None,
+    override_assignee_user_id: str | None = None,
+    override_assignee_user_name: str | None = None,
+) -> list[dict]:
+    """从 5.2.3 规则任务规格列表构建 create_execution_tasks 所需的 tasks。
 
+    当 override_assignee_user_id 提供时，所有任务直接使用该 assignee，不再从 dept_info 解析。
+    """
     tasks: list[dict] = []
-    default_uid, default_dept_id = resolve_default_assignee(dept_info)
 
     for s in specs:
-        uid, dept_id = resolve_dept_assignee(s.get("owner_dept", ""), dept_info)
-        if uid is None and default_uid is not None:
-            uid = default_uid
-            dept_id = default_dept_id
         impl = s.get("implementation_steps") or []
         impl_list = [str(x).strip() for x in impl if str(x).strip()][:30] if isinstance(impl, list) else []
         deadline_text, deadline_at = resolve_deadline_fields(s.get("timeline"))
 
         task_name = s.get("task_name", "优化任务")
-        if uid is None:
-            raise AppError(
-                f"无法获取执行人：规则任务「{task_name}」未找到可分配的负责人（owner_dept={s.get('owner_dept', '')}），"
-                "请检查部门信息是否包含有效用户。",
-                indicator_code=indicator_code,
-                task_name=task_name,
-                owner_dept=s.get("owner_dept", ""),
-            )
+
+        uid = override_assignee_user_id
+        dept_id = None
 
         description_parts = []
         if indicator_code:
@@ -213,6 +207,7 @@ def build_tasks_from_rule_specs(specs: list[dict], dept_info: dict, indicator_co
             "description": " ".join(description_parts),
             "assignee_user_id": uid,
             "assignee_dept_id": dept_id,
+            "assignee_user_name": override_assignee_user_name if override_assignee_user_id is not None else None,
             "deadline": deadline_text,
             "deadline_at": deadline_at,
             "priority": priority,
@@ -228,30 +223,20 @@ def build_tasks_from_rule_specs(specs: list[dict], dept_info: dict, indicator_co
     return tasks
 
 
-def build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
-    """根据方案步骤和部门信息构建执行任务列表。"""
-    from src.core.exceptions import AppError
+def build_execution_tasks(
+    plan: dict,
+    dept_info: dict | None = None,
+    override_assignee_user_id: str | None = None,
+    override_assignee_user_name: str | None = None,
+) -> list[dict]:
+    """根据方案步骤构建执行任务列表。
 
+    当 override_assignee_user_id 提供时，所有任务直接使用该 assignee，不再从 dept_info 解析。
+    """
     tasks: list[dict] = []
-    default_uid, default_dept_id = resolve_default_assignee(dept_info)
 
     for step in plan.get("steps", []):
-        owner_dept = (step.get("owner_dept") or "").strip()
-        assignee_user_id, assignee_dept_id = resolve_dept_assignee(owner_dept, dept_info)
-        if assignee_user_id is None and default_uid is not None:
-            assignee_user_id = default_uid
-            assignee_dept_id = default_dept_id
-
         action = step.get("action", plan.get("plan_name", ""))
-        if assignee_user_id is None:
-            raise AppError(
-                f"无法获取执行人：任务「{action}」未找到可分配的负责人（owner_dept={owner_dept}），"
-                "请检查部门信息是否包含有效用户。",
-                plan_id=plan.get("plan_id"),
-                step_action=action,
-                owner_dept=owner_dept,
-            )
-
         data_ctx = step.get("data_context", "")
         desc_parts = [f"[{plan.get('plan_name', '')}]"]
         if data_ctx:
@@ -263,8 +248,9 @@ def build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
         tdict = {
             "task_name": action,
             "description": " ".join(desc_parts),
-            "assignee_user_id": assignee_user_id,
-            "assignee_dept_id": assignee_dept_id,
+            "assignee_user_id": override_assignee_user_id,
+            "assignee_dept_id": None,
+            "assignee_user_name": override_assignee_user_name,
             "deadline": deadline_text,
             "deadline_at": deadline_at,
             "priority": plan.get("priority_level", "medium"),
@@ -278,19 +264,12 @@ def build_execution_tasks(plan: dict, dept_info: dict) -> list[dict]:
         tasks.append(tdict)
 
     if not tasks:
-        assignee_user_id = default_uid
-        assignee_dept_id = default_dept_id
-        if assignee_user_id is None:
-            raise AppError(
-                f"无法获取执行人：方案「{plan.get('plan_name', '')}」无可分配的负责人，请检查部门信息是否包含有效用户。",
-                plan_id=plan.get("plan_id"),
-                plan_name=plan.get("plan_name"),
-            )
         tdict = {
             "task_name": plan.get("plan_name", "优化任务"),
             "description": plan.get("description", ""),
-            "assignee_user_id": assignee_user_id,
-            "assignee_dept_id": assignee_dept_id,
+            "assignee_user_id": override_assignee_user_id,
+            "assignee_dept_id": None,
+            "assignee_user_name": override_assignee_user_name,
             "deadline": None,
             "deadline_at": None,
             "priority": plan.get("priority_level", "medium"),

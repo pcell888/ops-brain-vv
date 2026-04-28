@@ -255,7 +255,7 @@ class RealTenantClient(TenantClient):
     async def has_create_task_permission(
         self,
         tenant_id: str,
-        user_id: int,
+        user_id: str,
     ) -> dict[str, Any]:
         await self._ensure()
         data = await self._http.get("/ai-diagnosis/hasCreateTaskPermission", params={"userId": user_id})

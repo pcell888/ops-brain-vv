@@ -64,7 +64,7 @@ export default function ExecutionTaskDetailPage() {
             <span className="text-[#303133] font-medium">{data.name || '—'}</span>
           </Descriptions.Item>
           <Descriptions.Item label="接收者">
-            {data.recipient || data.assigned_to || '—'}
+            {data.assignee_user_name || data.recipient || data.assigned_to || '—'}
           </Descriptions.Item>
           <Descriptions.Item label="派发时间">
             {data.dispatch_time || data.scheduled_start

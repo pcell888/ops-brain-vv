@@ -69,7 +69,7 @@ class TenantClient(ABC):
     async def has_create_task_permission(
         self,
         tenant_id: str,
-        user_id: int,
+        user_id: str,
     ) -> dict[str, Any]:
         ...
 

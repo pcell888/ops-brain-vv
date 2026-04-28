@@ -9,8 +9,10 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from src.api.deps import manager, progress_cache, running_tasks
 from src.repositories.diagnosis_session import update_session_state
+from src.repositories.tenant_registry import get_tenant_row
 from src.runtime.task_runner import get_graph_state_values
 from src.core.diagnosis_errors import public_diagnosis_error_message
+from src.biz.client import tenant_client
 from src.worker.arq_queue import enqueue_adoption_job
 from src.services import async_job_service
 from src.runtime.thread_enterprise import get_thread_enterprise
@@ -282,6 +284,23 @@ async def ws_diagnosis(websocket: WebSocket, thread_id: str):
                             },
                         )
                         continue
+                    try:
+                        tenant_row = await get_tenant_row(tenant_id)
+                        reg_user_id = (tenant_row or {}).get("user_id")
+                        if reg_user_id:
+                            tc = tenant_client(tenant_id)
+                            perm = await tc.has_create_task_permission(tenant_id=tenant_id, user_id=reg_user_id)
+                            if not perm.get("has_permission"):
+                                await manager.send_progress(
+                                    thread_id,
+                                    {
+                                        "type": "error",
+                                        "message": "请联系业务系统管理员赋予您创建任务的权限",
+                                    },
+                                )
+                                continue
+                    except Exception as e:
+                        logger.warning("WS 采纳权限检查失败 tenant_id=%s: %s", tenant_id, e)
                     job_id = await enqueue_adoption_job(thread_id=thread_id)
                     await async_job_service.register_enqueued_job(
                         job_id=job_id,

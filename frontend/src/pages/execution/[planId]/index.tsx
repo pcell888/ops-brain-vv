@@ -53,7 +53,7 @@ export default function ExecutionDetailPage() {
       key: 'recipient',
       width: 120,
       render: (_: string, record) => (
-        <span className="text-gray-300 text-sm">{record.recipient || record.assigned_to || '—'}</span>
+        <span className="text-gray-300 text-sm">{record.assignee_user_name || record.recipient || record.assigned_to || '—'}</span>
       ),
     },
     {

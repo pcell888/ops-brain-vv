@@ -56,7 +56,7 @@ export default function ExecutionPage() {
       key: 'recipient',
       width: 120,
       render: (_: string, record) => (
-        <span className="text-secondary text-sm">{record.recipient || record.assigned_to || '—'}</span>
+        <span className="text-secondary text-sm">{record.assignee_user_name || record.recipient || record.assigned_to || '—'}</span>
       ),
     },
     {

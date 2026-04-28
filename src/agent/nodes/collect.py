@@ -72,6 +72,12 @@ async def collect_data_node(state: DiagnosisState) -> dict:
         emit_progress(state, f"已采集{label}数据（{_done_calls[0]}/{total_calls}）", percent=cur)
         return result
 
+    logger.info(
+        "[采集] 企业画像: 请求中 tenant=%s raw_store=%s effective_store_id=%s",
+        tenant_id,
+        raw_store,
+        store_id or "(全企业/列表)",
+    )
     profile_task = _wrap_with_progress(
         tc.get_store_profile(tenant_id, store_id, auth_token=auth_token),
         "企业画像",
@@ -102,6 +108,13 @@ async def collect_data_node(state: DiagnosisState) -> dict:
 
     if not isinstance(profile, dict):
         profile = {}
+    logger.info(
+        "[采集] 企业画像: 完成 tenant=%s store_name=%r industry_code=%r business_mode=%s",
+        tenant_id,
+        profile.get("store_name"),
+        profile.get("industry_code"),
+        profile.get("business_mode"),
+    )
     dim_results: dict[str, object] = {}
     for dim in ordered_dims:
         v = dim_raw_results.get(dim)

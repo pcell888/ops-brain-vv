@@ -268,6 +268,7 @@ export const diagnosisApi = {
     days?: number;
     page?: number;
     page_size?: number;
+    diagnosis_id?: string;
   }) => api.get(`/diagnosis/drill-down/${metricName}`, { params }),
 };
 

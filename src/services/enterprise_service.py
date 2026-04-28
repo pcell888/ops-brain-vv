@@ -13,6 +13,7 @@ from src.core.datetime_cn import serialize_instant_cn
 from src.core.redis_client import get_redis
 from src.biz.platform_client import PlatformAPIError, platform_client
 from src.biz.router import TenantNotFoundError
+from src.biz.http_client import HTTPClientError
 from src.core.tenant_config import (
     CONFIG_DEFAULTS,
     normalize_diagnosis_trigger_mode,
@@ -22,7 +23,7 @@ from src.core.tenant_config import (
 from src.repositories.tenant_registry import (
     get_tenant_row,
     list_active_tenants,
-    get_tenant_config_row,
+    get_tenant_config,
     upsert_tenant,
 )
 
@@ -44,6 +45,8 @@ class SyncEnterpriseBody(BaseModel):
     industry: str | None = Field(default=None, max_length=64)
     scale: str | None = Field(default=None, pattern=r"^(small|medium|large|enterprise)$")
     team_size: int | None = Field(default=None, ge=1, le=100000)
+    user_id: str | None = Field(default=None, max_length=64, description="登录用户ID")
+    user_name: str | None = Field(default=None, max_length=128, description="登录用户名称")
 
 
 def _row_to_enterprise(tnt: dict) -> dict:
@@ -59,6 +62,8 @@ def _row_to_enterprise(tnt: dict) -> dict:
         "industry_name": tnt.get("industry_name"),
         "scale": normalized_config.get("scale"),
         "team_size": normalized_config.get("team_size"),
+        "user_id": tnt.get("user_id"),
+        "user_name": tnt.get("user_name"),
         "config": {
             "analysis_period_days": normalized_config.get("analysis_period_days", 30),
             "auto_diagnosis_frequency": _trigger_mode_to_frequency(
@@ -147,28 +152,6 @@ def _platform_enterprise_fields(payload: dict, fallback_name: str) -> dict:
     }
 
 
-async def _fetch_project_info_for_sync(enterprise_id: str, auth_override: str | None) -> dict:
-    params = {"projectId": enterprise_id}
-    ov = (auth_override or "").strip()
-    if ov:
-        return await platform_client.get(
-            "ai/customer/projectInfo",
-            params,
-            auth_authorization_override=ov,
-        )
-    try:
-        return await platform_client.get(
-            "ai/customer/projectInfo",
-            params,
-            auth_tenant_id=enterprise_id,
-        )
-    except TenantNotFoundError:
-        raise EnterpriseServiceError(
-            401,
-            "租户尚未入库，请携带 Authorization 请求中台以完成首次同步",
-        ) from None
-
-
 async def _invalidate_tenant_cache(tenant_id: str) -> None:
     settings = get_settings()
     if settings.tenant_cache_ttl <= 0:
@@ -200,19 +183,21 @@ async def get_enterprise(enterprise_id: str) -> dict:
 async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody, auth_override: str | None) -> dict:
     created = False
     try:
-        raw_info = await _fetch_project_info_for_sync(enterprise_id, auth_override)
+        raw_info = await platform_client.get_project_enterprise_info(enterprise_id, auth_override)
         pf = _platform_enterprise_fields(raw_info, body.name)
-    except EnterpriseServiceError:
+    except TenantNotFoundError:
         raise
     except ValueError as e:
         raise EnterpriseServiceError(400, str(e)) from e
     except PlatformAPIError as e:
-        raise EnterpriseServiceError(502, f"中台请求失败: {e.message}") from e
+        raise EnterpriseServiceError(e.status_code, e.message) from e
+    except HTTPClientError as e:
+        raise EnterpriseServiceError(e.status_code, str(e)) from e
     except asyncio.TimeoutError as e:
         raise EnterpriseServiceError(504, "中台请求超时，请稍后重试") from e
     except Exception as e:
-        logger.exception("同步企业失败 enterprise_id=%s", enterprise_id)
-        raise EnterpriseServiceError(500, "同步企业失败，请稍后重试") from e
+        logger.exception("调用中台接口失败 enterprise_id=%s", enterprise_id)
+        raise EnterpriseServiceError(500, "调用中台接口失败，请稍后重试") from e
 
     tenant_name = pf["tenant_name"]
     api_base_url = pf["api_base_url"]
@@ -220,7 +205,7 @@ async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody, auth_ove
     industry_name = pf["industry_name"]
 
     try:
-        config_row = await get_tenant_config_row(enterprise_id)
+        config_row = await get_tenant_config(enterprise_id)
         config = _merge_sync_config(config_row.get("config") if config_row else None, body)
         created = not config_row
         await upsert_tenant(
@@ -230,14 +215,22 @@ async def sync_enterprise(enterprise_id: str, body: SyncEnterpriseBody, auth_ove
             industry_code,
             industry_name,
             config,
+            user_id=body.user_id,
+            user_name=body.user_name,
         )
+    except (json.JSONDecodeError, ValueError) as e:
+        raise EnterpriseServiceError(400, f"企业配置数据格式错误: {e}") from e
     except Exception as e:
-        logger.exception("同步企业失败 enterprise_id=%s", enterprise_id)
-        raise EnterpriseServiceError(500, "同步企业失败，请稍后重试") from e
+        logger.exception("保存企业数据失败 enterprise_id=%s", enterprise_id)
+        raise EnterpriseServiceError(500, "保存企业数据失败，请稍后重试") from e
 
     await _invalidate_tenant_cache(enterprise_id)
 
-    updated_row = await get_tenant_row(enterprise_id)
+    try:
+        updated_row = await get_tenant_row(enterprise_id)
+    except Exception as e:
+        logger.exception("同步企业后读取结果失败 enterprise_id=%s", enterprise_id)
+        raise EnterpriseServiceError(500, "同步企业后读取结果失败") from e
     if not updated_row:
         raise EnterpriseServiceError(500, "同步企业后读取结果失败")
     return {"enterprise": _row_to_enterprise(updated_row), "created": created}

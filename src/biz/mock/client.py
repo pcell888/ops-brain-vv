@@ -164,7 +164,7 @@ class MockTenantClient(TenantClient):
     async def has_create_task_permission(
         self,
         tenant_id: str,
-        user_id: int,
+        user_id: str,
     ) -> dict[str, Any]:
         data = await _dispatch("GET", "ai-diagnosis/hasCreateTaskPermission", {"userId": user_id})
         raw = data.get("hasPermission", data.get("has_permission", data.get("data", data)))
