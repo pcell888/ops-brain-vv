@@ -12,43 +12,28 @@ logger = logging.getLogger(__name__)
 
 async def send_diagnosis_report_notification(
     tenant_id: str,
-    store_id: str,
-    admin_account_ids: list[str],
-    report_summary: dict,
+    aid: str,
+    title: str,
+    content: str,
+    notify_type: str,
 ) -> dict:
-    _ = store_id
     logger.info(
-        "Tool called: send_diagnosis_report_notification tenant=%s store=%s admin_count=%d",
+        "Tool called: send_diagnosis_report_notification tenant=%s aid=%s",
         tenant_id,
-        store_id,
-        len(admin_account_ids),
+        aid,
     )
-    health_score = report_summary.get("health_score", 0)
-    anomaly_count = report_summary.get("anomaly_count", 0)
-    top_anomaly = report_summary.get("top_anomaly", "")
-    notify_type = report_summary.get("notification_type", "diag_reports")
-    diagnosis_time = report_summary.get("diagnosis_time", "")
-    analysis_period = report_summary.get("analysis_period_days", 30)
-    is_weekly = notify_type == "ai_weekly_digest"
-    title = f"{'【周度】' if is_weekly else ''}AI诊断报告已生成 — 健康度 {health_score:.1f}分"
-    content = f"诊断时间: {diagnosis_time} | 近{analysis_period}天 | 共发现 {anomaly_count} 项异常指标。"
-    if top_anomaly:
-        content += f"最突出问题：{top_anomaly}。"
-    content += "详情请到APP/后台查看"
+    if not aid:
+        return {"sent_count": 0, "status": "no_admin"}
     messages = [
         {
             "accountId": aid,
             "title": title,
             "content": content,
             "type": notify_type,
-            "jumpUrl": report_summary.get("report_url", ""),
         }
-        for aid in admin_account_ids
     ]
-    if not messages:
-        return {"sent_count": 0, "status": "no_admin"}
     data = task_message_coupon.message_batch_create({"messages": messages})
-    return {"sent_count": len(messages), "status": "sent", **data}
+    return {"sent_count": 1, "status": "sent", **data}
 
 
 async def send_task_reminder(
@@ -182,11 +167,30 @@ async def send_task_assignment_notification(
             continue
         task_name = t.get("task_name", "")
         deadline = t.get("deadline", "")
+        description = (t.get("description") or "")[:500]
+        rr = t.get("related_resources")
+        if isinstance(rr, str):
+            try:
+                import json
+                rr = json.loads(rr)
+            except Exception:
+                rr = {}
+        elif not isinstance(rr, dict):
+            rr = {}
+        acceptance = rr.get("acceptance_criteria") or []
+        content_parts = [f"您有一项新的AI诊断执行任务「{task_name}」，请在{deadline}前完成。"]
+        if description:
+            problem_lines = [line for line in description.split("\n") if line.startswith("问题：")]
+            if problem_lines:
+                content_parts.append(problem_lines[0])
+        if acceptance:
+            content_parts.append(f"验收标准：{'、'.join(acceptance)}")
+        content = " | ".join(content_parts)
         messages.append(
             {
                 "accountId": str(account_id),
                 "title": f"新任务分配：{task_name}",
-                "content": f"您有一项新的AI诊断执行任务「{task_name}」，请在{deadline}前完成。",
+                "content": content,
                 "type": "ai_task_assignment",
                 "bizId": t.get("task_id", ""),
             }

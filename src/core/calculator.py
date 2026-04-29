@@ -98,6 +98,14 @@ DRILL_FIELD_LABELS: dict[str, str] = {
 }
 
 
+def _fmt_anomaly_desc(name: str, cur: float, unit: str, avg: float, deviation_pct: float) -> str:
+    abs_gap = round(abs(cur - avg), 1)
+    direction = "低于" if deviation_pct < 0 else "高于"
+    if unit == "%":
+        return f"{name} {cur}%，{direction}均值 {avg}% {abs_gap}个百分点"
+    return f"{name} {cur}{unit}，{direction}均值 {avg}{unit} {abs_gap}{unit}"
+
+
 def camel_to_snake(name: str) -> str:
     """将 camelCase / PascalCase 转为 snake_case（与 Java/JavaScript 常见 JSON 字段兼容）。"""
     if not name:
@@ -321,7 +329,7 @@ def calculate_dimension_score(
                 "benchmark_excellent": round(excellent_val, 2),
                 "deviation_pct": round(deviation_pct, 2),
                 "severity": severity,
-                "description": f"{meta['name']}为{current_value}{meta['unit']}，低于行业均值{avg_val}{meta['unit']} ({abs(deviation_pct):.1f}%)",
+                "description": _fmt_anomaly_desc(meta["name"], current_value, meta["unit"], avg_val, deviation_pct),
             })
 
     final_score = total_score / count if count > 0 else 60.0

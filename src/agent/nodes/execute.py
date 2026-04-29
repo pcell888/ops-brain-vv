@@ -135,6 +135,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
             ind,
             override_assignee_user_id=str(registry_user_id) if registry_user_id else None,
             override_assignee_user_name=registry_user_name if registry_user_id else None,
+            anomalies=anomalies,
         ):
             name = t.get("task_name", "")
             if name and name not in seen_task_name:
@@ -223,6 +224,7 @@ async def execute_plans_node(state: DiagnosisState) -> dict:
             plan,
             override_assignee_user_id=str(registry_user_id) if registry_user_id else None,
             override_assignee_user_name=registry_user_name if registry_user_id else None,
+            anomalies=anomalies,
         )
 
         saved_task_ids = await save_exec_tasks(state.get("thread_id", ""), tenant_id, store_id, plan.get("plan_id", ""), tasks)

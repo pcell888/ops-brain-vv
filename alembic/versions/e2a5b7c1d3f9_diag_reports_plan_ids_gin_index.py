@@ -16,8 +16,17 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         """
-        CREATE INDEX IF NOT EXISTS ix_diag_reports_plan_ids
-            ON diag_reports USING GIN (plan_ids jsonb_path_ops)
+        DO $$
+        BEGIN
+            IF to_regclass('public.diag_reports') IS NOT NULL THEN
+                CREATE INDEX IF NOT EXISTS ix_diag_reports_plan_ids
+                    ON diag_reports USING GIN (plan_ids jsonb_path_ops);
+            ELSIF to_regclass('public.ai_diagnosis_report') IS NOT NULL THEN
+                CREATE INDEX IF NOT EXISTS ix_diag_reports_plan_ids
+                    ON ai_diagnosis_report USING GIN (plan_ids jsonb_path_ops);
+            END IF;
+        END
+        $$;
         """
     )
 

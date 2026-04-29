@@ -160,9 +160,10 @@ class TenantClient(ABC):
     async def send_diagnosis_report_notification(
         self,
         tenant_id: str,
-        store_id: str,
-        admin_account_ids: list[str],
-        report_summary: dict,
+        aid: str,
+        title: str,
+        content: str,
+        notify_type: str,
     ) -> dict[str, Any]:
         ...
 

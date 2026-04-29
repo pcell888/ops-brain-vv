@@ -33,6 +33,9 @@ from src.repositories.pending_review import (
     get_pending_review_by_thread,
 )
 from src.repositories.solution_knowledge import save_effective_plan
+from src.repositories.push_log import save_push_log
+from src.biz.client import tenant_client
+from src.agent.utils import get_admin_accounts as _get_admin_accounts
 from src.core.tracking_names import resolve_solution_name
 
 from src.services.tracking_error_service import LLMReviewReportError, TrackingServiceError
@@ -404,6 +407,60 @@ async def _complete_tracking_background(tracking_id: str) -> None:
             store_id=row["store_id"],
             report=report,
             created_at=now,
+        )
+
+        # 推送复盘报告通知到业务端（与 track_effects_node 保持一致）
+        achievement = float(report.get("overall_achievement_rate", 0) or 0)
+        improved = int(report.get("improved_indicator_count", 0) or 0)
+        total = int(report.get("total_tracked_indicators", 0) or 0)
+        solution_name = td_work.get("solution_name", "")
+        tracking_period = f"{td_work.get('started_at', '')[:10]}~{now.isoformat()[:10]}"
+        review_summary = {
+            "overall_achievement": achievement,
+            "improved_count": improved,
+            "total_indicators": total,
+            "solution_name": solution_name,
+            "report_time": now.isoformat(),
+            "tracking_period": tracking_period,
+        }
+        try:
+            admin_accounts = await _get_admin_accounts(
+                None,
+                tenant_id=row["tenant_id"],
+            )
+            if admin_accounts:
+                tc = tenant_client(row["tenant_id"])
+                await tc.send_review_report_notification(
+                    tenant_id=row["tenant_id"],
+                    store_id=row["store_id"],
+                    admin_account_ids=admin_accounts,
+                    thread_id=tracking_id,
+                    review_summary=review_summary,
+                )
+                logger.info("复盘报告通知已发送 thread=%s, 接收数=%d", tracking_id, len(admin_accounts))
+            else:
+                logger.warning("复盘报告通知未发送：无管理员账号 thread=%s", tracking_id)
+        except Exception as e:
+            logger.warning("发送复盘报告通知失败 thread=%s: %s", tracking_id, e)
+
+        push_title = f"方案复盘完成 — 达成率 {achievement:.0f}%"
+        push_parts = []
+        if solution_name:
+            push_parts.append(f"方案: {solution_name}")
+        push_parts.append(f"追踪区间: {tracking_period}")
+        push_parts.append(f"达成率 {achievement:.0f}%（{improved}/{total} 项指标改善）")
+        push_parts.append(f"报告时间: {now.isoformat()}")
+        push_parts.append("报告详情请到【APP → AI智能诊断 → 效果追踪】中查看")
+        push_content = " | ".join(push_parts)
+        await save_push_log(
+            tracking_id,
+            row["tenant_id"],
+            row["store_id"],
+            "message",
+            "review_reports",
+            push_title,
+            push_content,
+            review_summary,
         )
 
         await send_thread_progress(tracking_id, {"type": "progress", "stage": "effect_track", "message": "正在沉淀有效方案…"})

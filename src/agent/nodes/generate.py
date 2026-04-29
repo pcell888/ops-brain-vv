@@ -49,20 +49,39 @@ def _anomaly_data_context_line(anomalies: list[dict], indicator_code: str) -> st
     for a in anomalies:
         if a.get("indicator_code") != indicator_code:
             continue
-        parts: list[str] = []
-        if a.get("indicator_name"):
-            parts.append(str(a["indicator_name"]))
-        if a.get("current_value") is not None:
-            u = a.get("unit") or ""
-            parts.append(f"当前值 {a['current_value']}{u}")
-        if a.get("benchmark_avg") is not None:
-            parts.append(f"行业均值 {a['benchmark_avg']}")
-        if a.get("deviation_pct") is not None:
-            parts.append(f"差距 {a['deviation_pct']}%")
-        if a.get("description"):
-            parts.append(str(a["description"]))
-        return "；".join(parts) if parts else f"指标 {indicator_code}"
+        name = a.get("indicator_name") or indicator_code
+        cur = a.get("current_value")
+        avg = a.get("benchmark_avg")
+        dev = a.get("deviation_pct")
+        u = a.get("unit") or ""
+        if cur is not None and avg is not None and dev is not None:
+            abs_gap = round(abs(cur - avg), 1)
+            direction = "偏低" if dev < 0 else "偏高"
+            if u == "%":
+                return f"{name} {cur}%（均值 {avg}%，{direction} {abs_gap}个百分点）"
+            return f"{name} {cur}{u}（均值 {avg}{u}，{direction} {abs_gap}{u}）"
+        if cur is not None:
+            return f"{name} {cur}{u}"
+        return f"指标 {indicator_code}"
     return f"指标 {indicator_code}"
+
+
+def _generate_acceptance_criteria(anomalies: list[dict], indicator_codes: list[str]) -> list[str]:
+    criteria: list[str] = []
+    for code in indicator_codes:
+        for a in anomalies:
+            if a.get("indicator_code") != code:
+                continue
+            name = a.get("indicator_name") or code
+            cur = a.get("current_value")
+            avg = a.get("benchmark_avg")
+            u = a.get("unit") or "%"
+            if cur is not None and avg is not None and cur < avg:
+                target = round(cur + (avg - cur) * 0.5, 1)
+                criteria.append(f"{name} ≥ {target}{u}")
+                break
+            break
+    return criteria[:5]
 
 
 def _mandatory_task_is_covered(plans: list[dict], task_name: str, owner_dept: str) -> bool:

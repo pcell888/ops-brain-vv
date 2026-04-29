@@ -21,6 +21,65 @@ _RELATIVE_HOUR_SEARCH = re.compile(r"(\d+)\s*(?:小时|小時|h|hr|hour|hours)(?
 _RELATIVE_DAY_SEARCH = re.compile(r"(\d+)\s*(?:天|day|days)(?:内)?", re.IGNORECASE)
 
 
+def _generate_acceptance_criteria(anomalies: list[dict], indicator_codes: list[str]) -> list[str]:
+    criteria: list[str] = []
+    for code in indicator_codes:
+        for a in anomalies:
+            if a.get("indicator_code") != code:
+                continue
+            name = a.get("indicator_name") or code
+            cur = a.get("current_value")
+            avg = a.get("benchmark_avg")
+            u = a.get("unit") or "%"
+            if cur is not None and avg is not None and cur < avg:
+                target = round(cur + (avg - cur) * 0.5, 1)
+                criteria.append(f"{name} ≥ {target}{u}")
+                break
+            break
+    return criteria[:5]
+
+
+def _criteria_for_indicator_codes(all_criteria: list[str], anomalies: list[dict], codes: list[str]) -> list[str]:
+    if not all_criteria or not codes:
+        return all_criteria
+    matched: list[str] = []
+    for code in codes:
+        for a in anomalies:
+            if a.get("indicator_code") != code:
+                continue
+            name = a.get("indicator_name") or code
+            u = a.get("unit") or "%"
+            cur = a.get("current_value")
+            avg = a.get("benchmark_avg")
+            if cur is not None and avg is not None and cur < avg:
+                target = round(cur + (avg - cur) * 0.5, 1)
+                matched.append(f"{name} ≥ {target}{u}")
+                break
+            break
+    return matched if matched else all_criteria
+
+
+def _rule_spec_data_context(anomalies: list[dict], indicator_code: str) -> str:
+    for a in anomalies:
+        if a.get("indicator_code") != indicator_code:
+            continue
+        name = a.get("indicator_name") or indicator_code
+        cur = a.get("current_value")
+        avg = a.get("benchmark_avg")
+        dev = a.get("deviation_pct")
+        u = a.get("unit") or ""
+        if cur is not None and avg is not None and dev is not None:
+            abs_gap = round(abs(cur - avg), 1)
+            direction = "偏低" if dev < 0 else "偏高"
+            if u == "%":
+                return f"{name} {cur}%（均值 {avg}%，{direction} {abs_gap}个百分点）"
+            return f"{name} {cur}{u}（均值 {avg}{u}，{direction} {abs_gap}{u}）"
+        if cur is not None:
+            return f"{name} {cur}{u}"
+        return ""
+    return ""
+
+
 def parse_deadline_date(value: object) -> datetime | None:
     """尽量从 deadline/timeline 文本中提取日期。"""
     if value is None:
@@ -171,12 +230,21 @@ def build_tasks_from_rule_specs(
     indicator_code: str | None = None,
     override_assignee_user_id: str | None = None,
     override_assignee_user_name: str | None = None,
+    anomalies: list[dict] | None = None,
 ) -> list[dict]:
     """从 5.2.3 规则任务规格列表构建 create_execution_tasks 所需的 tasks。
 
     当 override_assignee_user_id 提供时，所有任务直接使用该 assignee，不再从 dept_info 解析。
+
+    description 格式：任务先行，数据支撑，验收闭环：
+        【优先级】任务标题
+        负责人：部门 | 截止：时限
+        问题：数据依据（简洁版）
+        目标：实施步骤摘要
+        验收：可量化的达标标准
     """
     tasks: list[dict] = []
+    acceptance_criteria = _generate_acceptance_criteria(anomalies or [], [indicator_code] if indicator_code else [])
 
     for s in specs:
         impl = s.get("implementation_steps") or []
@@ -188,23 +256,39 @@ def build_tasks_from_rule_specs(
         uid = override_assignee_user_id
         dept_id = None
 
-        description_parts = []
-        if indicator_code:
-            description_parts.append(f"[{indicator_code}异常]")
-        description_parts.append(task_name)
-        if impl_list:
-            description_parts.append(f"关键步骤：{' → '.join(impl_list[:3])}")
-
         priority = "medium"
         if indicator_code:
             if indicator_code in ["refund_rate", "churn_rate"]:
                 priority = "high"
             elif indicator_code in ["lead_conversion_rate", "positive_review_rate"]:
                 priority = "medium"
+        urgency_prefix = {"high": "紧急", "medium": "重要", "low": "常规"}.get(priority, "重要")
+
+        owner_dept = s.get("owner_dept") or ""
+
+        description_lines = [f"【{urgency_prefix}】{task_name}"]
+        dept_deadline = []
+        if owner_dept:
+            dept_deadline.append(f"负责人：{owner_dept}")
+        if deadline_text:
+            dept_deadline.append(f"截止：{deadline_text}")
+        if dept_deadline:
+            description_lines.append(" | ".join(dept_deadline))
+        if indicator_code and anomalies:
+            data_ctx_line = _rule_spec_data_context(anomalies, indicator_code)
+            if data_ctx_line:
+                description_lines.append(f"问题：{data_ctx_line}")
+        if impl_list:
+            impl_summary = " → ".join(impl_list[:3])
+            description_lines.append(f"目标：{impl_summary}")
+        if acceptance_criteria:
+            description_lines.append(f"验收：{'、'.join(acceptance_criteria)}")
+
+        description = "\n".join(description_lines)
 
         tdict = {
             "task_name": task_name,
-            "description": " ".join(description_parts),
+            "description": description[:10000],
             "assignee_user_id": uid,
             "assignee_dept_id": dept_id,
             "assignee_user_name": override_assignee_user_name if override_assignee_user_id is not None else None,
@@ -216,6 +300,7 @@ def build_tasks_from_rule_specs(
                 "execution_type": "manual",
                 "dispatch_status": "pending",
                 "indicator_code": indicator_code,
+                "acceptance_criteria": acceptance_criteria,
             },
         }
         ensure_deadline_at(tdict)
@@ -228,36 +313,72 @@ def build_execution_tasks(
     dept_info: dict | None = None,
     override_assignee_user_id: str | None = None,
     override_assignee_user_name: str | None = None,
+    anomalies: list[dict] | None = None,
 ) -> list[dict]:
     """根据方案步骤构建执行任务列表。
 
     当 override_assignee_user_id 提供时，所有任务直接使用该 assignee，不再从 dept_info 解析。
+
+    description 格式：任务先行，数据支撑，验收闭环：
+        【优先级】任务标题
+        负责人：部门 | 截止：时限
+        问题：数据依据（简洁版）
+        目标：实施步骤摘要
+        验收：可量化的达标标准
     """
     tasks: list[dict] = []
+    target_codes = plan.get("target_indicators") or []
+    acceptance_criteria = _generate_acceptance_criteria(anomalies or [], target_codes)
 
     for step in plan.get("steps", []):
         action = step.get("action", plan.get("plan_name", ""))
         data_ctx = step.get("data_context", "")
-        desc_parts = [f"[{plan.get('plan_name', '')}]"]
-        if data_ctx:
-            desc_parts.append(f"【数据依据】{data_ctx}")
-        desc_parts.append(action)
         impl = step.get("implementation_steps") or []
         impl_list = [str(x).strip() for x in impl if str(x).strip()][:30] if isinstance(impl, list) else []
         deadline_text, deadline_at = resolve_deadline_fields(step.get("timeline"))
+
+        priority = plan.get("priority_level", "medium")
+        urgency_prefix = {"high": "紧急", "medium": "重要", "low": "常规"}.get(priority, "重要")
+
+        owner_dept = step.get("owner_dept") or ""
+
+        description_lines = [f"【{urgency_prefix}】{action}"]
+        dept_deadline = []
+        if owner_dept:
+            dept_deadline.append(f"负责人：{owner_dept}")
+        if deadline_text:
+            dept_deadline.append(f"截止：{deadline_text}")
+        if dept_deadline:
+            description_lines.append(" | ".join(dept_deadline))
+        if data_ctx:
+            description_lines.append(f"问题：{data_ctx}")
+        if impl_list:
+            impl_summary = " → ".join(impl_list[:3])
+            description_lines.append(f"目标：{impl_summary}")
+        criteria_for_step = _criteria_for_indicator_codes(
+            acceptance_criteria, anomalies or [], step.get("indicator_codes") or target_codes
+        )
+        if criteria_for_step:
+            description_lines.append(f"验收：{'、'.join(criteria_for_step)}")
+
+        description = "\n".join(description_lines)
+
         tdict = {
-            "task_name": action,
-            "description": " ".join(desc_parts),
+            "task_name": action[:500],
+            "description": description[:10000],
             "assignee_user_id": override_assignee_user_id,
             "assignee_dept_id": None,
             "assignee_user_name": override_assignee_user_name,
             "deadline": deadline_text,
             "deadline_at": deadline_at,
-            "priority": plan.get("priority_level", "medium"),
+            "priority": priority,
             "related_resources": {
                 "implementation_steps": impl_list,
                 "execution_type": "manual",
                 "dispatch_status": "pending",
+                "acceptance_criteria": acceptance_criteria,
+                "indicator_codes": target_codes,
+                "plan_name": plan.get("plan_name", ""),
             },
         }
         ensure_deadline_at(tdict)
@@ -277,6 +398,9 @@ def build_execution_tasks(
                 "implementation_steps": [],
                 "execution_type": "manual",
                 "dispatch_status": "pending",
+                "acceptance_criteria": acceptance_criteria,
+                "indicator_codes": target_codes,
+                "plan_name": plan.get("plan_name", ""),
             },
         }
         ensure_deadline_at(tdict)

@@ -315,12 +315,6 @@ async def diagnose_node(state: DiagnosisState, config: Any = None) -> dict:
             admin_account_ids,
             health_score,
         )
-        await tc.send_diagnosis_report_notification(
-            tenant_id=state["tenant_id"],
-            store_id=state["store_id"],
-            admin_account_ids=admin_account_ids,
-            report_summary=report_summary,
-        )
         notify_type = report_summary.get("notification_type", "diag_reports")
         scope_tag = f"【{scope_label}】"
         title = f"{'【周度】' if notify_type == 'ai_weekly_digest' else ''}{scope_tag}AI诊断报告已生成 — 健康度 {health_score:.1f}分"
@@ -330,6 +324,14 @@ async def diagnose_node(state: DiagnosisState, config: Any = None) -> dict:
         if report_summary.get("top_anomaly"):
             content += f"最突出问题：{report_summary.get('top_anomaly')}。"
         content += "详情请到APP/后台查看"
+        for aid in admin_account_ids:
+            await tc.send_diagnosis_report_notification(
+                tenant_id=state["tenant_id"],
+                aid=aid,
+                title=title,
+                content=content,
+                notify_type=notify_type,
+            )
         await save_push_log(
             state.get("thread_id", ""),
             state["tenant_id"],

@@ -77,10 +77,15 @@ def _extract_plan_name_from_desc(desc: object) -> str | None:
     if not text:
         return None
     m = re.match(r"^\[(.+?)\]", text)
-    if not m:
-        return None
-    name = m.group(1).strip()
-    return name or None
+    if m:
+        name = m.group(1).strip()
+        return name or None
+    lines = text.split("\n")
+    first_line = lines[0].strip() if lines else ""
+    um = re.match(r"^【(?:紧急|重要|常规)】(.+)$", first_line)
+    if um:
+        return um.group(1).strip() or None
+    return first_line[:80] or None
 
 
 async def _get_diagnosis_health_score(thread_id: str) -> float | None:

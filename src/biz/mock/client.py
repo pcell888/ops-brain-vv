@@ -312,12 +312,13 @@ class MockTenantClient(TenantClient):
     async def send_diagnosis_report_notification(
         self,
         tenant_id: str,
-        store_id: str = "",
-        admin_account_ids: list | None = None,
-        report_summary: dict | None = None,
+        aid: str = "",
+        title: str = "",
+        content: str = "",
+        notify_type: str = "diag_reports",
     ) -> dict[str, Any]:
         from src.biz.mock.mock_notify import send_diagnosis_report_notification as _mock_notify
-        return await _mock_notify(tenant_id, store_id, admin_account_ids or [], report_summary or {})
+        return await _mock_notify(tenant_id, aid, title, content, notify_type)
 
     async def send_task_reminder(
         self,
