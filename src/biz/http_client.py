@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any
@@ -12,6 +13,7 @@ import httpx
 from src.core.tracing import get_tracer
 
 logger = logging.getLogger(__name__)
+mcp_logger = logging.getLogger("mcp_servers")
 tracer = get_tracer("biz_http")
 
 
@@ -129,6 +131,14 @@ class HTTPClient:
                         resp_text = resp.text[:2000] if resp.text else ""
                         resp_json = {"_raw": resp_text}
                     
+                    mcp_logger.info(
+                        "method=%s url=%s request=%s response=%s elapsed=%.3f",
+                        method,
+                        req_url,
+                        json.dumps(req_body, ensure_ascii=False, default=str),
+                        json.dumps(resp_json, ensure_ascii=False, default=str),
+                        elapsed,
+                    )
                     logger.info(
                         "[BIZ_HTTP] %s %s | params=%s | body=%s | response=%s | elapsed=%.2fs",
                         method,

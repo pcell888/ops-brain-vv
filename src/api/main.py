@@ -15,7 +15,7 @@ from src.api.routes import diagnosis, review, ws, solutions, enterprise, dimensi
 from src.api.token_sync import sync_request_tokens_dependency
 from src.core.db_pool import open_pool, close_pool
 from src.core.db_init import run_alembic_upgrade
-from src.core.logging_setup import setup_logging
+from src.core.logging_setup import setup_logging, setup_mcp_logging
 from src.core.config import log_diagnosis_service_config
 from src.scheduler.weekly_diagnosis import start_scheduler
 from src.worker.reconcile import reconcile_pending_jobs
@@ -23,6 +23,7 @@ from src.worker.reconcile import reconcile_pending_jobs
 logger = logging.getLogger(__name__)
 
 setup_logging("ops-brain")
+setup_mcp_logging()
 log_diagnosis_service_config(logger, prefix="ops-brain 启动")
 
 

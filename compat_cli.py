@@ -17,7 +17,7 @@ from rich.table import Table
 from rich.text import Text
 
 console = Console()
-DEFAULT_BASE = "http://127.0.0.1:8100"
+DEFAULT_BASE = "http://127.0.0.1:38000"
 API_PREFIX = "/api/v1"
 FINAL_TYPES = ("completed", "failed", "error")
 
@@ -107,9 +107,7 @@ async def check_benchmark_dimensions(base_url: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-async def start_diagnosis(
-    base_url: str, enterprise_id: str, store_id: str = ""
-) -> tuple[bool, str, dict | None]:
+async def start_diagnosis(base_url: str, enterprise_id: str, store_id: str = "") -> tuple[bool, str, dict | None]:
     url = base_url.rstrip("/") + f"{API_PREFIX}/diagnosis/start"
     body = {
         "enterprise_id": enterprise_id,
@@ -617,7 +615,9 @@ def print_execution_task_list(diagnosis_id: str, data: dict) -> None:
     if not items:
         console.print(Text(f"诊断 {diagnosis_id} 无执行任务。", style="yellow"))
         return
-    t = Table(title=f"执行任务列表（diagnosis_id={diagnosis_id}, total={total}）", show_header=True, header_style="bold")
+    t = Table(
+        title=f"执行任务列表（diagnosis_id={diagnosis_id}, total={total}）", show_header=True, header_style="bold"
+    )
     t.add_column("序号", style="magenta")
     t.add_column("task_id", style="cyan")
     t.add_column("任务名", style="white")
@@ -644,7 +644,9 @@ def print_tracking_list(diagnosis_id: str, data: dict) -> None:
     if not items:
         console.print(Text(f"诊断 {diagnosis_id} 无效果追踪记录。", style="yellow"))
         return
-    t = Table(title=f"效果追踪列表（diagnosis_id={diagnosis_id}, total={total}）", show_header=True, header_style="bold")
+    t = Table(
+        title=f"效果追踪列表（diagnosis_id={diagnosis_id}, total={total}）", show_header=True, header_style="bold"
+    )
     t.add_column("序号", style="magenta")
     t.add_column("tracking_id", style="cyan")
     t.add_column("方案", style="white")
@@ -673,8 +675,7 @@ def print_drill_down(data: dict) -> None:
     label_line = f"指标: {md}（{mn}）" if md else f"指标: {mn}"
     console.print(
         Text(
-            f"{label_line}  总数: {data.get('total', 0)}  "
-            f"分页: {data.get('page', 1)}",
+            f"{label_line}  总数: {data.get('total', 0)}  分页: {data.get('page', 1)}",
             style="dim",
         )
     )
@@ -693,10 +694,17 @@ def print_drill_down(data: dict) -> None:
     console.print(t)
 
 
-async def post_actions(base_url: str, diagnosis_id: str, report: dict, enterprise_id: str, poll_interval: float) -> None:
+async def post_actions(
+    base_url: str, diagnosis_id: str, report: dict, enterprise_id: str, poll_interval: float
+) -> None:
     while True:
         console.print()
-        console.print(Panel("[bold]接下来可执行[/bold]\n1. 查看 优化方案列表\n2. 查看 钻取 某个 指标数据\n3. 查看 某个 异常指标详情\n4. 采纳某个方案并查看进度\n0. 结束", style="dim"))
+        console.print(
+            Panel(
+                "[bold]接下来可执行[/bold]\n1. 查看 优化方案列表\n2. 查看 钻取 某个 指标数据\n3. 查看 某个 异常指标详情\n4. 采纳某个方案并查看进度\n0. 结束",
+                style="dim",
+            )
+        )
         choice = (input("请输入选项编号: ") or "").strip()
         if choice == "0":
             break
@@ -731,7 +739,9 @@ async def post_actions(base_url: str, diagnosis_id: str, report: dict, enterpris
                 continue
             ok, detail_or_msg = await fetch_anomaly_detail(base_url, diagnosis_id, anomaly_id)
             if ok and isinstance(detail_or_msg, dict):
-                console.print(Panel(json.dumps(detail_or_msg, ensure_ascii=False, indent=2), title="异常指标详情", style="dim"))
+                console.print(
+                    Panel(json.dumps(detail_or_msg, ensure_ascii=False, indent=2), title="异常指标详情", style="dim")
+                )
             else:
                 console.print(Text(f"查询失败: {detail_or_msg}", style="red"))
             continue
@@ -851,7 +861,12 @@ async def post_history_actions(base_url: str, history_items: list[dict]) -> None
                 if tasks:
                     while True:
                         console.print()
-                        console.print(Panel("[bold]执行任务列表子命令[/bold]\n1. 查看详情（需 task_id 或序号）\n0. 返回", style="dim"))
+                        console.print(
+                            Panel(
+                                "[bold]执行任务列表子命令[/bold]\n1. 查看详情（需 task_id 或序号）\n0. 返回",
+                                style="dim",
+                            )
+                        )
                         task_action = (input("请输入选项编号: ") or "").strip()
                         if task_action == "0":
                             break
@@ -1058,7 +1073,13 @@ async def run_enterprises(base_url: str, detail_tenant_id: str | None, sync_tena
         if not ok:
             console.print(Text(f"查询详情失败: {data_or_msg}", style="red"))
             return 1
-        console.print(Panel(json.dumps(data_or_msg, ensure_ascii=False, indent=2), title=f"企业详情 tenant_id={tenant_id}", style="dim"))
+        console.print(
+            Panel(
+                json.dumps(data_or_msg, ensure_ascii=False, indent=2),
+                title=f"企业详情 tenant_id={tenant_id}",
+                style="dim",
+            )
+        )
         return 0
 
     if sync_tenant_id:
@@ -1103,7 +1124,13 @@ async def run_enterprises(base_url: str, detail_tenant_id: str | None, sync_tena
         if choice == "1":
             ok, detail_or_msg = await fetch_enterprise_detail(base_url, tenant_id)
             if ok:
-                console.print(Panel(json.dumps(detail_or_msg, ensure_ascii=False, indent=2), title=f"企业详情 tenant_id={tenant_id}", style="dim"))
+                console.print(
+                    Panel(
+                        json.dumps(detail_or_msg, ensure_ascii=False, indent=2),
+                        title=f"企业详情 tenant_id={tenant_id}",
+                        style="dim",
+                    )
+                )
             else:
                 console.print(Text(f"查询详情失败: {detail_or_msg}", style="red"))
             continue
@@ -1111,7 +1138,9 @@ async def run_enterprises(base_url: str, detail_tenant_id: str | None, sync_tena
             ok, sync_or_msg = await sync_enterprise_info(base_url, tenant_id)
             if ok:
                 console.print(Text(f"同步企业成功 tenant_id={tenant_id}", style="green"))
-                console.print(Panel(json.dumps(sync_or_msg, ensure_ascii=False, indent=2), title="同步结果", style="dim"))
+                console.print(
+                    Panel(json.dumps(sync_or_msg, ensure_ascii=False, indent=2), title="同步结果", style="dim")
+                )
             else:
                 console.print(Text(f"同步企业失败: {sync_or_msg}", style="red"))
             continue

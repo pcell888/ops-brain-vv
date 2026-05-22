@@ -66,13 +66,13 @@ clean:
 
 
 # ─── rsync部署 ────────────────────────────────────
-# HOST=47.118.25.132
-# USER=root
-# REMOTE_DIR=/opt/wzq/opt-brain
+HOST=47.118.25.132
+USER=root
+REMOTE_DIR=/opt/wzq/opt-brain
 
-HOST=192.168.1.248
-USER=ubuntu
-REMOTE_DIR=/home/ubuntu/WZQ/opt-brain
+# HOST=192.168.1.248
+# USER=ubuntu
+# REMOTE_DIR=/home/ubuntu/WZQ/opt-brain
 
 # 要上传的内容
 SRC=src frontend alembic config docker-compose.yml Makefile Dockerfile pyproject.toml compat_cli.py diagnosis_cli.py alembic.ini

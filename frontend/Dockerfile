@@ -1,14 +1,14 @@
 # 前端Dockerfile - 生产环境
 # 构建阶段
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 # 启用 pnpm
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
-# 复制依赖文件
-COPY package.json pnpm-lock.yaml* ./
+# 复制依赖与 pnpm 配置
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
 
 # 安装依赖
 RUN pnpm install --frozen-lockfile

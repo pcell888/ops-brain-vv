@@ -58,6 +58,47 @@ def _plain_formatter() -> logging.Formatter:
     )
 
 
+def setup_mcp_logging() -> logging.Logger:
+    """初始化 mcp-servers.log — 完整记录业务 API 请求/响应（不截断）。"""
+    s = get_settings()
+    level = getattr(logging, s.log_level.upper(), logging.INFO)
+    log_dir = Path(s.log_dir)
+    if not log_dir.is_absolute():
+        log_dir = (_REPO_ROOT / log_dir).resolve()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "mcp-servers.log"
+
+    logger = logging.getLogger("mcp_servers")
+    logger.setLevel(level)
+    # 阻断向上传播，避免重复进入 root → ops-brain.log
+    logger.propagate = False
+
+    # 清理旧 handler，防止 reload 时重复
+    for h in logger.handlers[:]:
+        try:
+            h.flush()
+            h.close()
+        except Exception:
+            pass
+        logger.removeHandler(h)
+
+    fh = logging.handlers.RotatingFileHandler(
+        log_path,
+        maxBytes=50 * 1024 * 1024,  # 50MB — 完整 JSON 可能很大
+        backupCount=5,
+        encoding="utf-8",
+    )
+    fh.setLevel(level)
+    fh.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    logger.addHandler(fh)
+    return logger
+
+
 def _undefer_loggers_after_fileconfig() -> None:
     """fileConfig(disable_existing_loggers=True) 会把已存在的 Logger 标为 disabled；仅清 src.* / uvicorn.*。"""
     for name, ref in list(logging.Logger.manager.loggerDict.items()):

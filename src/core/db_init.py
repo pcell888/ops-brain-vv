@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from src.core.logging_setup import setup_logging
+from src.core.logging_setup import setup_logging, setup_mcp_logging
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ async def run_alembic_upgrade() -> None:
 
         await asyncio.to_thread(_upgrade)
         setup_logging("ops-brain")
+        setup_mcp_logging()
         logger.info("Alembic 迁移执行成功 (upgrade head)")
     except Exception as e:
         logger.exception("Alembic 迁移失败")

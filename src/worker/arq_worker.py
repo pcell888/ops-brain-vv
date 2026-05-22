@@ -4,10 +4,11 @@ import asyncio
 
 from arq.connections import RedisSettings
 
-from src.core.logging_setup import setup_logging
+from src.core.logging_setup import setup_logging, setup_mcp_logging
 
 # Worker 进程同样需要初始化日志，否则推送日志不会落盘
 setup_logging("ops-brain")
+setup_mcp_logging()
 from urllib.parse import urlparse
 
 from src.runtime.running_tasks import running_tasks
